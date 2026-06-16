@@ -96,10 +96,19 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
   browser auth. No extra credentials.
 - **Web** — Brave Search API.
 - **Voice in** — records the mic, sends to Groq Whisper for transcription.
-- **Voice out** — the macOS system voice via the webview's `speechSynthesis`.
+- **Voice out** — native macOS `say` (Rust), which can use the high-quality
+  **Enhanced/Premium voices** (download one free in System Settings → Accessibility →
+  Spoken Content → System Voice → Manage Voices, then pick it in **Settings → Voice**).
+- **Computer access (read-only + open)** — the model can `find_files` (Spotlight + a
+  native, permission-safe directory walk), `read_file` (text, Markdown, Word/RTF/HTML;
+  PDF if `pdftotext`/poppler is installed), and `open_file`. "Find my X and read it to me"
+  works end to end. **Grant the app Full Disk Access** (System Settings → Privacy &
+  Security → Full Disk Access) to reach Documents/Desktop/Downloads; without it, only
+  non-protected locations are searchable.
 - **LLM** — OpenAI-compatible LM Studio. The **remote 24GB Mac (`Mac-mini.local:1234`)**
-  runs the heavy human-facing model (Gemma) and is the **primary** endpoint (with bearer
-  token); the local host is only a fallback.
+  is the **primary** endpoint (with bearer token); the app auto-uses whichever model is
+  loaded. For a **snappy** avatar, keep **`qwen3-8b`** loaded (fast + reliable tool calls);
+  Gemma 26B works but each answer can take 30–110s.
 - **History** — each turn is POSTed to the Vercel API → Supabase. Skipped silently if not
   configured, so the app is fully usable offline.
 
@@ -111,7 +120,12 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
 - **"The brain is busy"** — a Claude Code `gbrain` MCP session holds the PGLite lock.
   It retries; if it persists, close that session momentarily.
 - **Calendar empty/erroring** — run `m365 status`; re-`m365 login` if your session expired.
-- **No voice** — set the Groq API key in Settings; grant the app microphone permission.
+- **No voice / robotic voice** — set the Groq API key for voice input; for natural output,
+  download an Enhanced/Premium voice in System Settings and pick it in Settings → Voice.
+- **Can't find files in Documents/Desktop/Downloads** — grant **Brain Avatar → Full Disk
+  Access** in System Settings → Privacy & Security, then relaunch.
+- **Answers are slow** — Gemma 26B is a big reasoning model; load `qwen3-8b` on the 24GB
+  Mac for near-instant responses (the app auto-detects the loaded model).
 
 ---
 
