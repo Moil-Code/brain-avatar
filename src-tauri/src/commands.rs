@@ -23,9 +23,13 @@ pub fn set_settings(
 #[tauri::command]
 pub fn feature_flags(state: State<'_, SettingsState>) -> serde_json::Value {
     let s = state.0.lock().unwrap();
+    // In remote mode (MacBook client) the daemon provides voice (Groq) and web
+    // (Brave), so those capabilities are available even when the LOCAL keys are
+    // empty — otherwise the mic button hides on the MacBook though voice works.
+    let remote = !s.brain_daemon_url.trim().is_empty();
     serde_json::json!({
-        "voice": !s.groq_api_key.trim().is_empty(),
-        "web": !s.brave_api_key.trim().is_empty(),
+        "voice": remote || !s.groq_api_key.trim().is_empty(),
+        "web": remote || !s.brave_api_key.trim().is_empty(),
         "sync": !s.sync_api_url.trim().is_empty(),
         "remoteLlm": !s.lm_studio_remote_token.trim().is_empty(),
     })
