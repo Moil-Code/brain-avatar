@@ -1,0 +1,112 @@
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::Mutex;
+use tauri::{AppHandle, Manager};
+
+/// Persistent application settings. Secrets and endpoints live here (in Rust),
+/// not in the frontend. Stored as JSON in the app config directory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    // --- LM Studio (local-first, remote fallback) ---
+    pub lm_studio_local_url: String,
+    pub lm_studio_remote_url: String,
+    pub lm_studio_remote_token: String,
+    /// Empty string => auto-select the first model the active endpoint reports.
+    pub model: String,
+
+    // --- Voice (Groq Whisper STT) ---
+    pub groq_api_key: String,
+    pub groq_model: String,
+
+    // --- Web search (Brave) ---
+    pub brave_api_key: String,
+
+    // --- Local tool CLIs (absolute paths so the bundled .app can find them) ---
+    pub gbrain_path: String,
+    pub m365_path: String,
+
+    // --- History / sync (Vercel API -> Supabase) ---
+    pub sync_api_url: String,
+    pub sync_token: String,
+
+    // --- Behaviour ---
+    pub system_prompt: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        let home = dirs_home();
+        Settings {
+            lm_studio_local_url: "http://localhost:1234/v1".into(),
+            lm_studio_remote_url: "http://Mac-mini.local:1234/v1".into(),
+            lm_studio_remote_token: String::new(),
+            model: String::new(),
+            groq_api_key: String::new(),
+            groq_model: "whisper-large-v3-turbo".into(),
+            brave_api_key: String::new(),
+            gbrain_path: format!("{home}/.bun/bin/gbrain"),
+            m365_path: "/opt/homebrew/bin/m365".into(),
+            sync_api_url: String::new(),
+            sync_token: String::new(),
+            system_prompt: default_system_prompt(),
+        }
+    }
+}
+
+fn dirs_home() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| "/Users/jarvisurrego".into())
+}
+
+pub fn default_system_prompt() -> String {
+    "You are Brain, Andres Urrego's personal AI assistant for Moil. \
+You are concise, direct, and warm. You have tools to search Andres' \
+\"brain\" (a personal knowledge base of meetings, people, deals, concepts, and projects), \
+to read his Microsoft 365 calendar, and to search the web. \
+ALWAYS use the brain_search tool first for any question about Moil, people, deals, \
+projects, past meetings, or anything personal/company-specific. Use calendar for \
+schedule questions and web_search only for general/public information not in the brain. \
+Ground every factual claim in tool results; if the tools return nothing relevant, say so \
+plainly rather than guessing. Keep spoken answers short enough to listen to."
+        .into()
+}
+
+/// Thread-safe settings handle stored in Tauri state.
+pub struct SettingsState(pub Mutex<Settings>);
+
+fn settings_path(app: &AppHandle) -> std::io::Result<PathBuf> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join("settings.json"))
+}
+
+pub fn load(app: &AppHandle) -> Settings {
+    match settings_path(app).and_then(std::fs::read_to_string) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        Err(_) => Settings::default(),
+    }
+}
+
+pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+    let path = settings_path(app).map_err(|e| e.to_string())?;
+    let raw = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    std::fs::write(path, raw).map_err(|e| e.to_string())
+}
+
+/// PATH that includes the dirs where node / bun / homebrew tools live, so the
+/// bundled app (which inherits a minimal PATH) can still spawn gbrain & m365.
+pub fn augmented_path() -> String {
+    let home = dirs_home();
+    let extra = [
+        "/opt/homebrew/bin".to_string(),
+        format!("{home}/.bun/bin"),
+        "/usr/local/bin".to_string(),
+        "/usr/bin".to_string(),
+        "/bin".to_string(),
+    ];
+    let existing = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{}", extra.join(":"), existing)
+}

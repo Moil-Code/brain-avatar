@@ -1,0 +1,18 @@
+{
+  "name": "brain-avatar-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vercel serverless history/sync API for Brain Avatar (Supabase-backed)",
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel deploy --prod"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "devDependencies": {
+    "@vercel/node": "^5.0.0",
+    "typescript": "^5.6.0"
+  }
+}
