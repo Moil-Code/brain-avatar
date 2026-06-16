@@ -667,6 +667,59 @@ pub async fn web_search(
     Ok(out)
 }
 
+/// Read the most recent inbox emails (sender, subject, date, preview).
+#[tauri::command]
+pub async fn read_emails(
+    count: Option<u32>,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let n = count.unwrap_or(10).clamp(1, 25);
+    let url = format!(
+        "https://graph.microsoft.com/v1.0/me/messages?$top={n}&$select=subject,from,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime%20desc"
+    );
+    let stdout = match graph_get(&m365, &url).await {
+        Ok(s) => s,
+        Err(e) => return Ok(permission_hint(&e)),
+    };
+    let v: Value = serde_json::from_str(&stdout).unwrap_or(Value::Null);
+    let msgs = v.get("value").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+    if msgs.is_empty() {
+        return Ok("No emails found in the inbox.".into());
+    }
+    let mut out = format!("Most recent {} inbox emails (newest first):\n\n", msgs.len());
+    for m in &msgs {
+        let subj = m.get("subject").and_then(|v| v.as_str()).unwrap_or("(no subject)");
+        let fname = m
+            .get("from")
+            .and_then(|f| f.get("emailAddress"))
+            .and_then(|e| e.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let faddr = m
+            .get("from")
+            .and_then(|f| f.get("emailAddress"))
+            .and_then(|e| e.get("address"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let date = m.get("receivedDateTime").and_then(|v| v.as_str()).unwrap_or("");
+        let unread = !m.get("isRead").and_then(|v| v.as_bool()).unwrap_or(true);
+        let preview: String = m
+            .get("bodyPreview")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(220)
+            .collect();
+        out.push_str(&format!(
+            "• {}From: {fname} <{faddr}> — {subj}  ({date})\n  {}\n\n",
+            if unread { "[UNREAD] " } else { "" },
+            preview.replace('\n', " ")
+        ));
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // fetch_url  ->  read a web page's text locally (no cloud service)
 // ---------------------------------------------------------------------------

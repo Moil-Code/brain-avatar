@@ -1,4 +1,5 @@
-import { resolveEndpoint } from "./llm";
+import { resolveBaseEndpoint } from "./llm";
+import { routeTask, type Route } from "./router";
 import {
   brainPage,
   brainSearch,
@@ -14,6 +15,7 @@ import {
   llmComplete,
   openApp,
   openFileCmd,
+  readEmails,
   readFile,
   runAppleScript,
   sendEmail,
@@ -23,14 +25,6 @@ import {
 import type { AvatarState, ChatMessage, Settings } from "./types";
 
 const MAX_ROUNDS = 5;
-
-/** Heuristic: does this query warrant the slower, deeper model (Gemma) vs the fast one? */
-function isDeepQuery(text: string): boolean {
-  if (text.length > 240) return true;
-  return /\b(analy[sz]e|deep dive|in.?depth|thorough|strateg|draft|compose|write (me )?an? |essay|report|compare|synthesi|brainstorm|plan out)\b/i.test(
-    text
-  );
-}
 
 export const TOOL_DEFS = [
   {
@@ -284,6 +278,21 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "read_emails",
+      description:
+        "Read Andres' most recent inbox emails (sender, subject, date, preview). Use for 'read/" +
+        "check/summarize my emails', 'any new email from X', 'what's in my inbox'.",
+      parameters: {
+        type: "object",
+        properties: {
+          count: { type: "integer", description: "How many recent emails (default 10, max 25)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "send_email",
       description:
         "Send an email from Andres' Microsoft 365 account. CONFIRM recipients, subject, and body " +
@@ -397,6 +406,8 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
         return await listApps();
       case "run_applescript":
         return await runAppleScript(String(args.script ?? ""));
+      case "read_emails":
+        return await readEmails(args.count);
       case "send_email":
         return await sendEmail(
           Array.isArray(args.to) ? args.to : [String(args.to ?? "")],
@@ -426,24 +437,36 @@ export interface RunAgentOpts {
   onState?: (s: AvatarState) => void;
   onToken?: (delta: string) => void;
   onToolStart?: (name: string) => void;
+  onRoute?: (route: Route) => void;
   signal?: AbortSignal;
 }
 
 export interface RunAgentResult {
   content: string;
   tools: string[];
+  route?: Route;
 }
 
 /** Run the full tool-calling loop and return the final grounded answer. */
 export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
-  const { userText, history, settings, onState, onToken, onToolStart, signal } = opts;
+  const { userText, history, settings, onState, onToken, onToolStart, onRoute, signal } = opts;
   onState?.("thinking");
 
-  const endpoint = await resolveEndpoint(settings, { preferDeep: isDeepQuery(userText) });
+  // Routing layer: find the reachable endpoint + its loaded models, classify the
+  // task, pick the best model, and rewrite the request into a sharper instruction.
+  const base = await resolveBaseEndpoint(settings);
+  const route = await routeTask({ userText, endpoint: base });
+  onRoute?.(route);
+  const endpoint = { baseUrl: base.baseUrl, token: base.token, model: route.modelId };
 
+  const planMsg: ChatMessage[] =
+    route.enhanced && route.enhanced.trim() !== userText.trim()
+      ? [{ role: "system", content: `Execution plan for this request (follow it): ${route.enhanced}` }]
+      : [];
   const messages: ChatMessage[] = [
     { role: "system", content: settings.system_prompt },
     ...history,
+    ...planMsg,
     { role: "user", content: userText },
   ];
 
@@ -465,7 +488,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     if (toolCalls.length === 0) {
       const answer = content.trim();
       onToken?.(answer);
-      return { content: answer, tools: toolsUsed };
+      return { content: answer, tools: toolsUsed, route };
     }
 
     // Record the assistant's tool-call message, then run each tool.

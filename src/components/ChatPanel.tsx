@@ -27,6 +27,7 @@ const TOOL_LABEL: Record<string, string> = {
   open_app: "🚀 app",
   list_apps: "🚀 apps",
   run_applescript: "⚙️ control",
+  read_emails: "📨 inbox",
   send_email: "✉️ email",
   create_reminder: "⏰ reminder",
   send_teams_message: "💬 teams",
@@ -67,9 +68,10 @@ export default function ChatPanel({
         )}
         {messages.map((m) => (
           <div key={m.id} className={`msg msg-${m.role}`}>
-            {m.tools && m.tools.length > 0 && (
+            {(m.routeLabel || (m.tools && m.tools.length > 0)) && (
               <div className="msg-tools">
-                {m.tools.map((t) => (
+                {m.routeLabel && <span className="route-badge">🧭 {m.routeLabel}</span>}
+                {m.tools?.map((t) => (
                   <span key={t} className="tool-badge">
                     {TOOL_LABEL[t] ?? t}
                   </span>

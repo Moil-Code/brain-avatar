@@ -67,6 +67,7 @@ export const webSearch = (query: string) =>
 export const fetchUrl = (url: string) => invoke<string>("fetch_url", { url });
 export const sendEmail = (to: string[], subject: string, body: string, cc?: string[]) =>
   invoke<string>("send_email", { to, subject, body, cc });
+export const readEmails = (count?: number) => invoke<string>("read_emails", { count });
 export const createReminder = (title: string, due?: string, remindAt?: string) =>
   invoke<string>("create_reminder", { title, due, remindAt });
 export const sendTeamsMessage = (recipientEmail: string, message: string) =>

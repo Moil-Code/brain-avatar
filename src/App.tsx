@@ -120,6 +120,12 @@ export default function App() {
                   : m
               )
             ),
+          onRoute: (route) => {
+            if (route.routed) {
+              const short = route.modelId.split("/").pop() ?? route.modelId;
+              patchMessage(botId, { routeLabel: `${route.taskType} → ${short}` });
+            }
+          },
         });
 
         const answer = result.content || streamed || "(no response)";

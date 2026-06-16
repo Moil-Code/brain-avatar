@@ -53,6 +53,37 @@ export async function resolveEndpoint(
   );
 }
 
+export interface BaseEndpoint {
+  baseUrl: string;
+  token?: string;
+  models: string[];
+}
+
+/** Resolve a reachable endpoint and return the models LOADED there (for the router). */
+export async function resolveBaseEndpoint(settings: Settings): Promise<BaseEndpoint> {
+  if (settings.lm_studio_remote_url) {
+    const p = await llmProbe(settings.lm_studio_remote_url, settings.lm_studio_remote_token).catch(
+      () => null
+    );
+    if (p?.ok) {
+      return {
+        baseUrl: settings.lm_studio_remote_url,
+        token: settings.lm_studio_remote_token,
+        models: p.models,
+      };
+    }
+  }
+  if (settings.lm_studio_local_url) {
+    const p = await llmProbe(settings.lm_studio_local_url).catch(() => null);
+    if (p?.ok) return { baseUrl: settings.lm_studio_local_url, models: p.models };
+  }
+  throw new Error(
+    "Can't reach the 24GB Mac. 1) Make sure it's awake and LM Studio is serving. " +
+      "2) Grant this app Local Network access — System Settings → Privacy & Security → " +
+      "Local Network → enable Brain Avatar."
+  );
+}
+
 export interface StreamResult {
   content: string;
   toolCalls: ToolCall[];

@@ -151,6 +151,7 @@ pub fn run() {
             tools::web_search,
             tools::fetch_url,
             tools::send_email,
+            tools::read_emails,
             tools::create_reminder,
             tools::send_teams_message,
             voice::transcribe_audio,

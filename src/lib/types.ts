@@ -22,6 +22,8 @@ export interface UiMessage {
   pending?: boolean;
   /** Names of tools invoked while producing this answer (for the UI badge). */
   tools?: string[];
+  /** Router decision label, e.g. "email → qwen3-8b". */
+  routeLabel?: string;
 }
 
 export type AvatarState = "idle" | "listening" | "thinking" | "speaking";
