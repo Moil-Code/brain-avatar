@@ -99,12 +99,15 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
 - **Voice out** — native macOS `say` (Rust), which can use the high-quality
   **Enhanced/Premium voices** (download one free in System Settings → Accessibility →
   Spoken Content → System Voice → Manage Voices, then pick it in **Settings → Voice**).
-- **Computer access (read-only + open)** — the model can `find_files` (Spotlight + a
-  native, permission-safe directory walk), `read_file` (text, Markdown, Word/RTF/HTML;
-  PDF if `pdftotext`/poppler is installed), and `open_file`. "Find my X and read it to me"
-  works end to end. **Grant the app Full Disk Access** (System Settings → Privacy &
-  Security → Full Disk Access) to reach Documents/Desktop/Downloads; without it, only
-  non-protected locations are searchable.
+- **Computer access** — the model can `find_files` (Spotlight + a native, permission-safe
+  directory walk), `read_file` (text, Markdown, Word/RTF/HTML; PDF if `pdftotext`/poppler
+  is installed), `open_file`, `open_app`/`list_apps`, and `run_applescript` to control Mac
+  apps (create a note, add a reminder/calendar event, etc.). "Find my X and read it to me"
+  works end to end. macOS asks you to allow controlling each new app the first time
+  (Automation prompt). The avatar confirms before any send/post/delete. File reads need
+  **Full Disk Access** (System Settings → Privacy) for Documents/Desktop/Downloads.
+- **Hotkeys** — `⌘⇧Space` summon/hide · `⌘⇧V` summon + talk (press to speak, press again
+  to send). No always-on mic.
 - **LLM** — OpenAI-compatible LM Studio. The **remote 24GB Mac (`Mac-mini.local:1234`)**
   is the **primary** endpoint (with bearer token); the app auto-uses whichever model is
   loaded. For a **snappy** avatar, keep **`qwen3-8b`** loaded (fast + reliable tool calls);
@@ -122,8 +125,14 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
 - **Calendar empty/erroring** — run `m365 status`; re-`m365 login` if your session expired.
 - **No voice / robotic voice** — set the Groq API key for voice input; for natural output,
   download an Enhanced/Premium voice in System Settings and pick it in Settings → Voice.
+- **"No LM Studio endpoint reachable" after a rebuild** — the app needs **Local Network**
+  permission to reach `Mac-mini.local`. Click **Allow** on the prompt, or enable Brain Avatar
+  under System Settings → Privacy & Security → Local Network. (Re-prompts only because dev
+  rebuilds re-sign the app; a signed release asks once.)
 - **Can't find files in Documents/Desktop/Downloads** — grant **Brain Avatar → Full Disk
   Access** in System Settings → Privacy & Security, then relaunch.
+- **Can't control an app** — approve the macOS "Brain Avatar wants to control X" prompt, or
+  enable it under System Settings → Privacy & Security → Automation.
 - **Answers are slow** — Gemma 26B is a big reasoning model; load `qwen3-8b` on the 24GB
   Mac for near-instant responses (the app auto-detects the loaded model).
 
