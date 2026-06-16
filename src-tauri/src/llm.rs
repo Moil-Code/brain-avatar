@@ -68,7 +68,7 @@ pub struct ProbeResult {
 
 async fn authed_get(url: &str, token: &Option<String>) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
-    let mut req = client.get(url).timeout(Duration::from_secs(6));
+    let mut req = client.get(url).timeout(Duration::from_secs(3));
     if let Some(t) = token {
         if !t.trim().is_empty() {
             req = req.header("Authorization", format!("Bearer {t}"));

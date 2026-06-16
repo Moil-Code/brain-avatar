@@ -81,6 +81,20 @@ body,
   color: var(--fg);
 }
 
+/* ---------- Peek grip (top-edge dock) ---------- */
+.peek-grip {
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 46px;
+  height: 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.5);
+  z-index: 20;
+  pointer-events: none;
+}
+
 /* ---------- Update banner ---------- */
 .update-banner {
   display: flex;

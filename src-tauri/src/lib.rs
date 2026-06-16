@@ -41,6 +41,13 @@ fn show_window(app: &AppHandle) {
     }
 }
 
+/// Global cursor position (physical px, same space as window position) — drives the
+/// top-edge peek reveal/hide without relying on flaky webview hover events.
+#[tauri::command]
+fn cursor_position(app: AppHandle) -> (f64, f64) {
+    app.cursor_position().map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -130,6 +137,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            cursor_position,
             commands::get_settings,
             commands::set_settings,
             commands::feature_flags,

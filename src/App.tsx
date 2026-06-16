@@ -8,6 +8,7 @@ import { runAgent } from "./lib/agent";
 import { featureFlags, fetchMessages, getSettings, saveMessage } from "./lib/tauri";
 import { primeVoices, speak, startRecording, stopSpeaking, type Recorder } from "./lib/voice";
 import { checkForUpdate, installUpdate, type Update } from "./lib/updater";
+import { enterPeek, exitPeek } from "./lib/peek";
 import type { AvatarState, ChatMessage, FeatureFlags, Settings, UiMessage } from "./lib/types";
 
 function uid() {
@@ -38,6 +39,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [update, setUpdate] = useState<Update | null>(null);
   const [updating, setUpdating] = useState(false);
+  const [peeked, setPeeked] = useState(false);
 
   const modelHistory = useRef<ChatMessage[]>([]);
   const recorderRef = useRef<Recorder | null>(null);
@@ -185,6 +187,14 @@ export default function App() {
     setAvatarState("idle");
   }, []);
 
+  // --- top-edge peek mode (cursor-poll driven; see lib/peek.ts) ---
+  const startPeek = useCallback(() => {
+    enterPeek().then(() => setPeeked(true));
+  }, []);
+  const stopPeek = useCallback(() => {
+    exitPeek().then(() => setPeeked(false));
+  }, []);
+
   if (!settings) {
     return (
       <div className="app glass">
@@ -195,7 +205,13 @@ export default function App() {
 
   return (
     <div className="app glass">
-      <TitleBar onOpenSettings={() => setShowSettings(true)} />
+      {peeked && <div className="peek-grip" />}
+      <TitleBar
+        onOpenSettings={() => setShowSettings(true)}
+        onMinimize={startPeek}
+        peeked={peeked}
+        onExitPeek={stopPeek}
+      />
       {update && (
         <div className="update-banner">
           <span>✨ Update {update.version} available</span>
