@@ -52,9 +52,9 @@ export default function ChatPanel({
       <div className="messages" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="empty-hint">
-            Ask me about your brain, calendar, deals, or anything on the web.
+            Ask me about your brain, calendar, deals, files, or the web.
             <br />
-            <span className="kbd">⌘⇧Space</span> to summon me anytime.
+            <span className="kbd">⌘⇧Space</span> to summon · <span className="kbd">⌘⇧V</span> to talk
           </div>
         )}
         {messages.map((m) => (

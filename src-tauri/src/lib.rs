@@ -53,22 +53,28 @@ pub fn run() {
             app.manage(SettingsState(Mutex::new(settings)));
             app.manage(tts::TtsState(Mutex::new(None)));
 
-            // --- Global summon hotkey: Cmd+Shift+Space ---
+            // --- Global hotkeys: Cmd+Shift+Space = summon/hide, Cmd+Shift+V = talk ---
             let toggle_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Space);
-            let shortcut_for_handler = toggle_shortcut;
+            let voice_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
             handle.plugin(
                 tauri_plugin_global_shortcut::Builder::new()
                     .with_handler(move |app, shortcut, event| {
-                        if shortcut == &shortcut_for_handler
-                            && event.state() == ShortcutState::Pressed
-                        {
+                        if event.state() != ShortcutState::Pressed {
+                            return;
+                        }
+                        if shortcut == &toggle_shortcut {
                             toggle_window(app);
+                        } else if shortcut == &voice_shortcut {
+                            show_window(app);
+                            let _ = app.emit("toggle-voice", ());
                         }
                     })
                     .build(),
             )?;
-            if let Err(e) = app.global_shortcut().register(toggle_shortcut) {
-                eprintln!("Could not register global shortcut: {e}");
+            for sc in [toggle_shortcut, voice_shortcut] {
+                if let Err(e) = app.global_shortcut().register(sc) {
+                    eprintln!("Could not register global shortcut: {e}");
+                }
             }
 
             // --- System tray ---

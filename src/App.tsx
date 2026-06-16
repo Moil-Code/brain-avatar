@@ -40,6 +40,7 @@ export default function App() {
   const recorderRef = useRef<Recorder | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const conversationId = useRef<string>(getConversationId());
+  const toggleMicRef = useRef<() => void>(() => {});
 
   // --- bootstrap ---
   useEffect(() => {
@@ -65,9 +66,11 @@ export default function App() {
         console.error("bootstrap failed", e);
       }
     })();
-    const unlisten = listen("open-settings", () => setShowSettings(true));
+    const unlistenSettings = listen("open-settings", () => setShowSettings(true));
+    const unlistenVoice = listen("toggle-voice", () => toggleMicRef.current());
     return () => {
-      unlisten.then((f) => f());
+      unlistenSettings.then((f) => f());
+      unlistenVoice.then((f) => f());
     };
   }, []);
 
@@ -169,6 +172,7 @@ export default function App() {
       setAvatarState("idle");
     }
   }, [recording, handleSend]);
+  toggleMicRef.current = handleToggleMic;
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
