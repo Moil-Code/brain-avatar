@@ -15,7 +15,11 @@ export default function TitleBar({ onOpenSettings }: Props) {
         <button className="tb-btn" title="Settings" onClick={onOpenSettings}>
           ⚙
         </button>
-        <button className="tb-btn" title="Hide" onClick={() => win.hide()}>
+        <button
+          className="tb-btn"
+          title="Hide — press ⌘⇧Space (or the menu-bar icon) to bring it back"
+          onClick={() => win.hide()}
+        >
           —
         </button>
       </div>

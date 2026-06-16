@@ -7,6 +7,7 @@ import {
   calendarEvents,
   calendarUpdate,
   createTeamsMeeting,
+  fetchUrl,
   findFiles,
   listApps,
   llmComplete,
@@ -180,6 +181,20 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "fetch_url",
+      description:
+        "Open and read the text of a specific web page (a URL, e.g. from web_search results). " +
+        "Use to actually read an article/page, not just search. Returns the page's readable text.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string", description: "The page URL to read" } },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "find_files",
       description:
         "Find files on Andres' Mac by name or content using Spotlight. Use for 'find my X', " +
@@ -311,6 +326,8 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
         );
       case "web_search":
         return await webSearch(String(args.query ?? ""));
+      case "fetch_url":
+        return await fetchUrl(String(args.url ?? ""));
       case "find_files":
         return await findFiles(String(args.query ?? ""), args.scope ? String(args.scope) : undefined);
       case "read_file":

@@ -141,6 +141,7 @@ pub fn run() {
             tools::calendar_delete,
             tools::create_teams_meeting,
             tools::web_search,
+            tools::fetch_url,
             voice::transcribe_audio,
             llm::llm_probe,
             llm::llm_complete,

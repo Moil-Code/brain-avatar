@@ -538,3 +538,94 @@ pub async fn web_search(
     }
     Ok(out)
 }
+
+// ---------------------------------------------------------------------------
+// fetch_url  ->  read a web page's text locally (no cloud service)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn fetch_url(url: String) -> Result<String, String> {
+    let url = if url.starts_with("http://") || url.starts_with("https://") {
+        url
+    } else {
+        format!("https://{url}")
+    };
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh) BrainAvatar/0.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(&url)
+        .timeout(StdDuration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| format!("fetch failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {} fetching {url}", resp.status()));
+    }
+    let is_html = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|c| c.contains("html"))
+        .unwrap_or(true);
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+    let text = if is_html { html_to_text(&body) } else { body };
+    let snippet: String = text.chars().take(9000).collect();
+    Ok(format!("Page content of {url}:\n\n{snippet}"))
+}
+
+fn starts_with_ci(s: &str, prefix: &str) -> bool {
+    let sb = s.as_bytes();
+    let pb = prefix.as_bytes();
+    sb.len() >= pb.len() && sb[..pb.len()].eq_ignore_ascii_case(pb)
+}
+
+fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let hb = haystack.as_bytes();
+    let nb = needle.as_bytes();
+    if nb.is_empty() || hb.len() < nb.len() {
+        return None;
+    }
+    (0..=hb.len() - nb.len()).find(|&i| hb[i..i + nb.len()].eq_ignore_ascii_case(nb))
+}
+
+/// Strip HTML to readable text (drops script/style, tags, collapses whitespace).
+fn html_to_text(html: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    while !rest.is_empty() {
+        if starts_with_ci(rest, "<script") || starts_with_ci(rest, "<style") {
+            let close = if starts_with_ci(rest, "<script") {
+                "</script>"
+            } else {
+                "</style>"
+            };
+            match find_ci(rest, close) {
+                Some(idx) => rest = &rest[idx + close.len()..],
+                None => break,
+            }
+            out.push(' ');
+        } else if rest.starts_with('<') {
+            match rest.find('>') {
+                Some(idx) => {
+                    rest = &rest[idx + 1..];
+                    out.push(' ');
+                }
+                None => break,
+            }
+        } else {
+            let idx = rest.find('<').unwrap_or(rest.len());
+            out.push_str(&rest[..idx]);
+            rest = &rest[idx..];
+        }
+    }
+    let decoded = out
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ");
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}

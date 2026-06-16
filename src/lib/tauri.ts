@@ -64,6 +64,7 @@ export const createTeamsMeeting = (subject: string, start: string, end: string) 
   invoke<string>("create_teams_meeting", { subject, start, end });
 export const webSearch = (query: string) =>
   invoke<string>("web_search", { query });
+export const fetchUrl = (url: string) => invoke<string>("fetch_url", { url });
 
 // --- Voice ---
 export const transcribeAudio = (audioBase64: string, mime: string) =>

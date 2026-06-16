@@ -20,6 +20,7 @@ const TOOL_LABEL: Record<string, string> = {
   calendar_delete: "📅 delete",
   create_teams_meeting: "📹 teams",
   web_search: "🌐 web",
+  fetch_url: "📖 page",
   find_files: "📁 files",
   read_file: "📄 read",
   open_file: "📂 open",
