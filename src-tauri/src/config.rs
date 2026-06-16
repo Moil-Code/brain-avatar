@@ -28,6 +28,8 @@ pub struct Settings {
     // --- Local tool CLIs (absolute paths so the bundled .app can find them) ---
     pub gbrain_path: String,
     pub m365_path: String,
+    /// Optional custom Entra app id for m365 (needed for Calendars.ReadWrite, etc.).
+    pub m365_app_id: String,
 
     // --- History / sync (Vercel API -> Supabase) ---
     pub sync_api_url: String,
@@ -58,6 +60,7 @@ impl Default for Settings {
             brave_api_key: String::new(),
             gbrain_path: format!("{home}/.bun/bin/gbrain"),
             m365_path: "/opt/homebrew/bin/m365".into(),
+            m365_app_id: String::new(),
             sync_api_url: String::new(),
             sync_token: String::new(),
             tts_voice: String::new(),
@@ -78,8 +81,12 @@ to read his Microsoft 365 calendar, and to search the web. \
 For a question about a specific named person, company, project, or concept (\"who is X\", \
 \"what is X\", X's role/latest), ALWAYS call brain_page with the entity's name first — it \
 returns the current canonical page, not stale transcripts. Use brain_search for broader or \
-contextual questions about Moil, deals, or history. Use calendar for schedule questions and \
-web_search only for general/public information not in the brain. \
+contextual questions about Moil, deals, or history. Use calendar_events to check the schedule \
+and get event ids; calendar_create to schedule (set is_teams for a Teams meeting, list \
+attendee emails to invite them), calendar_update to edit (e.g. make an event a Teams meeting), \
+and calendar_delete to remove one. ALWAYS confirm the title, time, attendees, and Teams yes/no \
+with Andres before creating, changing, or deleting an event. Use web_search only for \
+general/public information not in the brain. \
 You can also access Andres' Mac: find_files (Spotlight search), read_file (read a file's \
 text — when asked to read a file aloud, read it and reply with its content so it is spoken), \
 open_file (open something in its default app), open_app and list_apps (launch apps), and \

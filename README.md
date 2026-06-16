@@ -70,6 +70,28 @@ gh repo create brain-avatar --private --source . --remote origin --push
 
 ---
 
+### Enable calendar scheduling (Teams meetings + invites)
+
+The avatar can *read* your calendar out of the box, but **creating/editing/deleting events
+and sending Teams invites needs the `Calendars.ReadWrite` scope**, which the m365 CLI's
+built-in app doesn't request. One-time setup (you're the Moil admin):
+
+1. **entra.microsoft.com → App registrations → New registration** — name "Brain Avatar
+   Scheduler", single-tenant. Under **Authentication**, add a **Mobile/desktop** platform
+   with redirect `http://localhost`, and set **Allow public client flows = Yes**.
+2. **API permissions → Add → Microsoft Graph → Delegated** → add `Calendars.ReadWrite`,
+   `OnlineMeetings.ReadWrite`, `Mail.Send`, `User.Read` → **Grant admin consent**.
+3. Copy the **Application (client) ID** → paste it into the app's **Settings → Local tools →
+   M365 app id**.
+4. In a terminal, log m365 in with that app once:
+   ```bash
+   CLIMICROSOFT365_ENTRAAPPID=<that-app-id> m365 login
+   ```
+   (The app passes the same id to m365 on every call, so it uses these scopes.)
+
+After that, "schedule a Teams meeting with X tomorrow at 10am and invite them" works
+end to end — real event on your calendar, Teams link, invite emailed.
+
 ## Run it
 
 ```bash
@@ -92,8 +114,10 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
 - **Brain** — shells out to `gbrain call query '{...}'` (hybrid vector+keyword search over
   your PGLite brain). Retries automatically if a Claude Code session is holding the
   single-writer PGLite lock.
-- **Calendar** — `m365 request` against Graph `/me/calendarView` using your existing
-  browser auth. No extra credentials.
+- **Calendar** — read via `m365` → Graph `/me/calendarView`. **Scheduling** (create/edit/
+  delete events, real **Teams** meetings, invite attendees) also goes through Graph but needs
+  the `Calendars.ReadWrite` scope (see "Enable calendar scheduling" below). `create_teams_meeting`
+  (a standalone Teams join link) works today with the existing `OnlineMeetings.ReadWrite` scope.
 - **Web** — Brave Search API.
 - **Voice in** — records the mic, sends to Groq Whisper for transcription.
 - **Voice out** — native macOS `say` (Rust), which can use the high-quality

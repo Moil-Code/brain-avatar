@@ -2,7 +2,11 @@ import { resolveEndpoint } from "./llm";
 import {
   brainPage,
   brainSearch,
+  calendarCreate,
+  calendarDelete,
   calendarEvents,
+  calendarUpdate,
+  createTeamsMeeting,
   findFiles,
   listApps,
   llmComplete,
@@ -67,8 +71,9 @@ export const TOOL_DEFS = [
     function: {
       name: "calendar_events",
       description:
-        "Read Andres' Microsoft 365 calendar. Returns upcoming events. Use for schedule, " +
-        "meetings, availability, or 'what's on today/this week' questions.",
+        "Read Andres' Microsoft 365 calendar. Returns upcoming events, each with an 'id' you " +
+        "need for calendar_update/calendar_delete. Use for schedule, availability, conflict " +
+        "checks, or 'what's on today/this week'.",
       parameters: {
         type: "object",
         properties: {
@@ -77,6 +82,84 @@ export const TOOL_DEFS = [
             description: "How many days ahead to include from today (1 = today only, 7 = this week)",
           },
         },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "calendar_create",
+      description:
+        "Create a calendar event on Andres' Microsoft 365 calendar. Set is_teams=true to make it " +
+        "a real Microsoft Teams meeting (returns a join link). List attendee emails to email them " +
+        "an invite. Times are local ISO without timezone suffix, e.g. '2026-06-17T10:00:00'. " +
+        "Always CONFIRM the details (title, time, attendees, Teams yes/no) with Andres before calling.",
+      parameters: {
+        type: "object",
+        properties: {
+          subject: { type: "string" },
+          start: { type: "string", description: "Local start, e.g. 2026-06-17T10:00:00" },
+          end: { type: "string", description: "Local end, e.g. 2026-06-17T10:30:00" },
+          time_zone: { type: "string", description: "Windows tz name, default 'Central Standard Time'" },
+          attendees: { type: "array", items: { type: "string" }, description: "Attendee email addresses" },
+          is_teams: { type: "boolean", description: "Make it a Teams online meeting" },
+          location: { type: "string" },
+          body: { type: "string", description: "Event description/notes" },
+        },
+        required: ["subject", "start", "end"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "calendar_update",
+      description:
+        "Update an existing calendar event by id (from calendar_events). Use to make an event a " +
+        "Teams meeting (is_teams=true), change its time, title, or location. Confirm with Andres first.",
+      parameters: {
+        type: "object",
+        properties: {
+          event_id: { type: "string" },
+          subject: { type: "string" },
+          start: { type: "string" },
+          end: { type: "string" },
+          time_zone: { type: "string" },
+          is_teams: { type: "boolean" },
+          location: { type: "string" },
+        },
+        required: ["event_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "calendar_delete",
+      description:
+        "Delete a calendar event by id (from calendar_events). Always confirm with Andres before deleting.",
+      parameters: {
+        type: "object",
+        properties: { event_id: { type: "string" } },
+        required: ["event_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_teams_meeting",
+      description:
+        "Create a standalone Teams meeting (not on the calendar) and get its join link. Works even " +
+        "without calendar-write permission. Times are ISO with offset, e.g. '2026-06-17T10:00:00-05:00'.",
+      parameters: {
+        type: "object",
+        properties: {
+          subject: { type: "string" },
+          start: { type: "string", description: "e.g. 2026-06-17T10:00:00-05:00" },
+          end: { type: "string", description: "e.g. 2026-06-17T10:30:00-05:00" },
+        },
+        required: ["subject", "start", "end"],
       },
     },
   },
@@ -197,6 +280,35 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
         return await brainSearch(String(args.query ?? ""), args.limit);
       case "calendar_events":
         return await calendarEvents(args.days);
+      case "calendar_create":
+        return await calendarCreate({
+          subject: String(args.subject ?? ""),
+          start: String(args.start ?? ""),
+          end: String(args.end ?? ""),
+          timeZone: args.time_zone,
+          attendees: Array.isArray(args.attendees) ? args.attendees : undefined,
+          isTeams: Boolean(args.is_teams),
+          location: args.location,
+          body: args.body,
+        });
+      case "calendar_update":
+        return await calendarUpdate({
+          eventId: String(args.event_id ?? ""),
+          subject: args.subject,
+          start: args.start,
+          end: args.end,
+          timeZone: args.time_zone,
+          isTeams: typeof args.is_teams === "boolean" ? args.is_teams : undefined,
+          location: args.location,
+        });
+      case "calendar_delete":
+        return await calendarDelete(String(args.event_id ?? ""));
+      case "create_teams_meeting":
+        return await createTeamsMeeting(
+          String(args.subject ?? ""),
+          String(args.start ?? ""),
+          String(args.end ?? "")
+        );
       case "web_search":
         return await webSearch(String(args.query ?? ""));
       case "find_files":

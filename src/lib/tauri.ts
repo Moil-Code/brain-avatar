@@ -39,6 +39,29 @@ export const brainPage = (name: string) =>
   invoke<string>("brain_page", { name });
 export const calendarEvents = (days?: number) =>
   invoke<string>("calendar_events", { days });
+export const calendarCreate = (args: {
+  subject: string;
+  start: string;
+  end: string;
+  timeZone?: string;
+  attendees?: string[];
+  isTeams?: boolean;
+  location?: string;
+  body?: string;
+}) => invoke<string>("calendar_create", args);
+export const calendarUpdate = (args: {
+  eventId: string;
+  subject?: string;
+  start?: string;
+  end?: string;
+  timeZone?: string;
+  isTeams?: boolean;
+  location?: string;
+}) => invoke<string>("calendar_update", args);
+export const calendarDelete = (eventId: string) =>
+  invoke<string>("calendar_delete", { eventId });
+export const createTeamsMeeting = (subject: string, start: string, end: string) =>
+  invoke<string>("create_teams_meeting", { subject, start, end });
 export const webSearch = (query: string) =>
   invoke<string>("web_search", { query });
 

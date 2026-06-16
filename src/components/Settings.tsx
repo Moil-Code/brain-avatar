@@ -34,10 +34,11 @@ const SECTIONS: { title: string; hint?: string; fields: Field[] }[] = [
   },
   {
     title: "Local tools",
-    hint: "Absolute paths so the packaged app can find them.",
+    hint: "Absolute paths so the packaged app can find them. The M365 app id (optional) enables calendar create/edit/delete — see README.",
     fields: [
       { key: "gbrain_path", label: "gbrain path" },
       { key: "m365_path", label: "m365 path" },
+      { key: "m365_app_id", label: "M365 app id (calendar write)" },
     ],
   },
   {

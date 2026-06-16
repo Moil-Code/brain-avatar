@@ -37,6 +37,7 @@ export interface Settings {
   brave_api_key: string;
   gbrain_path: string;
   m365_path: string;
+  m365_app_id: string;
   sync_api_url: string;
   sync_token: string;
   tts_voice: string;

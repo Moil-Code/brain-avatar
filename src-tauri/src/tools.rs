@@ -30,6 +30,30 @@ async fn run_cli(program: &str, args: &[String]) -> Result<String, String> {
     }
 }
 
+/// Run m365, optionally using a custom Entra app id (for scopes the default app lacks).
+async fn run_m365(m365: &str, app_id: &str, args: &[String]) -> Result<String, String> {
+    let mut cmd = Command::new(m365);
+    cmd.args(args)
+        .env("PATH", augmented_path())
+        .kill_on_drop(true);
+    if !app_id.trim().is_empty() {
+        cmd.env("CLIMICROSOFT365_ENTRAAPPID", app_id);
+    }
+    let out = timeout(CLI_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| "m365 timed out".to_string())?
+        .map_err(|e| format!("failed to spawn m365: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    } else {
+        Err(format!(
+            "{}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // brain_search  ->  gbrain call query
 // ---------------------------------------------------------------------------
@@ -165,7 +189,10 @@ pub async fn calendar_events(
     days: Option<i64>,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let (m365, app_id) = {
+        let s = state.0.lock().unwrap();
+        (s.m365_path.clone(), s.m365_app_id.clone())
+    };
     let days = days.unwrap_or(1).clamp(1, 31);
 
     // Local day window -> UTC for Graph calendarView.
@@ -181,7 +208,7 @@ pub async fn calendar_events(
     let end_utc = end_local.with_timezone(&Utc);
 
     let url = format!(
-        "https://graph.microsoft.com/v1.0/me/calendarView?startDateTime={}&endDateTime={}&$select=subject,start,end,location,organizer,isAllDay&$orderby=start/dateTime&$top=50",
+        "https://graph.microsoft.com/v1.0/me/calendarView?startDateTime={}&endDateTime={}&$select=id,subject,start,end,location,organizer,isAllDay,isOnlineMeeting&$orderby=start/dateTime&$top=50",
         start_utc.format("%Y-%m-%dT%H:%M:%SZ"),
         end_utc.format("%Y-%m-%dT%H:%M:%SZ"),
     );
@@ -192,7 +219,7 @@ pub async fn calendar_events(
         "--output".to_string(),
         "json".to_string(),
     ];
-    let stdout = run_cli(&m365, &args).await?;
+    let stdout = run_m365(&m365, &app_id, &args).await?;
     Ok(format_calendar(&stdout, days))
 }
 
@@ -227,13 +254,243 @@ fn format_calendar(stdout: &str, days: i64) -> String {
             .and_then(|l| l.get("displayName"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        out.push_str(&format!("• {subj}\n  {start} → {end}"));
+        let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let teams = e.get("isOnlineMeeting").and_then(|v| v.as_bool()).unwrap_or(false);
+        out.push_str(&format!("• {subj}{}\n  {start} → {end}", if teams { " [Teams]" } else { "" }));
         if !loc.is_empty() {
             out.push_str(&format!("  @ {loc}"));
+        }
+        if !id.is_empty() {
+            out.push_str(&format!("\n  id: {id}"));
         }
         out.push('\n');
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// calendar write  ->  m365 request POST/PATCH/DELETE /me/events  (+ onlineMeetings)
+// ---------------------------------------------------------------------------
+
+fn permission_hint(err: &str) -> String {
+    if err.contains("403") || err.to_lowercase().contains("forbidden") || err.contains("ErrorAccessDenied") {
+        format!(
+            "macOS/Microsoft blocked this — the account is missing the Calendars.ReadWrite \
+             permission. Tell Andres he needs to grant it (register the Entra app per the README) \
+             before calendar events can be created or changed. ({err})"
+        )
+    } else {
+        format!("Calendar request failed: {err}")
+    }
+}
+
+async fn graph_write(
+    m365: &str,
+    app_id: &str,
+    method: &str,
+    url: &str,
+    body: Option<String>,
+) -> Result<String, String> {
+    let mut args = vec![
+        "request".to_string(),
+        "--url".to_string(),
+        url.to_string(),
+        "--method".to_string(),
+        method.to_string(),
+        "--output".to_string(),
+        "json".to_string(),
+    ];
+    if let Some(b) = body {
+        args.push("--body".to_string());
+        args.push(b);
+        args.push("--content-type".to_string());
+        args.push("application/json".to_string());
+    }
+    run_m365(m365, app_id, &args).await
+}
+
+/// Create a calendar event — optionally a Teams meeting, optionally with attendees
+/// (who are emailed an invite). Times are ISO-8601 local datetimes (no Z), e.g.
+/// "2026-06-17T10:00:00". Needs the Calendars.ReadWrite permission.
+#[tauri::command]
+pub async fn calendar_create(
+    subject: String,
+    start: String,
+    end: String,
+    time_zone: Option<String>,
+    attendees: Option<Vec<String>>,
+    is_teams: Option<bool>,
+    location: Option<String>,
+    body: Option<String>,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let (m365, app_id) = {
+        let s = state.0.lock().unwrap();
+        (s.m365_path.clone(), s.m365_app_id.clone())
+    };
+    let tz = time_zone.unwrap_or_else(|| "Central Standard Time".to_string());
+
+    let mut ev = json!({
+        "subject": subject,
+        "start": { "dateTime": start, "timeZone": tz },
+        "end": { "dateTime": end, "timeZone": tz },
+    });
+    if is_teams.unwrap_or(false) {
+        ev["isOnlineMeeting"] = json!(true);
+        ev["onlineMeetingProvider"] = json!("teamsForBusiness");
+    }
+    if let Some(loc) = location {
+        if !loc.is_empty() {
+            ev["location"] = json!({ "displayName": loc });
+        }
+    }
+    if let Some(b) = body {
+        if !b.is_empty() {
+            ev["body"] = json!({ "contentType": "HTML", "content": b });
+        }
+    }
+    if let Some(list) = attendees {
+        let arr: Vec<Value> = list
+            .into_iter()
+            .filter(|a| a.contains('@'))
+            .map(|a| json!({ "emailAddress": { "address": a }, "type": "required" }))
+            .collect();
+        if !arr.is_empty() {
+            ev["attendees"] = json!(arr);
+        }
+    }
+
+    match graph_write(
+        &m365,
+        &app_id,
+        "post",
+        "https://graph.microsoft.com/v1.0/me/events",
+        Some(ev.to_string()),
+    )
+    .await
+    {
+        Ok(stdout) => {
+            let v: Value = serde_json::from_str(&stdout).unwrap_or(Value::Null);
+            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+            let join = v
+                .get("onlineMeeting")
+                .and_then(|o| o.get("joinUrl"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            let mut msg = format!("Created \"{subject}\" for {start}.");
+            if !join.is_empty() {
+                msg.push_str(&format!(" Teams join link: {join}"));
+            }
+            if !id.is_empty() {
+                msg.push_str(&format!(" (event id: {id})"));
+            }
+            Ok(msg)
+        }
+        Err(e) => Ok(permission_hint(&e)),
+    }
+}
+
+/// Update an existing event (e.g. make it a Teams meeting, change time, add attendees).
+#[tauri::command]
+pub async fn calendar_update(
+    event_id: String,
+    subject: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+    time_zone: Option<String>,
+    is_teams: Option<bool>,
+    location: Option<String>,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let (m365, app_id) = {
+        let s = state.0.lock().unwrap();
+        (s.m365_path.clone(), s.m365_app_id.clone())
+    };
+    let tz = time_zone.unwrap_or_else(|| "Central Standard Time".to_string());
+    let mut patch = json!({});
+    if let Some(s) = subject {
+        patch["subject"] = json!(s);
+    }
+    if let Some(s) = start {
+        patch["start"] = json!({ "dateTime": s, "timeZone": tz });
+    }
+    if let Some(e) = end {
+        patch["end"] = json!({ "dateTime": e, "timeZone": tz });
+    }
+    if is_teams.unwrap_or(false) {
+        patch["isOnlineMeeting"] = json!(true);
+        patch["onlineMeetingProvider"] = json!("teamsForBusiness");
+    }
+    if let Some(loc) = location {
+        patch["location"] = json!({ "displayName": loc });
+    }
+    let url = format!("https://graph.microsoft.com/v1.0/me/events/{event_id}");
+    match graph_write(&m365, &app_id, "patch", &url, Some(patch.to_string())).await {
+        Ok(_) => Ok("Event updated.".into()),
+        Err(e) => Ok(permission_hint(&e)),
+    }
+}
+
+/// Delete a calendar event by id.
+#[tauri::command]
+pub async fn calendar_delete(
+    event_id: String,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let (m365, app_id) = {
+        let s = state.0.lock().unwrap();
+        (s.m365_path.clone(), s.m365_app_id.clone())
+    };
+    let url = format!("https://graph.microsoft.com/v1.0/me/events/{event_id}");
+    match graph_write(&m365, &app_id, "delete", &url, None).await {
+        Ok(_) => Ok("Event deleted.".into()),
+        Err(e) => Ok(permission_hint(&e)),
+    }
+}
+
+/// Create a standalone Teams meeting (no calendar event) and return its join link.
+/// Works with the OnlineMeetings.ReadWrite permission the account already has.
+#[tauri::command]
+pub async fn create_teams_meeting(
+    subject: String,
+    start: String,
+    end: String,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let (m365, app_id) = {
+        let s = state.0.lock().unwrap();
+        (s.m365_path.clone(), s.m365_app_id.clone())
+    };
+    let body = json!({
+        "subject": subject,
+        "startDateTime": start,
+        "endDateTime": end,
+    })
+    .to_string();
+    match graph_write(
+        &m365,
+        &app_id,
+        "post",
+        "https://graph.microsoft.com/v1.0/me/onlineMeetings",
+        Some(body),
+    )
+    .await
+    {
+        Ok(stdout) => {
+            let v: Value = serde_json::from_str(&stdout).unwrap_or(Value::Null);
+            let join = v
+                .get("joinUrl")
+                .or_else(|| v.get("joinWebUrl"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            if join.is_empty() {
+                Ok("Created a Teams meeting, but no join link was returned.".into())
+            } else {
+                Ok(format!("Teams meeting ready: {join}"))
+            }
+        }
+        Err(e) => Ok(permission_hint(&e)),
+    }
 }
 
 // ---------------------------------------------------------------------------
