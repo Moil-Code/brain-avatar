@@ -1,5 +1,14 @@
 import { resolveEndpoint } from "./llm";
-import { brainPage, brainSearch, calendarEvents, llmComplete, webSearch } from "./tauri";
+import {
+  brainPage,
+  brainSearch,
+  calendarEvents,
+  findFiles,
+  llmComplete,
+  openFileCmd,
+  readFile,
+  webSearch,
+} from "./tauri";
 import type { AvatarState, ChatMessage, Settings } from "./types";
 
 const MAX_ROUNDS = 5;
@@ -74,6 +83,56 @@ export const TOOL_DEFS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "find_files",
+      description:
+        "Find files on Andres' Mac by name or content using Spotlight. Use for 'find my X', " +
+        "'where is the Y file', 'do I have a doc about Z'. Returns matching file paths.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What to search for (name or content)" },
+          scope: { type: "string", description: "Optional folder to limit the search to, e.g. ~/Documents" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description:
+        "Read the text content of a file (txt, md, Word, RTF, HTML, PDF). Use when asked to " +
+        "read a file, read it aloud, or summarize/answer questions about a specific file. " +
+        "Pass the full path (from find_files). To read a file ALOUD, read it then reply with " +
+        "its content so it can be spoken.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Full path to the file" },
+          max_chars: { type: "integer", description: "Max characters to read (default 8000)" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "open_file",
+      description:
+        "Open a file or folder in its default macOS app (e.g. open a PDF, doc, image, or app). " +
+        "Use when Andres asks to open something.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string", description: "Full path to open" } },
+        required: ["path"],
+      },
+    },
+  },
 ];
 
 async function executeTool(name: string, argsJson: string): Promise<string> {
@@ -93,6 +152,12 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
         return await calendarEvents(args.days);
       case "web_search":
         return await webSearch(String(args.query ?? ""));
+      case "find_files":
+        return await findFiles(String(args.query ?? ""), args.scope ? String(args.scope) : undefined);
+      case "read_file":
+        return await readFile(String(args.path ?? ""), args.max_chars);
+      case "open_file":
+        return await openFileCmd(String(args.path ?? ""));
       default:
         return `Unknown tool: ${name}`;
     }

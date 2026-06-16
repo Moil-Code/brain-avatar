@@ -39,6 +39,7 @@ export interface Settings {
   m365_path: string;
   sync_api_url: string;
   sync_token: string;
+  tts_voice: string;
   system_prompt: string;
 }
 

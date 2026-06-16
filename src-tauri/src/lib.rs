@@ -1,8 +1,10 @@
 mod commands;
 mod config;
+mod files;
 mod history;
 mod llm;
 mod tools;
+mod tts;
 mod voice;
 
 use config::{Settings, SettingsState};
@@ -49,6 +51,7 @@ pub fn run() {
             // Load persisted settings into managed state.
             let settings: Settings = config::load(&handle);
             app.manage(SettingsState(Mutex::new(settings)));
+            app.manage(tts::TtsState(Mutex::new(None)));
 
             // --- Global summon hotkey: Cmd+Shift+Space ---
             let toggle_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Space);
@@ -131,6 +134,12 @@ pub fn run() {
             llm::llm_complete,
             history::save_message,
             history::fetch_messages,
+            tts::tts_speak,
+            tts::tts_stop,
+            tts::list_voices,
+            files::find_files,
+            files::read_file,
+            files::open_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

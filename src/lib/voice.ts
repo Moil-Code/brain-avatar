@@ -1,4 +1,4 @@
-import { transcribeAudio } from "./tauri";
+import { transcribeAudio, ttsSpeak, ttsStop } from "./tauri";
 
 function pickMime(): string {
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
@@ -69,54 +69,25 @@ export async function startRecording(): Promise<Recorder> {
   };
 }
 
-// --- Text to speech (webview SpeechSynthesis) ---
-
-let preferredVoice: SpeechSynthesisVoice | null = null;
-
-function ensureVoice(): SpeechSynthesisVoice | null {
-  if (preferredVoice) return preferredVoice;
-  const voices = window.speechSynthesis?.getVoices() ?? [];
-  if (!voices.length) return null;
-  const byName = (n: string) => voices.find((v) => v.name === n);
-  preferredVoice =
-    byName("Samantha") ||
-    voices.find((v) => v.lang === "en-US" && v.localService) ||
-    voices.find((v) => v.lang.startsWith("en")) ||
-    voices[0];
-  return preferredVoice;
-}
+// --- Text to speech (native macOS `say` via Rust — Enhanced/Premium voices) ---
 
 export function speak(
   text: string,
   opts: { onStart?: () => void; onEnd?: () => void } = {}
 ): void {
-  const synth = window.speechSynthesis;
-  if (!synth || !text.trim()) {
+  if (!text.trim()) {
     opts.onEnd?.();
     return;
   }
-  synth.cancel();
-  const utter = new SpeechSynthesisUtterance(text);
-  const v = ensureVoice();
-  if (v) utter.voice = v;
-  utter.rate = 1.03;
-  utter.pitch = 1.0;
-  utter.onstart = () => opts.onStart?.();
-  utter.onend = () => opts.onEnd?.();
-  utter.onerror = () => opts.onEnd?.();
-  synth.speak(utter);
+  opts.onStart?.();
+  ttsSpeak(text)
+    .catch((e) => console.error("tts_speak failed", e))
+    .finally(() => opts.onEnd?.());
 }
 
 export function stopSpeaking(): void {
-  window.speechSynthesis?.cancel();
+  ttsStop().catch(() => {});
 }
 
-/** Warm up the voice list (Chromium populates it asynchronously). */
-export function primeVoices(): void {
-  if (!window.speechSynthesis) return;
-  window.speechSynthesis.getVoices();
-  window.speechSynthesis.onvoiceschanged = () => {
-    preferredVoice = null;
-    ensureVoice();
-  };
-}
+/** No-op retained for API compatibility (native TTS needs no voice warm-up). */
+export function primeVoices(): void {}

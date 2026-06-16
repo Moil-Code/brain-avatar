@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { llmProbe, setSettings } from "../lib/tauri";
+import { useEffect, useState } from "react";
+import { listVoices, llmProbe, setSettings, ttsSpeak } from "../lib/tauri";
 import type { Settings as SettingsType } from "../lib/types";
 
 interface Props {
@@ -54,6 +54,11 @@ export default function Settings({ initial, onSaved, onClose }: Props) {
   const [draft, setDraft] = useState<SettingsType>(initial);
   const [saving, setSaving] = useState(false);
   const [probe, setProbe] = useState<string>("");
+  const [voices, setVoices] = useState<string[]>([]);
+
+  useEffect(() => {
+    listVoices().then(setVoices).catch(() => {});
+  }, []);
 
   const update = (key: keyof SettingsType, value: string) =>
     setDraft((d) => ({ ...d, [key]: value }));
@@ -120,6 +125,36 @@ export default function Settings({ initial, onSaved, onClose }: Props) {
             )}
           </div>
         ))}
+
+        <div className="settings-section">
+          <h3>Voice</h3>
+          <p className="settings-hint">
+            For a natural voice, download an Enhanced/Premium voice in System Settings → Accessibility →
+            Spoken Content → System Voice → Manage Voices, then pick it here.
+          </p>
+          <label className="field">
+            <span>Spoken voice</span>
+            <select
+              value={draft.tts_voice}
+              onChange={(e) => update("tts_voice", e.target.value)}
+            >
+              <option value="">System default</option>
+              {voices.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="ghost-btn"
+            onClick={() =>
+              ttsSpeak("Hi Andres, this is how I sound. Ready when you are.", draft.tts_voice).catch(() => {})
+            }
+          >
+            ▶ Preview voice
+          </button>
+        </div>
 
         <div className="settings-section">
           <h3>Personality</h3>

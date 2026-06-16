@@ -33,6 +33,9 @@ pub struct Settings {
     pub sync_api_url: String,
     pub sync_token: String,
 
+    // --- Voice output (macOS `say`; empty = system default voice) ---
+    pub tts_voice: String,
+
     // --- Behaviour ---
     pub system_prompt: String,
 }
@@ -57,6 +60,7 @@ impl Default for Settings {
             m365_path: "/opt/homebrew/bin/m365".into(),
             sync_api_url: String::new(),
             sync_token: String::new(),
+            tts_voice: String::new(),
             system_prompt: default_system_prompt(),
         }
     }
@@ -76,8 +80,12 @@ For a question about a specific named person, company, project, or concept (\"wh
 returns the current canonical page, not stale transcripts. Use brain_search for broader or \
 contextual questions about Moil, deals, or history. Use calendar for schedule questions and \
 web_search only for general/public information not in the brain. \
+You can also access Andres' Mac: find_files (Spotlight search), read_file (read a file's \
+text — when asked to read a file aloud, read it and reply with its content so it is spoken), \
+and open_file (open something in its default app). \
 Ground every factual claim in tool results; if the tools return nothing relevant, say so \
-plainly rather than guessing. Keep spoken answers short enough to listen to."
+plainly rather than guessing. Keep spoken answers short enough to listen to (unless asked to \
+read a file verbatim)."
         .into()
 }
 

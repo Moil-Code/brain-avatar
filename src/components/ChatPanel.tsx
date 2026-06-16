@@ -16,6 +16,9 @@ const TOOL_LABEL: Record<string, string> = {
   brain_search: "🧠 brain",
   calendar_events: "📅 calendar",
   web_search: "🌐 web",
+  find_files: "📁 files",
+  read_file: "📄 read",
+  open_file: "📂 open",
 };
 
 export default function ChatPanel({

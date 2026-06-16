@@ -45,6 +45,17 @@ export const webSearch = (query: string) =>
 // --- Voice ---
 export const transcribeAudio = (audioBase64: string, mime: string) =>
   invoke<string>("transcribe_audio", { audioBase64, mime });
+export const ttsSpeak = (text: string, voice?: string) =>
+  invoke<void>("tts_speak", { text, voice });
+export const ttsStop = () => invoke<void>("tts_stop");
+export const listVoices = () => invoke<string[]>("list_voices");
+
+// --- Computer access ---
+export const findFiles = (query: string, scope?: string) =>
+  invoke<string>("find_files", { query, scope });
+export const readFile = (path: string, maxChars?: number) =>
+  invoke<string>("read_file", { path, maxChars });
+export const openFileCmd = (path: string) => invoke<string>("open_file", { path });
 
 // --- History sync ---
 export const saveMessage = (conversationId: string, role: string, content: string) =>
