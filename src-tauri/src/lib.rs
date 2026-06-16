@@ -155,6 +155,7 @@ pub fn run() {
             tools::email_details,
             tools::create_reminder,
             tools::send_teams_message,
+            tools::daemon_probe,
             voice::transcribe_audio,
             llm::llm_probe,
             llm::llm_complete,

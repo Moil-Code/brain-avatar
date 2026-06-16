@@ -6,6 +6,10 @@ export const setSettings = (newSettings: Settings) =>
   invoke<void>("set_settings", { newSettings });
 export const featureFlags = () => invoke<FeatureFlags>("feature_flags");
 
+/** Test the remote brain-daemon (Settings → Remote brain): reachable + token ok. */
+export const daemonProbe = (url: string, token: string) =>
+  invoke<string>("daemon_probe", { url, token });
+
 /** Transient/cold-start network failures worth one automatic retry. The remote
  *  24GB Mac often misses the very first request after launch (mDNS resolve +
  *  wake), then is fine — so we retry once before surfacing an error. */

@@ -55,6 +55,74 @@ async fn run_m365(m365: &str, app_id: &str, args: &[String]) -> Result<String, S
 }
 
 // ---------------------------------------------------------------------------
+// Remote brain-daemon proxy (MacBook client -> Mac Mini, over Tailscale)
+// ---------------------------------------------------------------------------
+
+/// Proxy a brain-owner tool call to the remote brain-daemon. Uses native Rust
+/// HTTP (NOT webview fetch) so it bypasses WKWebView's App Transport Security,
+/// and keeps the daemon token in Rust — never in the webview. Returns the tool's
+/// text output (the daemon replies with the same string the local _core would).
+pub(crate) async fn proxy(settings: &Settings, route: &str, body: Value) -> Result<String, String> {
+    let base = settings.brain_daemon_url.trim_end_matches('/');
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}{route}"))
+        .header(
+            "Authorization",
+            format!("Bearer {}", settings.brain_daemon_token),
+        )
+        .json(&body)
+        .timeout(StdDuration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| format!("brain-daemon unreachable: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        Ok(text)
+    } else {
+        Err(format!(
+            "brain-daemon HTTP {status}: {}",
+            text.chars().take(300).collect::<String>()
+        ))
+    }
+}
+
+/// True when this app should proxy brain-owner tools to a remote daemon.
+pub(crate) fn use_daemon(settings: &Settings) -> bool {
+    !settings.brain_daemon_url.trim().is_empty()
+}
+
+/// Settings "Test connection": verify the daemon is reachable (/health) AND the
+/// token is accepted (/auth/check, which is behind the bearer gate).
+#[tauri::command]
+pub async fn daemon_probe(url: String, token: String) -> Result<String, String> {
+    let base = url.trim_end_matches('/');
+    let client = reqwest::Client::new();
+    let health = client
+        .get(format!("{base}/health"))
+        .timeout(StdDuration::from_secs(8))
+        .send()
+        .await
+        .map_err(|e| format!("unreachable: {e}"))?;
+    if !health.status().is_success() {
+        return Err(format!("health check failed: HTTP {}", health.status()));
+    }
+    let auth = client
+        .get(format!("{base}/auth/check"))
+        .header("Authorization", format!("Bearer {token}"))
+        .timeout(StdDuration::from_secs(8))
+        .send()
+        .await
+        .map_err(|e| format!("unreachable: {e}"))?;
+    match auth.status().as_u16() {
+        200 => Ok("Connected — daemon reachable and token accepted.".into()),
+        401 => Err("Reachable, but the token was rejected (401). Check it matches the daemon's BRAIN_DAEMON_TOKEN.".into()),
+        other => Err(format!("auth check returned HTTP {other}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // brain_search  ->  gbrain call query
 // ---------------------------------------------------------------------------
 
@@ -65,6 +133,9 @@ pub async fn brain_search(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/brain/search", json!({ "query": query, "limit": limit })).await;
+    }
     brain_search_core(&s, query, limit).await
 }
 
@@ -113,6 +184,9 @@ pub async fn brain_page(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/brain/page", json!({ "name": name })).await;
+    }
     brain_page_core(&s, name).await
 }
 
@@ -205,6 +279,9 @@ pub async fn calendar_events(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/calendar/events", json!({ "days": days })).await;
+    }
     calendar_events_core(&s, days).await
 }
 
@@ -345,6 +422,9 @@ pub async fn calendar_create(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/calendar/create", json!({ "subject": subject, "start": start, "end": end, "time_zone": time_zone, "attendees": attendees, "is_teams": is_teams, "location": location, "body": body })).await;
+    }
     calendar_create_core(&s, subject, start, end, time_zone, attendees, is_teams, location, body).await
 }
 
@@ -437,6 +517,9 @@ pub async fn calendar_update(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/calendar/update", json!({ "event_id": event_id, "subject": subject, "start": start, "end": end, "time_zone": time_zone, "is_teams": is_teams, "location": location })).await;
+    }
     calendar_update_core(&s, event_id, subject, start, end, time_zone, is_teams, location).await
 }
 
@@ -485,6 +568,9 @@ pub async fn calendar_delete(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/calendar/delete", json!({ "event_id": event_id })).await;
+    }
     calendar_delete_core(&s, event_id).await
 }
 
@@ -511,6 +597,9 @@ pub async fn create_teams_meeting(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/calendar/teams-meeting", json!({ "subject": subject, "start": start, "end": end })).await;
+    }
     create_teams_meeting_core(&s, subject, start, end).await
 }
 
@@ -585,6 +674,9 @@ pub async fn send_email(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/mail/send", json!({ "to": to, "subject": subject, "body": body, "cc": cc })).await;
+    }
     send_email_core(&s, to, subject, body, cc).await
 }
 
@@ -620,6 +712,9 @@ pub async fn create_reminder(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/reminder/create", json!({ "title": title, "due": due, "remind_at": remind_at })).await;
+    }
     create_reminder_core(&s, title, due, remind_at).await
 }
 
@@ -669,6 +764,9 @@ pub async fn send_teams_message(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/teams/message", json!({ "recipient_email": recipient_email, "message": message })).await;
+    }
     send_teams_message_core(&s, recipient_email, message).await
 }
 
@@ -727,6 +825,9 @@ pub async fn web_search(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/web/search", json!({ "query": query })).await;
+    }
     web_search_core(&s, query).await
 }
 
@@ -778,6 +879,9 @@ pub async fn read_emails(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/mail/read", json!({ "count": count })).await;
+    }
     read_emails_core(&s, count).await
 }
 
@@ -841,6 +945,9 @@ pub async fn email_details(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/mail/details", json!({ "query": query })).await;
+    }
     email_details_core(&s, query).await
 }
 

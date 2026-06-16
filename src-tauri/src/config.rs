@@ -35,6 +35,14 @@ pub struct Settings {
     pub sync_api_url: String,
     pub sync_token: String,
 
+    // --- Remote brain (MacBook client -> Mac Mini brain-daemon) ---
+    /// When set, the brain-owner tools (brain/calendar/mail/web/stt) are proxied
+    /// to this daemon over Tailscale instead of running locally. Empty = run
+    /// locally (the Mac Mini's own behavior). e.g. "http://100.91.28.27:8787".
+    pub brain_daemon_url: String,
+    /// Bearer token the daemon requires (must match its BRAIN_DAEMON_TOKEN).
+    pub brain_daemon_token: String,
+
     // --- Voice output (macOS `say`; empty = system default voice) ---
     pub tts_voice: String,
 
@@ -63,6 +71,8 @@ impl Default for Settings {
             m365_app_id: String::new(),
             sync_api_url: String::new(),
             sync_token: String::new(),
+            brain_daemon_url: String::new(),
+            brain_daemon_token: String::new(),
             tts_voice: String::new(),
             system_prompt: default_system_prompt(),
         }

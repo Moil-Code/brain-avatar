@@ -1,5 +1,7 @@
 use crate::config::{Settings, SettingsState};
+use crate::tools::{proxy, use_daemon};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use serde_json::json;
 use std::time::Duration;
 use tauri::State;
 
@@ -11,6 +13,9 @@ pub async fn transcribe_audio(
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
     let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/stt/transcribe", json!({ "audio_base64": audio_base64, "mime": mime })).await;
+    }
     transcribe_audio_core(&s, audio_base64, mime).await
 }
 

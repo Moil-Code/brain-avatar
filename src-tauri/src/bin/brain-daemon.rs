@@ -67,6 +67,7 @@ async fn main() {
         .route("/llm/complete", post(llm_complete))
         .route("/llm/probe", post(llm_probe))
         .route("/stt/transcribe", post(stt_transcribe))
+        .route("/auth/check", get(auth_check))
         .layer(middleware::from_fn_with_state(state.clone(), auth));
 
     let app = Router::new()
@@ -109,6 +110,11 @@ async fn auth(
     } else {
         Err(StatusCode::UNAUTHORIZED)
     }
+}
+
+/// Behind the bearer gate — reaching it at all means the token was accepted.
+async fn auth_check() -> &'static str {
+    "ok"
 }
 
 async fn health() -> Json<Value> {
