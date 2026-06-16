@@ -81,18 +81,29 @@ body,
   color: var(--fg);
 }
 
-/* ---------- Peek grip (top-edge dock) ---------- */
-.peek-grip {
-  position: absolute;
-  top: 3px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 46px;
-  height: 4px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.5);
-  z-index: 20;
-  pointer-events: none;
+/* ---------- Peekaboo bar (collapsed state) ---------- */
+.peek-bar {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: pointer;
+  border-radius: 12px;
+}
+.peek-bar-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 32% 28%, #a7b6ff 0%, var(--accent) 60%, #4b2fb8 100%);
+  box-shadow: 0 0 8px rgba(124, 123, 255, 0.6);
+  animation: breathe 3.6s ease-in-out infinite;
+}
+.peek-bar-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.3px;
 }
 
 /* ---------- Update banner ---------- */

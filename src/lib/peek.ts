@@ -1,76 +1,58 @@
-import { getCurrentWindow, currentMonitor, PhysicalPosition } from "@tauri-apps/api/window";
-import { invoke } from "@tauri-apps/api/core";
+import {
+  getCurrentWindow,
+  currentMonitor,
+  PhysicalPosition,
+  PhysicalSize,
+} from "@tauri-apps/api/window";
 
-const STRIP_PX = 8;
 const MENU_BAR_PX = 26;
+const BAR_W = 200;
+const BAR_H = 34;
+const FULL_W = 420;
+const FULL_H = 640;
 
-let pollTimer: number | null = null;
-let savedPos: { x: number; y: number } | null = null;
-let revealed = false;
+let saved: { x: number; y: number; w: number; h: number } | null = null;
 
-async function geo() {
-  const win = getCurrentWindow();
+async function topCenter(widthLogical: number) {
   const mon = await currentMonitor();
-  const size = await win.outerSize();
   const scale = mon?.scaleFactor ?? 1;
+  const originX = mon?.position.x ?? 0;
+  const originY = mon?.position.y ?? 0;
   const screenW = mon?.size.width ?? Math.round(1440 * scale);
-  const centerX = Math.round((screenW - size.width) / 2);
-  const menu = Math.round(MENU_BAR_PX * scale);
-  const strip = Math.round(STRIP_PX * scale);
-  return { win, size, scale, centerX, menu, strip };
+  const x = originX + Math.round((screenW - widthLogical * scale) / 2);
+  const y = originY + Math.round(MENU_BAR_PX * scale);
+  return { x, y, scale };
 }
 
-async function place(reveal: boolean) {
-  const g = await geo();
-  const y = reveal ? g.menu : g.menu - (g.size.height - g.strip);
-  await g.win.setPosition(new PhysicalPosition(g.centerX, y));
-  revealed = reveal;
-}
-
-function startPoll() {
-  stopPoll();
-  pollTimer = window.setInterval(async () => {
-    try {
-      const [cx, cy] = await invoke<[number, number]>("cursor_position");
-      const g = await geo();
-      const xIn = cx >= g.centerX - 12 && cx <= g.centerX + g.size.width + 12;
-      const overStrip = xIn && cy <= g.menu + g.strip + Math.round(8 * g.scale);
-      const overWindow = xIn && cy >= g.menu - 6 && cy <= g.menu + g.size.height + 6;
-      if (!revealed && overStrip) {
-        await place(true);
-      } else if (revealed && !overWindow) {
-        await place(false);
-      }
-    } catch {
-      /* ignore transient errors */
-    }
-  }, 150);
-}
-
-function stopPoll() {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-}
-
-/** Dock to the top edge (strip visible) and start tracking the cursor to reveal/hide. */
+/** Shrink the window into a small top-center bar and remember where it was. */
 export async function enterPeek() {
-  const g = await geo();
-  const pos = await g.win.outerPosition();
-  savedPos = { x: pos.x, y: pos.y };
-  revealed = false;
-  await place(false);
-  startPoll();
+  const win = getCurrentWindow();
+  const pos = await win.outerPosition();
+  const size = await win.outerSize();
+  saved = { x: pos.x, y: pos.y, w: size.width, h: size.height };
+  await collapsePeek();
 }
 
-/** Leave peek mode and restore the previous position. */
-export async function exitPeek() {
-  stopPoll();
+export async function collapsePeek() {
   const win = getCurrentWindow();
-  if (savedPos) {
-    await win.setPosition(new PhysicalPosition(savedPos.x, savedPos.y));
-    savedPos = null;
+  const { x, y, scale } = await topCenter(BAR_W);
+  await win.setSize(new PhysicalSize(Math.round(BAR_W * scale), Math.round(BAR_H * scale)));
+  await win.setPosition(new PhysicalPosition(x, y));
+}
+
+export async function expandPeek() {
+  const win = getCurrentWindow();
+  const { x, y, scale } = await topCenter(FULL_W);
+  await win.setSize(new PhysicalSize(Math.round(FULL_W * scale), Math.round(FULL_H * scale)));
+  await win.setPosition(new PhysicalPosition(x, y));
+}
+
+/** Restore the window to its pre-peek size and position. */
+export async function exitPeek() {
+  const win = getCurrentWindow();
+  if (saved) {
+    await win.setSize(new PhysicalSize(saved.w, saved.h));
+    await win.setPosition(new PhysicalPosition(saved.x, saved.y));
+    saved = null;
   }
-  revealed = false;
 }

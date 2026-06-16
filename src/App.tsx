@@ -8,7 +8,7 @@ import { runAgent } from "./lib/agent";
 import { featureFlags, fetchMessages, getSettings, saveMessage } from "./lib/tauri";
 import { primeVoices, speak, startRecording, stopSpeaking, type Recorder } from "./lib/voice";
 import { checkForUpdate, installUpdate, type Update } from "./lib/updater";
-import { enterPeek, exitPeek } from "./lib/peek";
+import { collapsePeek, enterPeek, exitPeek, expandPeek } from "./lib/peek";
 import type { AvatarState, ChatMessage, FeatureFlags, Settings, UiMessage } from "./lib/types";
 
 function uid() {
@@ -40,6 +40,8 @@ export default function App() {
   const [update, setUpdate] = useState<Update | null>(null);
   const [updating, setUpdating] = useState(false);
   const [peeked, setPeeked] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const collapseTimer = useRef<number | null>(null);
 
   const modelHistory = useRef<ChatMessage[]>([]);
   const recorderRef = useRef<Recorder | null>(null);
@@ -187,13 +189,34 @@ export default function App() {
     setAvatarState("idle");
   }, []);
 
-  // --- top-edge peek mode (cursor-poll driven; see lib/peek.ts) ---
+  // --- peekaboo: shrink to a top bar, expand on hover, collapse on leave ---
   const startPeek = useCallback(() => {
-    enterPeek().then(() => setPeeked(true));
+    enterPeek().then(() => {
+      setPeeked(true);
+      setExpanded(false);
+    });
   }, []);
   const stopPeek = useCallback(() => {
-    exitPeek().then(() => setPeeked(false));
+    if (collapseTimer.current) clearTimeout(collapseTimer.current);
+    exitPeek().then(() => {
+      setPeeked(false);
+      setExpanded(false);
+    });
   }, []);
+  const onPeekEnter = useCallback(() => {
+    if (collapseTimer.current) {
+      clearTimeout(collapseTimer.current);
+      collapseTimer.current = null;
+    }
+    if (peeked && !expanded) expandPeek().then(() => setExpanded(true));
+  }, [peeked, expanded]);
+  const onPeekLeave = useCallback(() => {
+    if (peeked && expanded) {
+      collapseTimer.current = window.setTimeout(() => {
+        collapsePeek().then(() => setExpanded(false));
+      }, 300);
+    }
+  }, [peeked, expanded]);
 
   if (!settings) {
     return (
@@ -203,9 +226,24 @@ export default function App() {
     );
   }
 
+  // Peekaboo: collapsed to a small top bar; hover to expand.
+  if (peeked && !expanded) {
+    return (
+      <div
+        className="app glass peek-bar"
+        data-tauri-drag-region
+        onMouseEnter={onPeekEnter}
+        onClick={onPeekEnter}
+        title="Click or hover to open"
+      >
+        <span className="peek-bar-dot" />
+        <span className="peek-bar-label">Brain</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="app glass">
-      {peeked && <div className="peek-grip" />}
+    <div className="app glass" onMouseLeave={onPeekLeave}>
       <TitleBar
         onOpenSettings={() => setShowSettings(true)}
         onMinimize={startPeek}
