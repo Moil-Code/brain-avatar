@@ -8,42 +8,55 @@ export interface Route {
   routed: boolean; // false = single model, no real routing happened
 }
 
+const lc = (m: string) => m.toLowerCase();
+
+/** The do-everything model: the 26B-A4B MoE is large-but-fast (≈4B active params)
+ *  with a big context window, so it's the default for almost everything — tool use
+ *  AND deep synthesis. Falls back to any large dense model, then qwen, then first. */
+function pickPrimary(models: string[]): string {
+  return (
+    models.find((m) => /a4b|a3b|moe/.test(lc(m))) ??
+    models.find((m) => /2[4-9]b|3[0-9]b/.test(lc(m))) ??
+    models.find((m) => /qwen/.test(lc(m))) ??
+    models.find((m) => !/embed/.test(lc(m))) ??
+    models[0] ??
+    ""
+  );
+}
+/** A vision-capable model for image/screenshot requests (e.g. Gemma 12B). */
+function pickVision(models: string[]): string {
+  return (
+    models.find((m) => /vl|vision/.test(lc(m))) ??
+    models.find((m) => /gemma/.test(lc(m)) && /1[0-9]b/.test(lc(m))) ??
+    models.find((m) => /1[0-9]b/.test(lc(m))) ??
+    pickPrimary(models)
+  );
+}
+
 /** Describe each loaded model's strengths so the router can choose well. */
 function modelStrengths(models: string[]): string {
   return models
     .map((m) => {
-      const l = m.toLowerCase();
-      if (l.includes("qwen"))
-        return `- ${m}: FAST. Best for tool use + multi-step actions (email, calendar, files, web, apps), structured/JSON, and quick factual answers.`;
-      if (l.includes("gemma") && /(2[4-9]b|3[0-9]b)/.test(l))
-        return `- ${m}: DEEP. Best for high-quality summarization, writing, nuanced analysis & synthesis, careful reasoning. Slower.`;
-      if ((l.includes("gemma") && /1[0-9]b/.test(l)) || l.includes("vl") || l.includes("vision"))
-        return `- ${m}: VISION + balanced. Use when the request involves an image/screenshot, or for solid general reasoning.`;
+      const l = lc(m);
+      if (/a4b|a3b|moe/.test(l))
+        return `- ${m}: PRIMARY (MoE — large but fast, big context). Best all-rounder: tool use + multi-step actions (email, calendar, files, web, apps) AND deep summarization, writing, analysis, reasoning. Prefer this for almost everything.`;
+      if ((/gemma/.test(l) && /1[0-9]b/.test(l)) || /vl|vision/.test(l))
+        return `- ${m}: VISION. Use ONLY when the request involves an image/screenshot/photo, or as a balanced general fallback.`;
+      if (/2[4-9]b|3[0-9]b/.test(l))
+        return `- ${m}: DEEP. High-quality summarization, writing, nuanced analysis. Slower.`;
+      if (/qwen/.test(l))
+        return `- ${m}: FAST. Quick tool/action tasks and short answers.`;
       return `- ${m}: general-purpose.`;
     })
     .join("\n");
 }
 
-function pickFast(models: string[]): string {
-  return models.find((m) => m.toLowerCase().includes("qwen")) ?? models[0] ?? "";
-}
-function pickDeep(models: string[]): string {
-  return models.find((m) => /gemma|2[4-9]b|3[0-9]b/.test(m.toLowerCase())) ?? pickFast(models);
-}
-
-/** Heuristic fallback if the LLM router fails. */
-function heuristicRoute(userText: string, models: string[]): Route {
-  const deep =
-    userText.length > 240 ||
-    /\b(summar[iy]|analy[sz]e|draft|write (me )?an?|essay|report|compare|deep|in.?depth|strateg|nuanc)\b/i.test(
-      userText
-    );
-  return {
-    modelId: deep ? pickDeep(models) : pickFast(models),
-    taskType: deep ? "deep_analysis" : "general",
-    enhanced: userText,
-    routed: true,
-  };
+/** Heuristic fallback if the LLM router fails. With the 26B-A4B primary doing
+ *  both fast and deep work, routing is simple: vision for images, else primary. */
+function heuristicRoute(userText: string, models: string[], hasImage = false): Route {
+  if (hasImage)
+    return { modelId: pickVision(models), taskType: "vision", enhanced: userText, routed: true };
+  return { modelId: pickPrimary(models), taskType: "general", enhanced: userText, routed: true };
 }
 
 function extractJson(text: string): any | null {
@@ -79,16 +92,20 @@ export async function routeTask(opts: {
     };
   }
 
-  const routerModel = pickFast(models); // run the cheap classification on the fast model
+  // An image hard-forces the vision model; no need to spend a classification call.
+  if (opts.hasImage) {
+    return { modelId: pickVision(models), taskType: "vision", enhanced: userText, routed: true };
+  }
+
+  const routerModel = pickPrimary(models); // classify on the fast primary (A4B)
   const sys = `You are the routing layer for Andres' (CEO of Moil) personal AI assistant.
 Decide how to best handle his request and reply with ONLY one JSON object:
 {"task_type":"<one of: email, calendar, research_web, deep_analysis, quick_answer, vision, file, app_control, writing, coding, brain_lookup, general>","model_id":"<an id copied EXACTLY from the list below>","enhanced_instruction":"<a precise, high-quality instruction for the chosen model>"}
 
 Available models (pick the best fit, id verbatim):
 ${modelStrengths(models)}
-${opts.hasImage ? "The request includes an IMAGE — you MUST pick a vision model." : ""}
 
-Guidance: use the FAST model for tool/action tasks and quick answers (reading email, calendar, files, web lookups, scheduling); use the DEEP model for summarizing, writing, or nuanced analysis; use VISION only for images.
+Guidance: PREFER the PRIMARY model for almost everything — it handles both tool/action tasks (email, calendar, files, web, apps, scheduling) and deep work (summarizing, writing, analysis) quickly. Only pick VISION when the request involves an image/screenshot.
 For enhanced_instruction: rewrite Andres' request into the clearest possible instruction — name the exact tools to call (read_emails, brain_page, calendar_events, fetch_url, etc.), the steps, and the ideal output format. Keep it tight.`;
 
   try {
@@ -105,7 +122,7 @@ For enhanced_instruction: rewrite Andres' request into the clearest possible ins
     );
     const j = extractJson(res.content);
     if (!j) return heuristicRoute(userText, models);
-    const modelId = models.includes(j.model_id) ? j.model_id : pickFast(models);
+    const modelId = models.includes(j.model_id) ? j.model_id : pickPrimary(models);
     return {
       modelId,
       taskType: String(j.task_type ?? "general"),

@@ -84,6 +84,22 @@ export async function resolveBaseEndpoint(settings: Settings): Promise<BaseEndpo
   );
 }
 
+/** List the models loaded on the reachable endpoint (remote first), or [] if
+ *  none reachable. Used to populate the model-picker menu. Never throws. */
+export async function probeModels(settings: Settings): Promise<string[]> {
+  if (settings.lm_studio_remote_url) {
+    const p = await llmProbe(settings.lm_studio_remote_url, settings.lm_studio_remote_token).catch(
+      () => null
+    );
+    if (p?.ok && p.models.length) return p.models;
+  }
+  if (settings.lm_studio_local_url) {
+    const p = await llmProbe(settings.lm_studio_local_url).catch(() => null);
+    if (p?.ok) return p.models;
+  }
+  return [];
+}
+
 export interface StreamResult {
   content: string;
   toolCalls: ToolCall[];

@@ -1,14 +1,43 @@
 import { useEffect, useRef, useState } from "react";
-import type { UiMessage } from "../lib/types";
+import { extractDocText } from "../lib/tauri";
+import type { Attachment, UiMessage } from "../lib/types";
 
 interface Props {
   messages: UiMessage[];
   busy: boolean;
   recording: boolean;
   voiceEnabled: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments: Attachment[]) => void;
   onToggleMic: () => void;
   onStop: () => void;
+}
+
+function aid() {
+  return Math.random().toString(36).slice(2);
+}
+
+/** Read a picked file into an Attachment: images → data URL, docs → extracted text. */
+function fileToAttachment(file: File): Promise<Attachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    if (file.type.startsWith("image/")) {
+      reader.onload = () =>
+        resolve({ id: aid(), name: file.name, kind: "image", dataUrl: String(reader.result) });
+      reader.readAsDataURL(file);
+    } else {
+      reader.onload = async () => {
+        const b64 = String(reader.result).split(",")[1] ?? "";
+        try {
+          const text = await extractDocText(file.name, b64);
+          resolve({ id: aid(), name: file.name, kind: "doc", text });
+        } catch (e) {
+          reject(e);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  });
 }
 
 const TOOL_LABEL: Record<string, string> = {
@@ -28,6 +57,7 @@ const TOOL_LABEL: Record<string, string> = {
   list_apps: "🚀 apps",
   run_applescript: "⚙️ control",
   read_emails: "📨 inbox",
+  email_details: "✉️ email",
   send_email: "✉️ email",
   create_reminder: "⏰ reminder",
   send_teams_message: "💬 teams",
@@ -43,17 +73,37 @@ export default function ChatPanel({
   onStop,
 }: Props) {
   const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attaching, setAttaching] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
+  const onPickFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = ""; // allow re-picking the same file
+    if (!files.length) return;
+    setAttaching(true);
+    try {
+      const added = await Promise.all(files.map(fileToAttachment));
+      setAttachments((a) => [...a, ...added]);
+    } catch (err) {
+      console.error("attach failed", err);
+    } finally {
+      setAttaching(false);
+    }
+  };
+
   const submit = () => {
     const t = text.trim();
-    if (!t || busy) return;
+    if ((!t && attachments.length === 0) || busy || attaching) return;
     setText("");
-    onSend(t);
+    const atts = attachments;
+    setAttachments([]);
+    onSend(t, atts);
   };
 
   return (
@@ -68,24 +118,76 @@ export default function ChatPanel({
         )}
         {messages.map((m) => (
           <div key={m.id} className={`msg msg-${m.role}`}>
-            {(m.routeLabel || (m.tools && m.tools.length > 0)) && (
-              <div className="msg-tools">
-                {m.routeLabel && <span className="route-badge">🧭 {m.routeLabel}</span>}
-                {m.tools?.map((t) => (
-                  <span key={t} className="tool-badge">
-                    {TOOL_LABEL[t] ?? t}
-                  </span>
+            {m.pending && m.steps && m.steps.length > 0 ? (
+              <div className="steps">
+                {m.steps.map((s) => (
+                  <div key={s.id} className={`step ${s.done ? "done" : "active"}`}>
+                    <span className="step-ic">
+                      {s.done ? "✓" : <span className="step-spin" />}
+                    </span>
+                    <span className="step-label">{s.label}</span>
+                  </div>
                 ))}
               </div>
+            ) : (
+              (m.routeLabel || (m.tools && m.tools.length > 0)) && (
+                <div className="msg-tools">
+                  {m.routeLabel && <span className="route-badge">🧭 {m.routeLabel}</span>}
+                  {m.tools?.map((t) => (
+                    <span key={t} className="tool-badge">
+                      {TOOL_LABEL[t] ?? t}
+                    </span>
+                  ))}
+                </div>
+              )
             )}
             <div className="msg-body">
-              {m.content || (m.pending ? <span className="typing">▋</span> : "")}
+              {m.content ||
+                (m.pending && !(m.steps && m.steps.length) ? (
+                  <span className="typing">▋</span>
+                ) : (
+                  ""
+                ))}
             </div>
           </div>
         ))}
       </div>
 
+      {(attachments.length > 0 || attaching) && (
+        <div className="attach-chips">
+          {attachments.map((a) => (
+            <span key={a.id} className={`attach-chip ${a.kind}`} title={a.name}>
+              {a.kind === "image" ? "🖼" : "📄"} {a.name}
+              <button
+                className="attach-x"
+                title="Remove"
+                onClick={() => setAttachments((list) => list.filter((x) => x.id !== a.id))}
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+          {attaching && <span className="attach-chip loading">Reading…</span>}
+        </div>
+      )}
+
       <div className="composer">
+        <input
+          ref={fileRef}
+          type="file"
+          multiple
+          accept="image/*,.pdf,.txt,.md,.markdown,.csv,.json,.doc,.docx,.rtf,.html,.htm,.yaml,.yml"
+          style={{ display: "none" }}
+          onChange={onPickFiles}
+        />
+        <button
+          className="icon-btn attach"
+          title="Attach images or documents"
+          onClick={() => fileRef.current?.click()}
+          disabled={recording}
+        >
+          📎
+        </button>
         <textarea
           className="composer-input"
           placeholder={recording ? "Listening… tap mic to stop" : "Message Brain…"}
@@ -114,7 +216,12 @@ export default function ChatPanel({
             ✕
           </button>
         ) : (
-          <button className="icon-btn send" title="Send" onClick={submit} disabled={!text.trim()}>
+          <button
+            className="icon-btn send"
+            title="Send"
+            onClick={submit}
+            disabled={(!text.trim() && attachments.length === 0) || attaching}
+          >
             ➤
           </button>
         )}

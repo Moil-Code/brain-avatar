@@ -14,6 +14,13 @@ export interface ChatMessage {
   name?: string;
 }
 
+/** A live progress step shown while an answer is being produced. */
+export interface UiStep {
+  id: string;
+  label: string;
+  done: boolean;
+}
+
 /** A turn shown in the UI (system/tool messages are hidden). */
 export interface UiMessage {
   id: string;
@@ -24,9 +31,23 @@ export interface UiMessage {
   tools?: string[];
   /** Router decision label, e.g. "email → qwen3-8b". */
   routeLabel?: string;
+  /** Live step feed shown while pending (routing, each tool, composing). */
+  steps?: UiStep[];
 }
 
 export type AvatarState = "idle" | "listening" | "thinking" | "speaking";
+
+/** A file the user attached to a turn. Images go to a vision model as image_url
+ *  content; docs are extracted to text and appended to the prompt. */
+export interface Attachment {
+  id: string;
+  name: string;
+  kind: "image" | "doc";
+  /** data: URL for images. */
+  dataUrl?: string;
+  /** extracted text for docs. */
+  text?: string;
+}
 
 export interface Settings {
   lm_studio_local_url: string;

@@ -74,9 +74,63 @@ pub async fn llm_complete(
     }
     let v: Value = resp.json().await.map_err(|e| e.to_string())?;
     let msg = &v["choices"][0]["message"];
-    let content = msg["content"].as_str().unwrap_or("").to_string();
+    let raw = msg["content"].as_str().unwrap_or("");
+    // Reasoning models (gemma-4-26b-a4b, etc.) can leak harmony/think markup into
+    // `content`. Strip it so the answer shown/spoken — and any JSON the router
+    // parses — is clean. Only touch content that actually carries markup.
+    let content = if raw.contains("<|") || raw.contains("<think>") {
+        strip_reasoning(raw)
+    } else {
+        raw.to_string()
+    };
     let tool_calls = msg.get("tool_calls").cloned().unwrap_or(Value::Null);
     Ok(LlmResult { content, tool_calls })
+}
+
+/// Remove reasoning-model markup: harmony channels (`<|channel|>…<|message|>`),
+/// `<think>…</think>` blocks, and stray control tokens — keeping the final answer.
+fn strip_reasoning(s: &str) -> String {
+    let mut out = s.to_string();
+
+    // Harmony: if there's a final channel, keep only its message text.
+    if let Some(fi) = out.rfind("<|channel|>final") {
+        let tail = out[fi..].to_string();
+        if let Some(mi) = tail.find("<|message|>") {
+            out = tail[mi + "<|message|>".len()..].to_string();
+        } else if let Some(gi) = tail.find("|>") {
+            out = tail[gi + 2..].to_string();
+        }
+    }
+
+    // Drop <think>…</think> blocks.
+    while let (Some(a), Some(b)) = (out.find("<think>"), out.find("</think>")) {
+        if b > a {
+            out.replace_range(a..b + "</think>".len(), "");
+        } else {
+            break;
+        }
+    }
+
+    // Strip residual <|…|> control-token spans.
+    let mut cleaned = String::with_capacity(out.len());
+    let mut rest = out.as_str();
+    while let Some(open) = rest.find("<|") {
+        cleaned.push_str(&rest[..open]);
+        match rest[open..].find("|>") {
+            Some(close) => rest = &rest[open + close + 2..],
+            None => {
+                rest = &rest[open..];
+                break;
+            }
+        }
+    }
+    cleaned.push_str(rest);
+
+    // Leftover bare channel-name markers (e.g. "thought|>") if "<|" was absent.
+    for tok in ["thought|>", "analysis|>", "final|>", "commentary|>"] {
+        cleaned = cleaned.replace(tok, "");
+    }
+    cleaned.trim().to_string()
 }
 
 #[derive(Serialize)]
@@ -88,7 +142,9 @@ pub struct ProbeResult {
 
 async fn authed_get(url: &str, token: &Option<String>) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
-    let mut req = client.get(url).timeout(Duration::from_secs(3));
+    // 6s, not 3s: a cold mDNS resolve of Mac-mini.local on the very first probe
+    // after launch can take a few seconds, which is what made the first request fail.
+    let mut req = client.get(url).timeout(Duration::from_secs(6));
     if let Some(t) = token {
         if !t.trim().is_empty() {
             req = req.header("Authorization", format!("Bearer {t}"));

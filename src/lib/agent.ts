@@ -9,6 +9,7 @@ import {
   calendarUpdate,
   createReminder,
   createTeamsMeeting,
+  emailDetails,
   fetchUrl,
   findFiles,
   listApps,
@@ -22,9 +23,67 @@ import {
   sendTeamsMessage,
   webSearch,
 } from "./tauri";
-import type { AvatarState, ChatMessage, Settings } from "./types";
+import type { Attachment, AvatarState, ChatMessage, Settings, UiStep } from "./types";
 
 const MAX_ROUNDS = 5;
+
+function basename(p?: string): string {
+  if (!p) return "";
+  return p.split("/").filter(Boolean).pop() ?? p;
+}
+function shortUrl(u?: string): string {
+  if (!u) return "the link";
+  const s = u.replace(/^https?:\/\//, "").replace(/^www\./, "");
+  return s.length > 42 ? s.slice(0, 42) + "…" : s;
+}
+
+/** A human, present-tense description of what a tool call is doing — for the step feed. */
+function toolStepLabel(name: string, a: any): string {
+  switch (name) {
+    case "read_emails":
+      return "Reading your inbox";
+    case "email_details":
+      return a.query ? `Opening the “${a.query}” email` : "Opening the email";
+    case "brain_page":
+      return `Looking up ${a.name ?? a.query ?? "your brain"}`;
+    case "brain_search":
+      return a.query ? `Searching your brain for “${a.query}”` : "Searching your brain";
+    case "calendar_events":
+      return "Checking your calendar";
+    case "calendar_create":
+      return "Creating the event";
+    case "calendar_update":
+      return "Updating the event";
+    case "calendar_delete":
+      return "Deleting the event";
+    case "create_teams_meeting":
+      return "Setting up the Teams meeting";
+    case "web_search":
+      return a.query ? `Searching the web for “${a.query}”` : "Searching the web";
+    case "fetch_url":
+      return `Opening ${shortUrl(a.url)}`;
+    case "find_files":
+      return a.query ? `Finding files: “${a.query}”` : "Searching your files";
+    case "read_file":
+      return `Reading ${basename(a.path)}`;
+    case "open_file":
+      return `Opening ${basename(a.path)}`;
+    case "open_app":
+      return `Opening ${a.name ?? "the app"}`;
+    case "list_apps":
+      return "Listing your apps";
+    case "run_applescript":
+      return "Controlling the app";
+    case "send_email":
+      return "Preparing the email";
+    case "create_reminder":
+      return "Adding the reminder";
+    case "send_teams_message":
+      return "Preparing the Teams message";
+    default:
+      return name;
+  }
+}
 
 export const TOOL_DEFS = [
   {
@@ -293,6 +352,28 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "email_details",
+      description:
+        "Open ONE specific email and read its FULL body and the links inside it. Use this " +
+        "(not read_emails) whenever asked about the contents of a particular email, or to find/" +
+        "open a link in an email (e.g. 'open the link in the BudaEDC email'). Pass a sender name, " +
+        "subject, or keyword; the most recent matching email is returned with its links listed. " +
+        "Then use fetch_url on a returned link to read where it goes.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Sender, subject, or keyword identifying the email (e.g. 'BudaEDC')",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "send_email",
       description:
         "Send an email from Andres' Microsoft 365 account. CONFIRM recipients, subject, and body " +
@@ -408,6 +489,8 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
         return await runAppleScript(String(args.script ?? ""));
       case "read_emails":
         return await readEmails(args.count);
+      case "email_details":
+        return await emailDetails(String(args.query ?? ""));
       case "send_email":
         return await sendEmail(
           Array.isArray(args.to) ? args.to : [String(args.to ?? "")],
@@ -434,10 +517,16 @@ export interface RunAgentOpts {
   userText: string;
   history: ChatMessage[];
   settings: Settings;
+  /** Files the user attached to this turn (images → vision, docs → text). */
+  attachments?: Attachment[];
+  /** Force a specific model and skip routing (from the model-picker menu). */
+  modelOverride?: string | null;
   onState?: (s: AvatarState) => void;
   onToken?: (delta: string) => void;
   onToolStart?: (name: string) => void;
   onRoute?: (route: Route) => void;
+  /** Live progress steps (routing, each tool, composing) for perceived speed. */
+  onStep?: (step: UiStep) => void;
   signal?: AbortSignal;
 }
 
@@ -449,15 +538,39 @@ export interface RunAgentResult {
 
 /** Run the full tool-calling loop and return the final grounded answer. */
 export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
-  const { userText, history, settings, onState, onToken, onToolStart, onRoute, signal } = opts;
+  const { userText, history, settings, onState, onToken, onToolStart, onRoute, onStep, signal } =
+    opts;
   onState?.("thinking");
+
+  const attachments = opts.attachments ?? [];
+  const images = attachments.filter((a) => a.kind === "image" && a.dataUrl);
+  const docs = attachments.filter((a) => a.kind === "doc" && a.text);
+  const hasImage = images.length > 0;
 
   // Routing layer: find the reachable endpoint + its loaded models, classify the
   // task, pick the best model, and rewrite the request into a sharper instruction.
+  // A model picked from the menu (modelOverride) bypasses routing entirely.
   const base = await resolveBaseEndpoint(settings);
-  const route = await routeTask({ userText, endpoint: base });
+  const route: Route = opts.modelOverride
+    ? { modelId: opts.modelOverride, taskType: "manual", enhanced: userText, routed: true }
+    : await routeTask({ userText, endpoint: base, hasImage });
   onRoute?.(route);
+  const shortModel = route.modelId.split("/").pop() ?? route.modelId;
+  onStep?.({
+    id: "route",
+    label: route.routed ? `Routing to ${shortModel} · ${route.taskType}` : `Using ${shortModel}`,
+    done: true,
+  });
   const endpoint = { baseUrl: base.baseUrl, token: base.token, model: route.modelId };
+
+  // Attached docs are extracted to text and appended; images become image_url parts.
+  const docText = docs.map((d) => `\n\n[Attached file: ${d.name}]\n${d.text}`).join("");
+  const userContent: unknown = hasImage
+    ? [
+        { type: "text", text: userText + docText },
+        ...images.map((a) => ({ type: "image_url", image_url: { url: a.dataUrl } })),
+      ]
+    : userText + docText;
 
   const planMsg: ChatMessage[] =
     route.enhanced && route.enhanced.trim() !== userText.trim()
@@ -467,13 +580,16 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     { role: "system", content: settings.system_prompt },
     ...history,
     ...planMsg,
-    { role: "user", content: userText },
+    { role: "user", content: userContent as string },
   ];
 
   const toolsUsed: string[] = [];
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     if (signal?.aborted) throw new Error("aborted");
+    const thinkId = `think-${round}`;
+    const thinkLabel = round === 0 ? "Reading your request" : "Reviewing and composing";
+    onStep?.({ id: thinkId, label: thinkLabel, done: false });
     const res = await llmComplete(
       endpoint.baseUrl,
       endpoint.token,
@@ -482,21 +598,38 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       TOOL_DEFS,
       settings.max_tokens
     );
+    onStep?.({ id: thinkId, label: thinkLabel, done: true });
     const content = res.content ?? "";
     const toolCalls = Array.isArray(res.tool_calls) ? res.tool_calls : [];
 
     if (toolCalls.length === 0) {
       const answer = content.trim();
+      onStep?.({ id: "answer", label: "Writing the answer", done: true });
       onToken?.(answer);
       return { content: answer, tools: toolsUsed, route };
     }
 
     // Record the assistant's tool-call message, then run each tool.
-    messages.push({ role: "assistant", content, tool_calls: toolCalls });
+    // IMPORTANT: re-feed ONLY the tool_calls, never the model's reasoning content.
+    // Reasoning models (e.g. gemma-4-26b-a4b) emit harmony tokens like
+    // "<|channel|>thought|>…" in content; re-submitting that markup crashes LM
+    // Studio's template parser ("Failed to parse input at pos 0"). The tool_calls
+    // carry everything the next round needs.
+    messages.push({ role: "assistant", content: "", tool_calls: toolCalls });
     for (const tc of toolCalls) {
+      let aobj: any = {};
+      try {
+        aobj = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+      } catch {
+        /* tolerate malformed args for labelling */
+      }
+      const stepId = `tool-${round}-${tc.id || tc.function.name}`;
+      const label = toolStepLabel(tc.function.name, aobj);
+      onStep?.({ id: stepId, label, done: false });
       onToolStart?.(tc.function.name);
       if (!toolsUsed.includes(tc.function.name)) toolsUsed.push(tc.function.name);
       const result = await executeTool(tc.function.name, tc.function.arguments);
+      onStep?.({ id: stepId, label, done: true });
       messages.push({
         role: "tool",
         tool_call_id: tc.id || tc.function.name,

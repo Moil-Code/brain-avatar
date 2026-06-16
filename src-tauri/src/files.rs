@@ -150,6 +150,13 @@ pub async fn read_file(path: String, max_chars: Option<usize>) -> Result<String,
         return Err(format!("File not found: {path}"));
     }
     let cap = max_chars.unwrap_or(8000);
+    let text = extract_text(&path, cap).await?;
+    Ok(format!("Contents of {path}:\n\n{text}"))
+}
+
+/// Extract readable text from a file at `path`, capped to `cap` characters.
+async fn extract_text(path: &str, cap: usize) -> Result<String, String> {
+    let p = Path::new(path);
     let ext = p
         .extension()
         .and_then(|e| e.to_str())
@@ -186,7 +193,29 @@ pub async fn read_file(path: String, max_chars: Option<usize>) -> Result<String,
     } else {
         String::new()
     };
-    Ok(format!("Contents of {path}:\n\n{body}{note}"))
+    Ok(format!("{body}{note}"))
+}
+
+/// Extract text from an uploaded attachment delivered as base64 bytes. Writes to a
+/// temp file (preserving the extension so the right converter runs), extracts, and
+/// cleans up. Used for the chat doc-upload affordance. Images are handled in JS.
+#[tauri::command]
+pub async fn extract_doc_text(name: String, base64: String) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64.trim())
+        .map_err(|e| format!("bad attachment data: {e}"))?;
+    let safe: String = name
+        .chars()
+        .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+        .collect();
+    let mut tmp = std::env::temp_dir();
+    tmp.push(format!("brain-attach-{}-{}", std::process::id(), safe));
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("temp write failed: {e}"))?;
+    let path = tmp.to_string_lossy().to_string();
+    let res = extract_text(&path, 20000).await;
+    let _ = std::fs::remove_file(&tmp);
+    res
 }
 
 /// Open a file or folder in its default application.

@@ -6,13 +6,42 @@ export const setSettings = (newSettings: Settings) =>
   invoke<void>("set_settings", { newSettings });
 export const featureFlags = () => invoke<FeatureFlags>("feature_flags");
 
+/** Transient/cold-start network failures worth one automatic retry. The remote
+ *  24GB Mac often misses the very first request after launch (mDNS resolve +
+ *  wake), then is fine — so we retry once before surfacing an error. */
+const TRANSIENT = /tim(e|ed)?\s*out|connect|sending request|reset|refused|unreachable|network|broken pipe|eof/i;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function withRetry<T>(fn: () => Promise<T>, tries = 2, delayMs = 800): Promise<T> {
+  let last: unknown;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (i === tries - 1 || !TRANSIENT.test(msg)) throw e;
+      await sleep(delayMs);
+    }
+  }
+  throw last;
+}
+
 export interface ProbeResult {
   ok: boolean;
   models: string[];
   error: string | null;
 }
-export const llmProbe = (baseUrl: string, token?: string) =>
-  invoke<ProbeResult>("llm_probe", { baseUrl, token });
+/** Probe with a single warm-up retry: llm_probe returns {ok:false} rather than
+ *  throwing, so a transient first-probe miss is retried explicitly here. */
+export const llmProbe = async (baseUrl: string, token?: string): Promise<ProbeResult> => {
+  let r = await invoke<ProbeResult>("llm_probe", { baseUrl, token });
+  if (!r.ok) {
+    await sleep(600);
+    r = await invoke<ProbeResult>("llm_probe", { baseUrl, token });
+  }
+  return r;
+};
 
 import type { ToolCall } from "./types";
 export const llmComplete = (
@@ -23,14 +52,19 @@ export const llmComplete = (
   tools?: unknown,
   maxTokens?: number
 ) =>
-  invoke<{ content: string; tool_calls: ToolCall[] | null }>("llm_complete", {
-    baseUrl,
-    token,
-    model,
-    messages,
-    tools,
-    maxTokens,
-  });
+  withRetry(() =>
+    invoke<{ content: string; tool_calls: ToolCall[] | null }>("llm_complete", {
+      baseUrl,
+      token,
+      model,
+      messages,
+      tools,
+      maxTokens,
+    })
+  );
+
+export const extractDocText = (name: string, base64: string) =>
+  invoke<string>("extract_doc_text", { name, base64 });
 
 // --- Tools (executed in Rust, results fed back to the model) ---
 export const brainSearch = (query: string, limit?: number) =>
@@ -68,6 +102,7 @@ export const fetchUrl = (url: string) => invoke<string>("fetch_url", { url });
 export const sendEmail = (to: string[], subject: string, body: string, cc?: string[]) =>
   invoke<string>("send_email", { to, subject, body, cc });
 export const readEmails = (count?: number) => invoke<string>("read_emails", { count });
+export const emailDetails = (query: string) => invoke<string>("email_details", { query });
 export const createReminder = (title: string, due?: string, remindAt?: string) =>
   invoke<string>("create_reminder", { title, due, remindAt });
 export const sendTeamsMessage = (recipientEmail: string, message: string) =>

@@ -6,13 +6,31 @@ import SettingsView from "./components/Settings";
 import TitleBar from "./components/TitleBar";
 import { runAgent } from "./lib/agent";
 import { featureFlags, fetchMessages, getSettings, saveMessage } from "./lib/tauri";
+import { probeModels } from "./lib/llm";
 import { primeVoices, speak, startRecording, stopSpeaking, type Recorder } from "./lib/voice";
 import { checkForUpdate, installUpdate, type Update } from "./lib/updater";
 import { collapsePeek, enterPeek, exitPeek, expandPeek } from "./lib/peek";
-import type { AvatarState, ChatMessage, FeatureFlags, Settings, UiMessage } from "./lib/types";
+import type {
+  Attachment,
+  AvatarState,
+  ChatMessage,
+  FeatureFlags,
+  Settings,
+  UiMessage,
+  UiStep,
+} from "./lib/types";
 
 function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+/** Insert or update a step (by id) in a message's step feed. */
+function upsertStep(steps: UiStep[] = [], s: UiStep): UiStep[] {
+  const i = steps.findIndex((x) => x.id === s.id);
+  if (i < 0) return [...steps, s];
+  const copy = steps.slice();
+  copy[i] = { ...copy[i], ...s };
+  return copy;
 }
 
 function getConversationId(): string {
@@ -41,6 +59,8 @@ export default function App() {
   const [updating, setUpdating] = useState(false);
   const [peeked, setPeeked] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [models, setModels] = useState<string[]>([]);
+  const [modelOverride, setModelOverride] = useState<string | null>(null);
   const collapseTimer = useRef<number | null>(null);
 
   const modelHistory = useRef<ChatMessage[]>([]);
@@ -57,6 +77,7 @@ export default function App() {
         const s = await getSettings();
         setSettings(s);
         setFeatures(await featureFlags());
+        probeModels(s).then(setModels).catch(() => {});
         if (!s.lm_studio_local_url) setShowSettings(true);
         const prior = await fetchMessages(conversationId.current, 50).catch(() => []);
         if (prior.length) {
@@ -86,11 +107,21 @@ export default function App() {
     setMessages((ms) => ms.map((m) => (m.id === id ? { ...m, ...patch } : m)));
 
   const handleSend = useCallback(
-    async (text: string) => {
+    async (text: string, attachments: Attachment[] = []) => {
       if (!settings || busy) return;
-      const userMsg: UiMessage = { id: uid(), role: "user", content: text };
+      const attachNote = attachments.length
+        ? `\n\n📎 ${attachments.map((a) => a.name).join(", ")}`
+        : "";
+      const userMsg: UiMessage = { id: uid(), role: "user", content: text + attachNote };
       const botId = uid();
-      const botMsg: UiMessage = { id: botId, role: "assistant", content: "", pending: true, tools: [] };
+      const botMsg: UiMessage = {
+        id: botId,
+        role: "assistant",
+        content: "",
+        pending: true,
+        tools: [],
+        steps: [],
+      };
       setMessages((ms) => [...ms, userMsg, botMsg]);
       setBusy(true);
       setAvatarState("thinking");
@@ -106,6 +137,8 @@ export default function App() {
           userText: text,
           history: priorHistory,
           settings,
+          attachments,
+          modelOverride,
           signal: ac.signal,
           onState: (s) => setAvatarState(s),
           onToken: (delta) => {
@@ -126,6 +159,10 @@ export default function App() {
               patchMessage(botId, { routeLabel: `${route.taskType} → ${short}` });
             }
           },
+          onStep: (step) =>
+            setMessages((ms) =>
+              ms.map((m) => (m.id === botId ? { ...m, steps: upsertStep(m.steps, step) } : m))
+            ),
         });
 
         const answer = result.content || streamed || "(no response)";
@@ -157,7 +194,7 @@ export default function App() {
         abortRef.current = null;
       }
     },
-    [settings, busy]
+    [settings, busy, modelOverride]
   );
 
   const handleToggleMic = useCallback(async () => {
@@ -255,6 +292,9 @@ export default function App() {
         onMinimize={startPeek}
         peeked={peeked}
         onExitPeek={stopPeek}
+        models={models}
+        modelOverride={modelOverride}
+        onSelectModel={setModelOverride}
       />
       {update && (
         <div className="update-banner">
@@ -291,6 +331,7 @@ export default function App() {
           onSaved={(s) => {
             setSettings(s);
             featureFlags().then(setFeatures);
+            probeModels(s).then(setModels).catch(() => {});
             setShowSettings(false);
           }}
           onClose={() => setShowSettings(false)}

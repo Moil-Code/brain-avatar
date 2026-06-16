@@ -720,6 +720,144 @@ pub async fn read_emails(
     Ok(out)
 }
 
+/// Fetch ONE specific email's full body + the links inside it. `query` matches a
+/// sender, subject, or keyword; the most recent match is returned. This is what
+/// lets the assistant actually read links in an email (read_emails only previews).
+#[tauri::command]
+pub async fn email_details(
+    query: String,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let q = query.replace('"', "").replace('\\', "");
+    // $search ranks by relevance, not date, so pull several and pick the newest.
+    let url = format!(
+        "https://graph.microsoft.com/v1.0/me/messages?$search=\"{q}\"&$top=10&$select=subject,from,receivedDateTime,body,webLink"
+    );
+    let stdout = match graph_get(&m365, &url).await {
+        Ok(s) => s,
+        Err(e) => return Ok(permission_hint(&e)),
+    };
+    let v: Value = serde_json::from_str(&stdout).unwrap_or(Value::Null);
+    let msgs = v.get("value").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+    let best = msgs.into_iter().max_by(|a, b| {
+        let da = a.get("receivedDateTime").and_then(|v| v.as_str()).unwrap_or("");
+        let db = b.get("receivedDateTime").and_then(|v| v.as_str()).unwrap_or("");
+        da.cmp(db)
+    });
+    let m = match best {
+        Some(m) => m,
+        None => return Ok(format!("No email found matching \"{query}\".")),
+    };
+
+    let subj = m.get("subject").and_then(|v| v.as_str()).unwrap_or("(no subject)");
+    let fname = m
+        .get("from")
+        .and_then(|f| f.get("emailAddress"))
+        .and_then(|e| e.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let faddr = m
+        .get("from")
+        .and_then(|f| f.get("emailAddress"))
+        .and_then(|e| e.get("address"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let date = m.get("receivedDateTime").and_then(|v| v.as_str()).unwrap_or("");
+    let html = m
+        .get("body")
+        .and_then(|b| b.get("content"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let links = extract_links(html);
+    let links_block = if links.is_empty() {
+        "Links found: (none)\n".to_string()
+    } else {
+        let mut s = String::from("Links found:\n");
+        for (i, l) in links.iter().take(12).enumerate() {
+            s.push_str(&format!("{}. {}\n", i + 1, l));
+        }
+        s
+    };
+    let body_text: String = html_to_text(html).chars().take(2500).collect();
+
+    Ok(format!(
+        "Email: {subj}\nFrom: {fname} <{faddr}>\nDate: {date}\n\n{links_block}\nBody:\n{body_text}"
+    ))
+}
+
+/// Extract http(s) hyperlinks from email HTML, decoding entities, dropping image/
+/// asset URLs, and de-duplicating — so the model sees real destination links.
+fn extract_links(html: &str) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut links = vec![];
+    for part in html.split("href=").skip(1) {
+        let p = part.trim_start();
+        let mut chars = p.chars();
+        let quote = match chars.next() {
+            Some(c @ '"') | Some(c @ '\'') => c,
+            _ => continue,
+        };
+        if let Some(end) = p[1..].find(quote) {
+            let raw = &p[1..1 + end];
+            let url = raw.replace("&amp;", "&").replace("&#43;", "+");
+            let url = unwrap_tracker(url);
+            let lower = url.to_lowercase();
+            let is_asset = [".png", ".jpg", ".jpeg", ".gif", ".svg", ".css", ".webp"]
+                .iter()
+                .any(|ext| lower.split('?').next().unwrap_or("").ends_with(ext));
+            if (url.starts_with("http://") || url.starts_with("https://"))
+                && !is_asset
+                && seen.insert(url.clone())
+            {
+                links.push(url);
+            }
+        }
+    }
+    links
+}
+
+/// Unwrap click-tracker redirect links (e.g. Canva's `trail.canva.com/CL0/<percent-
+/// encoded-real-url>/1/…`) to the real destination so the model sees a readable URL.
+fn unwrap_tracker(url: String) -> String {
+    if let Some(idx) = url.find("/CL0/") {
+        let after = &url[idx + 5..];
+        let enc = after.split('/').next().unwrap_or(after);
+        let dec = percent_decode(enc);
+        if dec.starts_with("http") {
+            return dec;
+        }
+    }
+    url
+}
+
+fn percent_decode(s: &str) -> String {
+    fn hex(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(a), Some(b)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(a * 16 + b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
 // ---------------------------------------------------------------------------
 // fetch_url  ->  read a web page's text locally (no cloud service)
 // ---------------------------------------------------------------------------
