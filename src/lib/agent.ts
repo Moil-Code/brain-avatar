@@ -1,5 +1,5 @@
 import { resolveEndpoint } from "./llm";
-import { brainSearch, calendarEvents, llmComplete, webSearch } from "./tauri";
+import { brainPage, brainSearch, calendarEvents, llmComplete, webSearch } from "./tauri";
 import type { AvatarState, ChatMessage, Settings } from "./types";
 
 const MAX_ROUNDS = 5;
@@ -8,11 +8,30 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "brain_page",
+      description:
+        "Get the AUTHORITATIVE, up-to-date compiled brain page for a specific named entity — " +
+        "a person, company/org, project, or concept. ALWAYS use this (not brain_search) for " +
+        "'who is X', 'what is X', 'tell me about X', or X's role/status/latest. Pass just the " +
+        "entity's name (e.g. 'Jacob Oluwole', 'Alloy ATX'). Returns the current canonical " +
+        "summary — far fresher and more accurate than raw meeting transcripts.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "The entity's name (person, org, project, or concept)" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "brain_search",
       description:
-        "Search Andres' personal knowledge brain (meetings, people, deals, projects, " +
-        "concepts, companies, past conversations). Use this FIRST for anything about Moil, " +
-        "specific people, deals, projects, or personal/company history.",
+        "Hybrid search across Andres' brain for BROAD or CONTEXTUAL questions not about one " +
+        "named entity (e.g. 'what are my open commitments', 'recent marketing discussions'). " +
+        "For a specific person/company/project/concept by name, prefer brain_page instead.",
       parameters: {
         type: "object",
         properties: {
@@ -66,6 +85,8 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
   }
   try {
     switch (name) {
+      case "brain_page":
+        return await brainPage(String(args.name ?? args.query ?? ""));
       case "brain_search":
         return await brainSearch(String(args.query ?? ""), args.limit);
       case "calendar_events":

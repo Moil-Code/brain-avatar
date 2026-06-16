@@ -123,6 +123,7 @@ pub fn run() {
             commands::set_settings,
             commands::feature_flags,
             tools::brain_search,
+            tools::brain_page,
             tools::calendar_events,
             tools::web_search,
             voice::transcribe_audio,

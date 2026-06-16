@@ -72,6 +72,60 @@ pub async fn brain_search(
     }
 }
 
+// ---------------------------------------------------------------------------
+// brain_page  ->  gbrain call get_page (fuzzy)  — canonical compiled page by name
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn brain_page(
+    name: String,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let gbrain = { state.0.lock().unwrap().gbrain_path.clone() };
+    let payload = json!({ "slug": name, "fuzzy": true }).to_string();
+    let args = vec!["call".to_string(), "get_page".to_string(), payload];
+
+    let mut last_err = String::new();
+    for attempt in 0..4u32 {
+        match run_cli(&gbrain, &args).await {
+            Ok(stdout) => return Ok(format_brain_page(&stdout, &name)),
+            Err(e) => {
+                last_err = e;
+                if last_err.to_lowercase().contains("lock") {
+                    tokio::time::sleep(StdDuration::from_millis(600 * (attempt + 1) as u64)).await;
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    // get_page returns non-zero / error text when the fuzzy match finds nothing.
+    Ok(format!(
+        "No canonical brain page found for \"{name}\". Try brain_search for broader context."
+    ))
+}
+
+fn format_brain_page(stdout: &str, name: &str) -> String {
+    let v: Value = match serde_json::from_str(stdout) {
+        Ok(v) => v,
+        Err(_) => return format!("No canonical brain page found for \"{name}\"."),
+    };
+    let title = v.get("title").and_then(|x| x.as_str()).unwrap_or(name);
+    let slug = v.get("slug").and_then(|x| x.as_str()).unwrap_or("");
+    let ptype = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+    let body = v
+        .get("compiled_truth")
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("content").and_then(|x| x.as_str()))
+        .unwrap_or("");
+    if body.is_empty() {
+        return format!("No canonical brain page found for \"{name}\".");
+    }
+    // The compiled page leads with the up-to-date role/summary; cap length for context.
+    let snippet: String = body.chars().take(4000).collect();
+    format!("Canonical brain page — {title} (type: {ptype}, slug: {slug}):\n\n{snippet}")
+}
+
 fn format_brain_results(stdout: &str) -> String {
     let parsed: Value = match serde_json::from_str(stdout) {
         Ok(v) => v,

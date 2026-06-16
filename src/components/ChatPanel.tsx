@@ -12,6 +12,7 @@ interface Props {
 }
 
 const TOOL_LABEL: Record<string, string> = {
+  brain_page: "🧠 brain",
   brain_search: "🧠 brain",
   calendar_events: "📅 calendar",
   web_search: "🌐 web",

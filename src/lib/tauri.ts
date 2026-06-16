@@ -35,6 +35,8 @@ export const llmComplete = (
 // --- Tools (executed in Rust, results fed back to the model) ---
 export const brainSearch = (query: string, limit?: number) =>
   invoke<string>("brain_search", { query, limit });
+export const brainPage = (name: string) =>
+  invoke<string>("brain_page", { name });
 export const calendarEvents = (days?: number) =>
   invoke<string>("calendar_events", { days });
 export const webSearch = (query: string) =>
