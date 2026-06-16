@@ -21,7 +21,19 @@ tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls"], default-features = false }
-tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "time", "io-util"] }
+tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "time", "io-util", "net"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
+
+# Headless brain-daemon: exposes the brain-owner tools over HTTP for the MacBook client.
+axum = "0.7"
+
+# The Tauri app (default) and the headless daemon are two binaries over one lib.
+[[bin]]
+name = "brain-avatar"
+path = "src/main.rs"
+
+[[bin]]
+name = "brain-daemon"
+path = "src/bin/brain-daemon.rs"

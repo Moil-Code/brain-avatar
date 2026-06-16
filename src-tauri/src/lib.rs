@@ -1,11 +1,11 @@
 mod commands;
-mod config;
+pub mod config;
 mod files;
 mod history;
-mod llm;
-mod tools;
+pub mod llm;
+pub mod tools;
 mod tts;
-mod voice;
+pub mod voice;
 
 use config::{Settings, SettingsState};
 use std::sync::Mutex;

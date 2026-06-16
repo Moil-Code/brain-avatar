@@ -133,6 +133,24 @@ pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     std::fs::write(path, raw).map_err(|e| e.to_string())
 }
 
+/// The macOS path where the Tauri app persists settings.json. The headless
+/// brain-daemon reads the SAME file (no AppHandle available), so it uses exactly
+/// the keys/paths Andres configured in the app's Settings UI.
+pub fn config_file_path() -> PathBuf {
+    let home = dirs_home();
+    PathBuf::from(format!(
+        "{home}/Library/Application Support/com.moil.brainavatar/settings.json"
+    ))
+}
+
+/// Load settings without a Tauri AppHandle (for the brain-daemon binary).
+pub fn load_standalone() -> Settings {
+    match std::fs::read_to_string(config_file_path()) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        Err(_) => Settings::default(),
+    }
+}
+
 /// PATH that includes the dirs where node / bun / homebrew tools live, so the
 /// bundled app (which inherits a minimal PATH) can still spawn gbrain & m365.
 pub fn augmented_path() -> String {
