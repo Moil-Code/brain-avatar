@@ -34,19 +34,39 @@ pub async fn llm_complete(
             body["tool_choice"] = json!("auto");
         }
     }
+    // Qwen3 is a reasoning model; disable its <think> phase so tool-calling /
+    // quick answers are fast and don't burn the token budget on reasoning.
+    if model.to_lowercase().contains("qwen") {
+        body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
 
     let client = reqwest::Client::new();
     let mut req = client
         .post(format!("{}/chat/completions", base_url.trim_end_matches('/')))
         .json(&body)
-        .timeout(Duration::from_secs(180));
+        .timeout(Duration::from_secs(300));
     if let Some(t) = token {
         if !t.trim().is_empty() {
             req = req.header("Authorization", format!("Bearer {t}"));
         }
     }
 
-    let resp = req.send().await.map_err(|e| format!("LLM request failed: {e}"))?;
+    let resp = req.send().await.map_err(|e| {
+        use std::error::Error as _;
+        let mut msg = if e.is_timeout() {
+            "the model took too long (timed out)".to_string()
+        } else if e.is_connect() {
+            "couldn't connect to the model server".to_string()
+        } else {
+            format!("{e}")
+        };
+        let mut src = e.source();
+        while let Some(s) = src {
+            msg.push_str(&format!(" — {s}"));
+            src = s.source();
+        }
+        format!("LLM request failed: {msg}")
+    })?;
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
