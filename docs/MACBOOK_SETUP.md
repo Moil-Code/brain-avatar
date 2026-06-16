@@ -45,6 +45,10 @@ run on the laptop; the LLM goes straight to LM Studio. See
 > `0600` file — not in the plist or process args. Secrets (gbrain, m365, Brave, Groq)
 > never leave the Mac Mini. Fold the token into the monthly `/cso` credential audit.
 
+> Note: the daemon reads `settings.json` once at startup. If you change the Mac Mini's
+> settings in the app (m365 app id, API keys, gbrain path), restart the daemon to pick
+> them up: `launchctl kickstart -k gui/$(id -u)/com.moil.brainavatar.daemon`.
+
 ---
 
 ## B. MacBook (the client) — one-time
