@@ -2,7 +2,7 @@ use crate::config::{augmented_path, Settings, SettingsState};
 use chrono::{Duration, Local, Utc};
 use serde_json::{json, Value};
 use std::time::Duration as StdDuration;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -956,41 +956,38 @@ pub async fn email_details_core(
     query: String,
 ) -> Result<String, String> {
     let m365 = settings.m365_path.clone();
-    let q = query.replace('"', "").replace('\\', "");
-    // $search ranks by relevance, not date, so pull several and pick the newest.
-    let url = format!(
-        "https://graph.microsoft.com/v1.0/me/messages?$search=\"{q}\"&$top=10&$select=subject,from,receivedDateTime,body,webLink"
-    );
-    let stdout = match graph_get(&m365, &url).await {
-        Ok(s) => s,
+    let q = query.replace('"', "").replace('\\', "").trim().to_string();
+
+    // Who am I? Used to drop self-sent "Brain Briefing" mails, which quote the whole
+    // inbox and otherwise outrank real correspondence in a keyword search.
+    let owner = owner_address(&m365).await.unwrap_or_default().to_lowercase();
+
+    // 1) Sender-scoped search FIRST: "the email from X" must match the SENDER, not
+    //    whatever briefing most recently mentioned X.
+    let from_msgs = match search_messages(&m365, &format!("from:{q}"), 10).await {
+        Ok(v) => v,
         Err(e) => return Ok(permission_hint(&e)),
     };
-    let v: Value = serde_json::from_str(&stdout).unwrap_or(Value::Null);
-    let msgs = v.get("value").and_then(|a| a.as_array()).cloned().unwrap_or_default();
-    let best = msgs.into_iter().max_by(|a, b| {
-        let da = a.get("receivedDateTime").and_then(|v| v.as_str()).unwrap_or("");
-        let db = b.get("receivedDateTime").and_then(|v| v.as_str()).unwrap_or("");
-        da.cmp(db)
-    });
-    let m = match best {
-        Some(m) => m,
-        None => return Ok(format!("No email found matching \"{query}\".")),
-    };
+    // 2) Fallback: general keyword search, dropping self-sent briefings.
+    let mut candidates = from_msgs;
+    if candidates.is_empty() {
+        let general = search_messages(&m365, &q, 20).await.unwrap_or_default();
+        let non_self: Vec<Value> = general
+            .iter()
+            .filter(|m| from_addr_of(m).to_lowercase() != owner)
+            .cloned()
+            .collect();
+        candidates = if non_self.is_empty() { general } else { non_self };
+    }
+    if candidates.is_empty() {
+        return Ok(format!("No email found matching \"{query}\"."));
+    }
+    candidates.sort_by(|a, b| received_of(b).cmp(received_of(a))); // newest first
+    let m = &candidates[0];
 
     let subj = m.get("subject").and_then(|v| v.as_str()).unwrap_or("(no subject)");
-    let fname = m
-        .get("from")
-        .and_then(|f| f.get("emailAddress"))
-        .and_then(|e| e.get("name"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let faddr = m
-        .get("from")
-        .and_then(|f| f.get("emailAddress"))
-        .and_then(|e| e.get("address"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let date = m.get("receivedDateTime").and_then(|v| v.as_str()).unwrap_or("");
+    let (fname, faddr) = from_name_addr(m);
+    let date = received_of(m);
     let html = m
         .get("body")
         .and_then(|b| b.get("content"))
@@ -1009,9 +1006,72 @@ pub async fn email_details_core(
     };
     let body_text: String = html_to_text(html).chars().take(2500).collect();
 
+    // Surface a few other matches so the model can self-correct if it picked wrong.
+    let mut alts = String::new();
+    if candidates.len() > 1 {
+        alts.push_str("\nOther recent matches:\n");
+        for o in candidates.iter().skip(1).take(3) {
+            let (n, _) = from_name_addr(o);
+            alts.push_str(&format!(
+                "- {} | {} | {}\n",
+                received_of(o),
+                n,
+                o.get("subject").and_then(|v| v.as_str()).unwrap_or("")
+            ));
+        }
+    }
+
     Ok(format!(
-        "Email: {subj}\nFrom: {fname} <{faddr}>\nDate: {date}\n\n{links_block}\nBody:\n{body_text}"
+        "Email: {subj}\nFrom: {fname} <{faddr}>\nDate: {date}\n\n{links_block}\nBody:\n{body_text}\n{alts}"
     ))
+}
+
+/// Run a Graph mail `$search` and return the matched messages.
+async fn search_messages(m365: &str, search: &str, top: u32) -> Result<Vec<Value>, String> {
+    let url = format!(
+        "https://graph.microsoft.com/v1.0/me/messages?$search=\"{search}\"&$top={top}&$select=subject,from,receivedDateTime,body,webLink"
+    );
+    let stdout = graph_get(m365, &url).await?;
+    let v: Value = serde_json::from_str(&stdout).unwrap_or(Value::Null);
+    Ok(v.get("value").and_then(|a| a.as_array()).cloned().unwrap_or_default())
+}
+
+/// The signed-in mailbox owner's address (to identify self-sent mail).
+async fn owner_address(m365: &str) -> Option<String> {
+    let stdout = graph_get(m365, "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName")
+        .await
+        .ok()?;
+    let v: Value = serde_json::from_str(&stdout).ok()?;
+    v.get("mail")
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("userPrincipalName").and_then(|x| x.as_str()))
+        .map(|s| s.to_string())
+}
+
+fn from_addr_of(m: &Value) -> String {
+    m.get("from")
+        .and_then(|f| f.get("emailAddress"))
+        .and_then(|e| e.get("address"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+fn from_name_addr(m: &Value) -> (String, String) {
+    let e = m.get("from").and_then(|f| f.get("emailAddress"));
+    let n = e
+        .and_then(|e| e.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let a = e
+        .and_then(|e| e.get("address"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    (n, a)
+}
+fn received_of(m: &Value) -> &str {
+    m.get("receivedDateTime").and_then(|v| v.as_str()).unwrap_or("")
 }
 
 /// Extract http(s) hyperlinks from email HTML, decoding entities, dropping image/
@@ -1106,6 +1166,160 @@ pub async fn x_bookmarks(count: Option<u32>) -> Result<String, String> {
         Ok(_) => Ok("{\"ok\":false,\"error\":\"x-bookmarks returned no output\"}".to_string()),
         Err(e) => Ok(format!("{{\"ok\":false,\"error\":\"{}\"}}", e.replace('"', "'"))),
     }
+}
+
+/// Generate an image locally with Bonsai (MLX ternary 4B diffusion). Runs the
+/// existing bonsai wrapper (auto-starting its backend if needed), then emits the
+/// PNG as a data URL to the UI via an `image-generated` event and returns a short
+/// confirmation to the model (no base64 in the model's context).
+#[tauri::command]
+pub async fn generate_image(
+    app: AppHandle,
+    prompt: String,
+    size: Option<String>,
+    steps: Option<u32>,
+) -> Result<String, String> {
+    use base64::Engine;
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/jarvisurrego".into());
+    let script = format!("{home}/OpenClawAgent/workspace/scripts/bonsai_generate_image.sh");
+    if !std::path::Path::new(&script).exists() {
+        return Ok("Image generation isn't available (Bonsai script not found).".into());
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let out = std::env::temp_dir()
+        .join(format!("brain-avatar-gen-{nanos}.png"))
+        .to_string_lossy()
+        .to_string();
+    let size = size.unwrap_or_else(|| "512x512".into());
+    let steps = steps.unwrap_or(4).clamp(1, 12).to_string();
+
+    let args = vec![
+        script,
+        "--prompt".into(),
+        prompt.clone(),
+        "--out".into(),
+        out.clone(),
+        "--size".into(),
+        size,
+        "--steps".into(),
+        steps,
+    ];
+    let mut cmd = Command::new("bash");
+    cmd.args(&args)
+        .env("PATH", augmented_path())
+        .env("BONSAI_AUTOSTART", "1") // start the bonsai backend if it isn't up
+        .kill_on_drop(true);
+    // Generous: a first run boots the bonsai server + loads the model; warm runs ~15s.
+    let res = timeout(StdDuration::from_secs(300), cmd.output())
+        .await
+        .map_err(|_| "image generation timed out (bonsai backend may be starting)".to_string())?
+        .map_err(|e| format!("failed to run bonsai: {e}"))?;
+    if !res.status.success() {
+        let err = String::from_utf8_lossy(&res.stderr);
+        return Ok(format!(
+            "Image generation failed: {}",
+            err.trim().chars().take(300).collect::<String>()
+        ));
+    }
+    let bytes = match std::fs::read(&out) {
+        Ok(b) => b,
+        Err(e) => return Ok(format!("Image was generated but couldn't be read: {e}")),
+    };
+    let data_url = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    );
+    let _ = app.emit(
+        "image-generated",
+        json!({ "dataUrl": data_url, "prompt": prompt, "path": out }),
+    );
+    Ok(format!(
+        "Generated an image for \"{prompt}\" and displayed it above (saved to {out}). Briefly confirm to Andres; do NOT describe the pixels."
+    ))
+}
+
+/// Post an image to one of Andres' Facebook Pages using the permanent Page Access
+/// Tokens in ~/.openclaw/secrets/facebook.env (Graph API — reliable, no browser).
+/// `page` = "moil" (Moil by Jarvis) or "jarvis_tx" (Jarvis AI TX). This PUBLISHES
+/// publicly, so the model must confirm with Andres before calling.
+#[tauri::command]
+pub async fn post_to_facebook(
+    image_path: String,
+    caption: String,
+    page: Option<String>,
+) -> Result<String, String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/jarvisurrego".into());
+    let env_path = format!("{home}/.openclaw/secrets/facebook.env");
+    let raw = match std::fs::read_to_string(&env_path) {
+        Ok(r) => r,
+        Err(_) => return Ok("Facebook isn't configured (facebook.env not found).".into()),
+    };
+    let mut vars = std::collections::HashMap::new();
+    for line in raw.lines() {
+        let l = line.trim().trim_start_matches("export ").trim();
+        if l.starts_with('#') || !l.contains('=') {
+            continue;
+        }
+        if let Some((k, v)) = l.split_once('=') {
+            vars.insert(
+                k.trim().to_string(),
+                v.trim().trim_matches('"').trim_matches('\'').to_string(),
+            );
+        }
+    }
+    let page_key = page.unwrap_or_else(|| "moil".into()).to_lowercase();
+    let (token, page_id) = if page_key.contains("jarvis") || page_key.contains("tx") {
+        (vars.get("FB_PAGE_TOKEN_JARVIS_TX"), vars.get("FB_PAGE_ID_JARVIS_TX"))
+    } else {
+        (vars.get("FB_PAGE_TOKEN_MOIL"), vars.get("FB_PAGE_ID_MOIL"))
+    };
+    let (token, page_id) = match (token, page_id) {
+        (Some(t), Some(p)) if !t.is_empty() && !p.is_empty() => (t.clone(), p.clone()),
+        _ => return Ok(format!("No Facebook token/page id for '{page_key}' in facebook.env.")),
+    };
+
+    let path = std::path::Path::new(&image_path);
+    if !path.exists() {
+        return Ok(format!("Image not found: {image_path}"));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("read image failed: {e}"))?;
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name("image.png")
+        .mime_str("image/png")
+        .map_err(|e| e.to_string())?;
+    let form = reqwest::multipart::Form::new()
+        .text("message", caption)
+        .text("access_token", token)
+        .part("source", part);
+
+    let url = format!("https://graph.facebook.com/v22.0/{page_id}/photos");
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .multipart(form)
+        .timeout(StdDuration::from_secs(60))
+        .send()
+        .await
+        .map_err(|e| format!("Facebook post failed: {e}"))?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Ok(format!(
+            "Facebook rejected the post (HTTP {status}): {}",
+            body.chars().take(300).collect::<String>()
+        ));
+    }
+    let v: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    let post_id = v
+        .get("post_id")
+        .or_else(|| v.get("id"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    Ok(format!(
+        "Posted to the {page_key} Facebook page. Post id {post_id} — https://facebook.com/{post_id}"
+    ))
 }
 
 // ---------------------------------------------------------------------------

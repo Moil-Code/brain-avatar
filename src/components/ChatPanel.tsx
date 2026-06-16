@@ -7,6 +7,10 @@ interface Props {
   busy: boolean;
   recording: boolean;
   voiceEnabled: boolean;
+  convoMode: boolean;
+  onToggleConvo: () => void;
+  queue: { id: string; text: string }[];
+  onDequeue: (id: string) => void;
   onSend: (text: string, attachments: Attachment[]) => void;
   onToggleMic: () => void;
   onStop: () => void;
@@ -59,6 +63,8 @@ const TOOL_LABEL: Record<string, string> = {
   read_emails: "📨 inbox",
   email_details: "✉️ email",
   x_bookmarks: "🔖 bookmarks",
+  generate_image: "🎨 image",
+  post_to_facebook: "📘 facebook",
   send_email: "✉️ email",
   create_reminder: "⏰ reminder",
   send_teams_message: "💬 teams",
@@ -69,6 +75,10 @@ export default function ChatPanel({
   busy,
   recording,
   voiceEnabled,
+  convoMode,
+  onToggleConvo,
+  queue,
+  onDequeue,
   onSend,
   onToggleMic,
   onStop,
@@ -100,7 +110,7 @@ export default function ChatPanel({
 
   const submit = () => {
     const t = text.trim();
-    if ((!t && attachments.length === 0) || busy || attaching) return;
+    if ((!t && attachments.length === 0) || attaching) return; // busy is OK — it queues
     setText("");
     const atts = attachments;
     setAttachments([]);
@@ -150,9 +160,30 @@ export default function ChatPanel({
                   ""
                 ))}
             </div>
+            {m.images && m.images.length > 0 && (
+              <div className="msg-images">
+                {m.images.map((src, i) => (
+                  <img key={i} className="msg-image" src={src} alt="generated" />
+                ))}
+              </div>
+            )}
           </div>
         ))}
       </div>
+
+      {queue.length > 0 && (
+        <div className="queue-strip">
+          <span className="queue-label">⏳ Queued · {queue.length}</span>
+          {queue.map((q, i) => (
+            <span key={q.id} className="queue-item" title={q.text}>
+              {i + 1}. {q.text.length > 38 ? q.text.slice(0, 38) + "…" : q.text}
+              <button className="queue-x" title="Remove" onClick={() => onDequeue(q.id)}>
+                ✕
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
 
       {(attachments.length > 0 || attaching) && (
         <div className="attach-chips">
@@ -205,6 +236,19 @@ export default function ChatPanel({
         />
         {voiceEnabled && (
           <button
+            className={`icon-btn convo ${convoMode ? "on" : ""}`}
+            title={
+              convoMode
+                ? "Conversation mode ON — listens again after each reply (click to turn off)"
+                : "Conversation mode OFF — turn on for hands-free back-and-forth"
+            }
+            onClick={onToggleConvo}
+          >
+            🔁
+          </button>
+        )}
+        {voiceEnabled && (
+          <button
             className={`icon-btn mic ${recording ? "recording" : ""}`}
             title={recording ? "Stop & send" : "Hold to talk"}
             onClick={onToggleMic}
@@ -212,20 +256,19 @@ export default function ChatPanel({
             {recording ? "■" : "🎙"}
           </button>
         )}
-        {busy ? (
-          <button className="icon-btn stop" title="Stop" onClick={onStop}>
+        {busy && (
+          <button className="icon-btn stop" title="Stop & clear queue" onClick={onStop}>
             ✕
           </button>
-        ) : (
-          <button
-            className="icon-btn send"
-            title="Send"
-            onClick={submit}
-            disabled={(!text.trim() && attachments.length === 0) || attaching}
-          >
-            ➤
-          </button>
         )}
+        <button
+          className="icon-btn send"
+          title={busy ? "Add to queue" : "Send"}
+          onClick={submit}
+          disabled={(!text.trim() && attachments.length === 0) || attaching}
+        >
+          ➤
+        </button>
       </div>
     </div>
   );

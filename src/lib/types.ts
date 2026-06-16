@@ -33,6 +33,8 @@ export interface UiMessage {
   routeLabel?: string;
   /** Live step feed shown while pending (routing, each tool, composing). */
   steps?: UiStep[];
+  /** data: URLs of images generated during this turn (Bonsai), shown inline. */
+  images?: string[];
 }
 
 export type AvatarState = "idle" | "listening" | "thinking" | "speaking";

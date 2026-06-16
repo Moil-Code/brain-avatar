@@ -11,6 +11,8 @@ import {
   createTeamsMeeting,
   emailDetails,
   fetchUrl,
+  generateImage,
+  postToFacebook,
   findFiles,
   listApps,
   llmComplete,
@@ -59,6 +61,10 @@ function toolStepLabel(name: string, a: any): string {
       return "Deleting the event";
     case "create_teams_meeting":
       return "Setting up the Teams meeting";
+    case "generate_image":
+      return a.prompt ? `Painting “${a.prompt}”` : "Generating an image";
+    case "post_to_facebook":
+      return `Posting to Facebook (${a.page ?? "moil"})`;
     case "x_bookmarks":
       return "Fetching your X bookmarks";
     case "web_search":
@@ -226,6 +232,47 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "generate_image",
+      description:
+        "Generate an image LOCALLY from a text prompt using Bonsai. Use when Andres asks to " +
+        "create/make/draw/generate an image, picture, logo, or illustration. The image is shown " +
+        "to him automatically — after calling, just confirm briefly; do NOT try to describe the " +
+        "pixels. Write a vivid, detailed prompt for best results.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "Detailed description of the image to generate" },
+          size: { type: "string", description: "WxH, default 512x512" },
+          steps: { type: "integer", description: "Diffusion steps (default 4)" },
+        },
+        required: ["prompt"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "post_to_facebook",
+      description:
+        "Publish an image to one of Andres' Facebook Pages: 'moil' (Moil by Jarvis) or 'jarvis_tx' " +
+        "(Jarvis AI TX). Use after generate_image to post a created image — pass the image_path from " +
+        "generate_image's result, a caption, and the page. THIS POSTS PUBLICLY: you MUST first show " +
+        "Andres the image + caption + which page, and get his explicit 'yes' before calling. Never " +
+        "post without confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          image_path: { type: "string", description: "Full path to the image (e.g. from generate_image)" },
+          caption: { type: "string", description: "The post caption/message" },
+          page: { type: "string", description: "'moil' or 'jarvis_tx' (default moil)" },
+        },
+        required: ["image_path", "caption"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "x_bookmarks",
       description:
         "Get Andres' most recent X (Twitter) bookmarks. Use for 'my bookmarks', 'my last N " +
@@ -375,11 +422,13 @@ export const TOOL_DEFS = [
     function: {
       name: "email_details",
       description:
-        "Open ONE specific email and read its FULL body and the links inside it. Use this " +
-        "(not read_emails) whenever asked about the contents of a particular email, or to find/" +
-        "open a link in an email (e.g. 'open the link in the BudaEDC email'). Pass a sender name, " +
-        "subject, or keyword; the most recent matching email is returned with its links listed. " +
-        "Then use fetch_url on a returned link to read where it goes.",
+        "Find and open ONE specific email — its FULL body and the links inside it. ALWAYS use this " +
+        "(not read_emails) to find an email FROM a person or about a topic. To find the latest email " +
+        "from someone, pass JUST THEIR NAME (e.g. 'Tonya'); it searches ALL mail by sender — including " +
+        "older messages not in the recent list — and ignores Andres' own self-sent 'Brain Briefing' " +
+        "emails. You can also pass a subject or keyword. read_emails only shows the most recent inbox " +
+        "and will MISS emails pushed down the list — prefer email_details when looking for a specific one. " +
+        "After it returns, use fetch_url on a link to read where it goes.",
       parameters: {
         type: "object",
         properties: {
@@ -491,6 +540,14 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
           String(args.subject ?? ""),
           String(args.start ?? ""),
           String(args.end ?? "")
+        );
+      case "generate_image":
+        return await generateImage(String(args.prompt ?? ""), args.size, args.steps);
+      case "post_to_facebook":
+        return await postToFacebook(
+          String(args.image_path ?? ""),
+          String(args.caption ?? ""),
+          args.page ? String(args.page) : undefined
         );
       case "x_bookmarks":
         return await xBookmarks(args.count);

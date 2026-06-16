@@ -17,7 +17,15 @@ import {
 } from "./lib/tauri";
 import ChatsView from "./components/Chats";
 import { probeModels } from "./lib/llm";
-import { primeVoices, speak, startRecording, stopSpeaking, type Recorder } from "./lib/voice";
+import {
+  listenOnce,
+  primeVoices,
+  speak,
+  startRecording,
+  stopSpeaking,
+  transcriptIsJunk,
+  type Recorder,
+} from "./lib/voice";
 import { checkForUpdate, installUpdate, type Update } from "./lib/updater";
 import { collapsePeek, enterPeek, exitPeek, expandPeek } from "./lib/peek";
 import type {
@@ -32,6 +40,12 @@ import type {
 
 function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+interface QueueItem {
+  id: string;
+  text: string;
+  attachments: Attachment[];
 }
 
 /** Insert or update a step (by id) in a message's step feed. */
@@ -74,12 +88,22 @@ export default function App() {
   const [showChats, setShowChats] = useState(false);
   const [conversations, setConversations] = useState<ConvSummary[]>([]);
   const [activeConv, setActiveConv] = useState<string>(() => getConversationId());
+  const [convoMode, setConvoMode] = useState<boolean>(
+    () => localStorage.getItem("convoMode") === "1"
+  );
+  const [queue, setQueue] = useState<QueueItem[]>([]);
   const collapseTimer = useRef<number | null>(null);
+  const queueRef = useRef<QueueItem[]>([]);
+  const runningRef = useRef(false);
+  const runTurnRef = useRef<(t: string, a?: Attachment[]) => Promise<void>>(async () => {});
 
   const modelHistory = useRef<ChatMessage[]>([]);
   const recorderRef = useRef<Recorder | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const listenAbortRef = useRef<AbortController | null>(null);
   const toggleMicRef = useRef<() => void>(() => {});
+  const autoListenRef = useRef<() => void>(() => {});
+  const activeBotIdRef = useRef<string | null>(null);
 
   const setActiveConvId = (id: string) => {
     localStorage.setItem("conversationId", id);
@@ -116,18 +140,27 @@ export default function App() {
     checkForUpdate().then(setUpdate);
     const unlistenSettings = listen("open-settings", () => setShowSettings(true));
     const unlistenVoice = listen("toggle-voice", () => toggleMicRef.current());
+    const unlistenImage = listen<{ dataUrl: string }>("image-generated", (e) => {
+      const id = activeBotIdRef.current;
+      const url = e.payload?.dataUrl;
+      if (!id || !url) return;
+      setMessages((ms) =>
+        ms.map((m) => (m.id === id ? { ...m, images: [...(m.images ?? []), url] } : m))
+      );
+    });
     return () => {
       unlistenSettings.then((f) => f());
       unlistenVoice.then((f) => f());
+      unlistenImage.then((f) => f());
     };
   }, []);
 
   const patchMessage = (id: string, patch: Partial<UiMessage>) =>
     setMessages((ms) => ms.map((m) => (m.id === id ? { ...m, ...patch } : m)));
 
-  const handleSend = useCallback(
+  const runTurn = useCallback(
     async (text: string, attachments: Attachment[] = []) => {
-      if (!settings || busy) return;
+      if (!settings) return;
       const attachNote = attachments.length
         ? `\n\n📎 ${attachments.map((a) => a.name).join(", ")}`
         : "";
@@ -142,6 +175,7 @@ export default function App() {
         steps: [],
       };
       setMessages((ms) => [...ms, userMsg, botMsg]);
+      activeBotIdRef.current = botId;
       appendTurn(activeConv, "user", text).catch(() => {});
       setBusy(true);
       setAvatarState("thinking");
@@ -200,7 +234,10 @@ export default function App() {
 
         speak(answer, {
           onStart: () => setAvatarState("speaking"),
-          onEnd: () => setAvatarState("idle"),
+          onEnd: () => {
+            setAvatarState("idle");
+            autoListenRef.current(); // hands-free back-and-forth (if convo mode on)
+          },
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -215,8 +252,35 @@ export default function App() {
         abortRef.current = null;
       }
     },
-    [settings, busy, modelOverride, activeConv]
+    [settings, modelOverride, activeConv]
   );
+  runTurnRef.current = runTurn;
+
+  // --- request queue: stack multiple asks; run them one at a time ---
+  const syncQueue = () => setQueue([...queueRef.current]);
+  const pump = useCallback(() => {
+    if (runningRef.current) return;
+    const item = queueRef.current.shift();
+    syncQueue();
+    if (!item) return;
+    runningRef.current = true;
+    runTurnRef.current(item.text, item.attachments).finally(() => {
+      runningRef.current = false;
+      pump();
+    });
+  }, []);
+  const handleSend = useCallback(
+    (text: string, attachments: Attachment[] = []) => {
+      queueRef.current.push({ id: uid(), text, attachments });
+      syncQueue();
+      pump();
+    },
+    [pump]
+  );
+  const dequeue = useCallback((id: string) => {
+    queueRef.current = queueRef.current.filter((q) => q.id !== id);
+    syncQueue();
+  }, []);
 
   // --- recent chats ---
   const openChats = useCallback(async () => {
@@ -256,7 +320,7 @@ export default function App() {
         const rec = recorderRef.current;
         recorderRef.current = null;
         const text = (await rec?.stopAndTranscribe())?.trim();
-        if (text) handleSend(text);
+        if (text && !transcriptIsJunk(text)) handleSend(text);
         else setAvatarState("idle");
       } catch (e) {
         console.error(e);
@@ -276,10 +340,51 @@ export default function App() {
   }, [recording, handleSend]);
   toggleMicRef.current = handleToggleMic;
 
+  // Hands-free conversation: after a spoken reply, listen again (VAD auto-stops
+  // on silence; the junk guard drops empty/ambient captures so nothing fires).
+  const maybeAutoListen = useCallback(async () => {
+    if (!convoMode || busy || recording) return;
+    const ac = new AbortController();
+    listenAbortRef.current = ac;
+    setRecording(true);
+    setAvatarState("listening");
+    try {
+      const text = (await listenOnce({ signal: ac.signal })).trim();
+      setRecording(false);
+      listenAbortRef.current = null;
+      if (text && !transcriptIsJunk(text)) handleSend(text);
+      else setAvatarState("idle");
+    } catch {
+      setRecording(false);
+      listenAbortRef.current = null;
+      setAvatarState("idle");
+    }
+  }, [convoMode, busy, recording, handleSend]);
+  autoListenRef.current = maybeAutoListen;
+
+  const toggleConvoMode = useCallback(() => {
+    setConvoMode((on) => {
+      const next = !on;
+      localStorage.setItem("convoMode", next ? "1" : "0");
+      if (!next) {
+        listenAbortRef.current?.abort();
+        listenAbortRef.current = null;
+        setRecording(false);
+        setAvatarState((s) => (s === "listening" ? "idle" : s));
+      }
+      return next;
+    });
+  }, []);
+
   const handleStop = useCallback(() => {
+    queueRef.current = [];
+    syncQueue();
     abortRef.current?.abort();
+    listenAbortRef.current?.abort();
+    listenAbortRef.current = null;
     stopSpeaking();
     setBusy(false);
+    setRecording(false);
     setAvatarState("idle");
   }, []);
 
@@ -374,6 +479,10 @@ export default function App() {
         busy={busy}
         recording={recording}
         voiceEnabled={features.voice}
+        convoMode={convoMode}
+        onToggleConvo={toggleConvoMode}
+        queue={queue}
+        onDequeue={dequeue}
         onSend={handleSend}
         onToggleMic={handleToggleMic}
         onStop={handleStop}

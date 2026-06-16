@@ -108,6 +108,10 @@ export const sendEmail = (to: string[], subject: string, body: string, cc?: stri
 export const readEmails = (count?: number) => invoke<string>("read_emails", { count });
 export const emailDetails = (query: string) => invoke<string>("email_details", { query });
 export const xBookmarks = (count?: number) => invoke<string>("x_bookmarks", { count });
+export const generateImage = (prompt: string, size?: string, steps?: number) =>
+  invoke<string>("generate_image", { prompt, size, steps });
+export const postToFacebook = (imagePath: string, caption: string, page?: string) =>
+  invoke<string>("post_to_facebook", { imagePath, caption, page });
 export const createReminder = (title: string, due?: string, remindAt?: string) =>
   invoke<string>("create_reminder", { title, due, remindAt });
 export const sendTeamsMessage = (recipientEmail: string, message: string) =>

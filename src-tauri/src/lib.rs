@@ -154,6 +154,8 @@ pub fn run() {
             tools::read_emails,
             tools::email_details,
             tools::x_bookmarks,
+            tools::generate_image,
+            tools::post_to_facebook,
             tools::create_reminder,
             tools::send_teams_message,
             tools::daemon_probe,
