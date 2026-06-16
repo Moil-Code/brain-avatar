@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Floating local-AI brain avatar for Moil"
 authors = ["Andres Urrego"]
 edition = "2021"
+# Two binaries (the Tauri app + the headless daemon) share one lib; make the app
+# the default so `cargo run` / `tauri dev` aren't ambiguous.
+default-run = "brain-avatar"
 
 [lib]
 name = "brain_avatar_lib"
