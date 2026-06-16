@@ -53,7 +53,7 @@ const SECTIONS: { title: string; hint?: string; fields: Field[] }[] = [
     title: "Remote brain (MacBook client)",
     hint: "Point this at the Mac Mini's brain-daemon (over Tailscale) to use the brain, calendar, mail, and web from this Mac. Leave blank to run everything locally. The local model endpoint above is still used directly for the LLM.",
     fields: [
-      { key: "brain_daemon_url", label: "Daemon URL", placeholder: "http://100.91.28.27:8787" },
+      { key: "brain_daemon_url", label: "Daemon URL", placeholder: "http://100.x.y.z:8787" },
       { key: "brain_daemon_token", label: "Daemon token", secret: true },
     ],
   },

@@ -38,7 +38,7 @@ pub struct Settings {
     // --- Remote brain (MacBook client -> Mac Mini brain-daemon) ---
     /// When set, the brain-owner tools (brain/calendar/mail/web/stt) are proxied
     /// to this daemon over Tailscale instead of running locally. Empty = run
-    /// locally (the Mac Mini's own behavior). e.g. "http://100.91.28.27:8787".
+    /// locally (the Mac Mini's own behavior). e.g. "http://100.x.y.z:8787".
     pub brain_daemon_url: String,
     /// Bearer token the daemon requires (must match its BRAIN_DAEMON_TOKEN).
     pub brain_daemon_token: String,

@@ -5,7 +5,7 @@ lives on the Mac Mini, while still being able to act on the MacBook itself.
 
 **Decisions locked in (2026-06-16):**
 - Architecture: **thin client → Mac Mini daemon** (one brain, always in sync)
-- Reach: **anywhere**, via Tailscale (already installed; `jarviss-mac-mini` @ `100.91.28.27` is online)
+- Reach: **anywhere**, via Tailscale (already installed; `jarviss-mac-mini` @ `100.x.y.z` is online)
 - Form factor: **reuse the floating Tauri avatar** (one codebase, two run modes)
 - Scope: **both** — answer/calendar/email via the Mac Mini *and* control the MacBook locally
 

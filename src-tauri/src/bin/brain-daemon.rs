@@ -5,7 +5,7 @@
 //!
 //!   BRAIN_DAEMON_TOKEN   (required)  long random secret; clients send `Bearer <it>`
 //!   BRAIN_DAEMON_BIND    (optional)  host:port to bind, default 127.0.0.1:8787
-//!                                    (set to the Tailscale IP, e.g. 100.91.28.27:8787)
+//!                                    (set to the Tailscale IP, e.g. 100.x.y.z:8787)
 
 use std::sync::Arc;
 use std::time::Duration;

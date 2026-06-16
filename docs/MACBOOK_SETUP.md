@@ -12,7 +12,7 @@ run on the laptop; the LLM goes straight to LM Studio. See
 
 ## A. Mac Mini (the brain owner) — one-time
 
-1. **Tailscale is up** (it already is — this host is `jarviss-mac-mini`, `100.91.28.27`).
+1. **Tailscale is up** (it already is — this host is `jarviss-mac-mini`, `100.x.y.z`).
    Confirm: `tailscale status`.
 
 2. **LM Studio must serve on the tailnet, not just localhost.** In LM Studio →
@@ -36,7 +36,7 @@ run on the laptop; the LLM goes straight to LM Studio. See
 
 5. **Verify it's serving:**
    ```bash
-   curl -s http://100.91.28.27:8787/health      # -> {"ok":true,...}
+   curl -s http://100.x.y.z:8787/health      # -> {"ok":true,...}
    ```
    Logs: `~/Library/Logs/brain-daemon.log`.
 
@@ -66,12 +66,12 @@ run on the laptop; the LLM goes straight to LM Studio. See
    - **Microphone** — for push-to-talk (`⌘⇧V`).
 
 4. **Settings → Remote brain:**
-   - **Daemon URL** = the URL from A.3 (e.g. `http://100.91.28.27:8787`)
+   - **Daemon URL** = the URL from A.3 (e.g. `http://100.x.y.z:8787`)
    - **Daemon token** = the token from A.3
    - Click **Test connection** → expect "Connected — daemon reachable and token accepted."
 
 5. **Settings → Model** (LLM goes direct, not via the daemon):
-   - **Remote URL (primary)** = `http://100.91.28.27:1234/v1` (the tailnet LM Studio)
+   - **Remote URL (primary)** = `http://100.x.y.z:1234/v1` (the tailnet LM Studio)
    - **Remote API token** = the LM Studio token
    - Click **Test connection** → expect the loaded model listed.
 
