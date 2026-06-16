@@ -4,14 +4,25 @@ import {
   brainSearch,
   calendarEvents,
   findFiles,
+  listApps,
   llmComplete,
+  openApp,
   openFileCmd,
   readFile,
+  runAppleScript,
   webSearch,
 } from "./tauri";
 import type { AvatarState, ChatMessage, Settings } from "./types";
 
 const MAX_ROUNDS = 5;
+
+/** Heuristic: does this query warrant the slower, deeper model (Gemma) vs the fast one? */
+function isDeepQuery(text: string): boolean {
+  if (text.length > 240) return true;
+  return /\b(analy[sz]e|deep dive|in.?depth|thorough|strateg|draft|compose|write (me )?an? |essay|report|compare|synthesi|brainstorm|plan out)\b/i.test(
+    text
+  );
+}
 
 export const TOOL_DEFS = [
   {
@@ -133,6 +144,42 @@ export const TOOL_DEFS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "open_app",
+      description: "Launch or switch to a Mac application by name (e.g. 'Notes', 'Spotify', 'Calendar').",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string", description: "Application name" } },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_apps",
+      description: "List the applications installed on Andres' Mac (to know what can be opened/controlled).",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_applescript",
+      description:
+        "Control a Mac app by running AppleScript — e.g. create a Note, add a Reminder/Calendar " +
+        "event, get the current Safari URL, control Music. The FIRST time you control a given app, " +
+        "macOS asks Andres to allow it (that's expected). For actions that SEND, post, delete, or " +
+        "message on his behalf, confirm with Andres in your reply BEFORE running it.",
+      parameters: {
+        type: "object",
+        properties: { script: { type: "string", description: "The AppleScript source to run" } },
+        required: ["script"],
+      },
+    },
+  },
 ];
 
 async function executeTool(name: string, argsJson: string): Promise<string> {
@@ -158,6 +205,12 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
         return await readFile(String(args.path ?? ""), args.max_chars);
       case "open_file":
         return await openFileCmd(String(args.path ?? ""));
+      case "open_app":
+        return await openApp(String(args.name ?? ""));
+      case "list_apps":
+        return await listApps();
+      case "run_applescript":
+        return await runAppleScript(String(args.script ?? ""));
       default:
         return `Unknown tool: ${name}`;
     }
@@ -186,7 +239,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   const { userText, history, settings, onState, onToken, onToolStart, signal } = opts;
   onState?.("thinking");
 
-  const endpoint = await resolveEndpoint(settings);
+  const endpoint = await resolveEndpoint(settings, { preferDeep: isDeepQuery(userText) });
 
   const messages: ChatMessage[] = [
     { role: "system", content: settings.system_prompt },

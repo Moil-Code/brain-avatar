@@ -140,6 +140,9 @@ pub fn run() {
             files::find_files,
             files::read_file,
             files::open_file,
+            files::open_app,
+            files::list_apps,
+            files::run_applescript,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

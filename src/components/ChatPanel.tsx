@@ -19,6 +19,9 @@ const TOOL_LABEL: Record<string, string> = {
   find_files: "📁 files",
   read_file: "📄 read",
   open_file: "📂 open",
+  open_app: "🚀 app",
+  list_apps: "🚀 apps",
+  run_applescript: "⚙️ control",
 };
 
 export default function ChatPanel({

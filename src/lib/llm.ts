@@ -6,11 +6,21 @@ import type { ChatMessage, LlmEndpoint, Settings, ToolCall } from "./types";
  * the heavy/human-facing model (Gemma) and is where inference normally runs, so
  * it is tried FIRST. The local host is only a fallback if the remote is down.
  */
-export async function resolveEndpoint(settings: Settings): Promise<LlmEndpoint> {
+export async function resolveEndpoint(
+  settings: Settings,
+  opts: { preferDeep?: boolean } = {}
+): Promise<LlmEndpoint> {
   const pickModel = (models: string[]) => {
+    // Explicit override always wins.
     if (settings.model && models.includes(settings.model)) return settings.model;
     if (settings.model && models.length === 0) return settings.model;
-    return models[0] ?? settings.model ?? "";
+    const find = (re: RegExp) => models.find((m) => re.test(m.toLowerCase()));
+    if (opts.preferDeep) {
+      // Deep synthesis: prefer a Gemma/large model.
+      return find(/gemma|2[4-9]b|3[0-9]b/) ?? models[0] ?? settings.model ?? "";
+    }
+    // Fast/interactive (default): prefer qwen / a small model for snappy tool calls.
+    return find(/qwen/) ?? find(/(8b|7b|4b|3b|2b|mini)/) ?? models[0] ?? settings.model ?? "";
   };
 
   // 1) Remote 24GB Mac (primary inference box).

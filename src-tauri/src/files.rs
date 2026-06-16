@@ -199,3 +199,71 @@ pub async fn open_file(path: String) -> Result<String, String> {
     run("/usr/bin/open", &[&path]).await?;
     Ok(format!("Opened {path}"))
 }
+
+/// Launch / activate a macOS application by name.
+#[tauri::command]
+pub async fn open_app(name: String) -> Result<String, String> {
+    match run("/usr/bin/open", &["-a", &name]).await {
+        Ok(_) => Ok(format!("Opened {name}.")),
+        Err(_) => Err(format!(
+            "Couldn't open \"{name}\" — it may not be installed. Try list_apps to see what's available."
+        )),
+    }
+}
+
+/// List installed applications (so the model knows what it can open/control).
+#[tauri::command]
+pub async fn list_apps() -> Result<String, String> {
+    let mut names: Vec<String> = Vec::new();
+    for dir in ["/Applications", "/System/Applications", "/System/Applications/Utilities"] {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                if let Some(stripped) = n.strip_suffix(".app") {
+                    names.push(stripped.to_string());
+                }
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names.truncate(150);
+    Ok(format!("Installed apps:\n{}", names.join(", ")))
+}
+
+/// Control a Mac app via AppleScript. macOS prompts the user to allow controlling
+/// each new app the first time (Automation permission) — that prompt IS the access
+/// request. Use for assistant actions (create a note, add a reminder, etc.).
+#[tauri::command]
+pub async fn run_applescript(script: String) -> Result<String, String> {
+    if script.trim().is_empty() {
+        return Err("Empty script".into());
+    }
+    let out = timeout(
+        Duration::from_secs(40),
+        Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(&script)
+            .env("PATH", augmented_path())
+            .output(),
+    )
+    .await
+    .map_err(|_| "AppleScript timed out".to_string())?
+    .map_err(|e| format!("osascript failed: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if out.status.success() {
+        return Ok(if stdout.is_empty() { "Done.".into() } else { stdout });
+    }
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let low = err.to_lowercase();
+    if err.contains("-1743") || low.contains("not allowed") || low.contains("not authori") {
+        Err(format!(
+            "macOS hasn't granted control of that app yet. Approve the permission prompt when it \
+             appears (or enable it under System Settings → Privacy & Security → Automation), then \
+             ask me again. ({err})"
+        ))
+    } else {
+        Err(format!("AppleScript error: {err}"))
+    }
+}

@@ -6,5 +6,9 @@
   <string>Brain Avatar uses the microphone so you can ask questions by voice.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Brain Avatar connects to your local LM Studio model server (e.g. Mac-mini.local) for answers.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Brain Avatar controls Mac apps you ask it to (open, read, create items) on your behalf.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Brain Avatar listens for its wake word and transcribes what you say.</string>
 </dict>
 </plist>

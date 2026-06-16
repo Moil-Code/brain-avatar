@@ -56,6 +56,9 @@ export const findFiles = (query: string, scope?: string) =>
 export const readFile = (path: string, maxChars?: number) =>
   invoke<string>("read_file", { path, maxChars });
 export const openFileCmd = (path: string) => invoke<string>("open_file", { path });
+export const openApp = (name: string) => invoke<string>("open_app", { name });
+export const listApps = () => invoke<string>("list_apps");
+export const runAppleScript = (script: string) => invoke<string>("run_applescript", { script });
 
 // --- History sync ---
 export const saveMessage = (conversationId: string, role: string, content: string) =>
