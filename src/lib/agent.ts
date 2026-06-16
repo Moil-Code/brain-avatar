@@ -1,5 +1,5 @@
-import { resolveEndpoint, streamChat } from "./llm";
-import { brainSearch, calendarEvents, webSearch } from "./tauri";
+import { resolveEndpoint } from "./llm";
+import { brainSearch, calendarEvents, llmComplete, webSearch } from "./tauri";
 import type { AvatarState, ChatMessage, Settings } from "./types";
 
 const MAX_ROUNDS = 5;
@@ -111,20 +111,26 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   const toolsUsed: string[] = [];
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
-    const { content, toolCalls } = await streamChat({
-      endpoint,
+    if (signal?.aborted) throw new Error("aborted");
+    const res = await llmComplete(
+      endpoint.baseUrl,
+      endpoint.token,
+      endpoint.model,
       messages,
-      tools: TOOL_DEFS,
-      onToken,
-      signal,
-    });
+      TOOL_DEFS,
+      settings.max_tokens
+    );
+    const content = res.content ?? "";
+    const toolCalls = Array.isArray(res.tool_calls) ? res.tool_calls : [];
 
     if (toolCalls.length === 0) {
-      return { content: content.trim(), tools: toolsUsed };
+      const answer = content.trim();
+      onToken?.(answer);
+      return { content: answer, tools: toolsUsed };
     }
 
     // Record the assistant's tool-call message, then run each tool.
-    messages.push({ role: "assistant", content: content ?? "", tool_calls: toolCalls });
+    messages.push({ role: "assistant", content, tool_calls: toolCalls });
     for (const tc of toolCalls) {
       onToolStart?.(tc.function.name);
       if (!toolsUsed.includes(tc.function.name)) toolsUsed.push(tc.function.name);
@@ -140,6 +146,15 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   }
 
   // Exhausted tool rounds — make one final answer attempt without tools.
-  const final = await streamChat({ endpoint, messages, onToken, signal });
-  return { content: final.content.trim(), tools: toolsUsed };
+  const final = await llmComplete(
+    endpoint.baseUrl,
+    endpoint.token,
+    endpoint.model,
+    messages,
+    undefined,
+    settings.max_tokens
+  );
+  const answer = (final.content ?? "").trim();
+  onToken?.(answer);
+  return { content: answer, tools: toolsUsed };
 }

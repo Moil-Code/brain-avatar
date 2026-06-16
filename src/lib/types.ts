@@ -31,6 +31,7 @@ export interface Settings {
   lm_studio_remote_url: string;
   lm_studio_remote_token: string;
   model: string;
+  max_tokens: number;
   groq_api_key: string;
   groq_model: string;
   brave_api_key: string;

@@ -127,6 +127,7 @@ pub fn run() {
             tools::web_search,
             voice::transcribe_audio,
             llm::llm_probe,
+            llm::llm_complete,
             history::save_message,
             history::fetch_messages,
         ])

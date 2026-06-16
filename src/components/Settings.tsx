@@ -12,12 +12,12 @@ type Field = { key: keyof SettingsType; label: string; secret?: boolean; placeho
 
 const SECTIONS: { title: string; hint?: string; fields: Field[] }[] = [
   {
-    title: "Local model (LM Studio)",
-    hint: "Local endpoint is tried first; the remote Mac is the fallback.",
+    title: "Model (LM Studio)",
+    hint: "The remote 24GB Mac (Mac-mini.local) is the primary inference box and is tried first; the local host is the fallback.",
     fields: [
-      { key: "lm_studio_local_url", label: "Local URL", placeholder: "http://localhost:1234/v1" },
-      { key: "lm_studio_remote_url", label: "Remote URL", placeholder: "http://Mac-mini.local:1234/v1" },
+      { key: "lm_studio_remote_url", label: "Remote URL (primary)", placeholder: "http://Mac-mini.local:1234/v1" },
       { key: "lm_studio_remote_token", label: "Remote API token", secret: true },
+      { key: "lm_studio_local_url", label: "Local URL (fallback)", placeholder: "http://localhost:1234/v1" },
       { key: "model", label: "Model (blank = auto)", placeholder: "auto-select first model" },
     ],
   },
@@ -70,20 +70,21 @@ export default function Settings({ initial, onSaved, onClose }: Props) {
     }
   };
 
-  const testLocal = async () => {
-    setProbe("Testing local…");
-    const r = await llmProbe(draft.lm_studio_local_url).catch((e) => ({ ok: false, models: [], error: String(e) }));
-    if (r.ok) setProbe(`✓ Local up. Models: ${r.models.join(", ") || "(none reported)"}`);
-    else {
-      setProbe(`✗ Local unreachable — trying remote…`);
-      const rr = await llmProbe(draft.lm_studio_remote_url, draft.lm_studio_remote_token).catch((e) => ({
-        ok: false,
-        models: [],
-        error: String(e),
-      }));
-      if (rr.ok) setProbe(`✓ Remote up. Models: ${rr.models.join(", ") || "(none)"}`);
-      else setProbe(`✗ Neither endpoint reachable. ${rr.error ?? ""}`);
+  const testConnection = async () => {
+    setProbe("Testing remote (24GB Mac)…");
+    const r = await llmProbe(draft.lm_studio_remote_url, draft.lm_studio_remote_token).catch((e) => ({
+      ok: false,
+      models: [],
+      error: String(e),
+    }));
+    if (r.ok) {
+      setProbe(`✓ Remote up. Models: ${r.models.join(", ") || "(none reported)"}`);
+      return;
     }
+    setProbe(`✗ Remote unreachable (${r.error ?? "?"}) — trying local fallback…`);
+    const rr = await llmProbe(draft.lm_studio_local_url).catch((e) => ({ ok: false, models: [], error: String(e) }));
+    if (rr.ok) setProbe(`✓ Local fallback up. Models: ${rr.models.join(", ") || "(none)"}`);
+    else setProbe(`✗ Neither endpoint reachable. Remote: ${r.error ?? "?"}`);
   };
 
   return (
@@ -112,8 +113,8 @@ export default function Settings({ initial, onSaved, onClose }: Props) {
                 />
               </label>
             ))}
-            {sec.title.startsWith("Local model") && (
-              <button className="ghost-btn" onClick={testLocal}>
+            {sec.title.startsWith("Model") && (
+              <button className="ghost-btn" onClick={testConnection}>
                 Test connection
               </button>
             )}

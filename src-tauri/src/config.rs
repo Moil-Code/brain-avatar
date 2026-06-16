@@ -8,12 +8,15 @@ use tauri::{AppHandle, Manager};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    // --- LM Studio (local-first, remote fallback) ---
+    // --- LM Studio (remote 24GB Mac is primary, local host is fallback) ---
     pub lm_studio_local_url: String,
     pub lm_studio_remote_url: String,
     pub lm_studio_remote_token: String,
-    /// Empty string => auto-select the first model the active endpoint reports.
+    /// Empty string => auto-select the model currently loaded on the endpoint.
     pub model: String,
+    /// Generous by default: reasoning models (Gemma) fill reasoning_content first,
+    /// so a low cap leaves `content` empty.
+    pub max_tokens: u32,
 
     // --- Voice (Groq Whisper STT) ---
     pub groq_api_key: String,
@@ -41,7 +44,12 @@ impl Default for Settings {
             lm_studio_local_url: "http://localhost:1234/v1".into(),
             lm_studio_remote_url: "http://Mac-mini.local:1234/v1".into(),
             lm_studio_remote_token: String::new(),
+            // Blank => auto-select the model currently LOADED on the endpoint. The
+            // 24GB Mac runs one model at a time and won't JIT-load another, so we
+            // use whatever is loaded rather than requesting a fixed id. Set a
+            // specific id in Settings to override.
             model: String::new(),
+            max_tokens: 4096,
             groq_api_key: String::new(),
             groq_model: "whisper-large-v3-turbo".into(),
             brave_api_key: String::new(),

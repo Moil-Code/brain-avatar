@@ -14,6 +14,24 @@ export interface ProbeResult {
 export const llmProbe = (baseUrl: string, token?: string) =>
   invoke<ProbeResult>("llm_probe", { baseUrl, token });
 
+import type { ToolCall } from "./types";
+export const llmComplete = (
+  baseUrl: string,
+  token: string | undefined,
+  model: string,
+  messages: unknown,
+  tools?: unknown,
+  maxTokens?: number
+) =>
+  invoke<{ content: string; tool_calls: ToolCall[] | null }>("llm_complete", {
+    baseUrl,
+    token,
+    model,
+    messages,
+    tools,
+    maxTokens,
+  });
+
 // --- Tools (executed in Rust, results fed back to the model) ---
 export const brainSearch = (query: string, limit?: number) =>
   invoke<string>("brain_search", { query, limit });

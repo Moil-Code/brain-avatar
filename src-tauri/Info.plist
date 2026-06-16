@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Brain Avatar uses the microphone so you can ask questions by voice.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Brain Avatar connects to your local LM Studio model server (e.g. Mac-mini.local) for answers.</string>
+</dict>
+</plist>

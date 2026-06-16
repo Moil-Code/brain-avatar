@@ -36,8 +36,9 @@ Launch the app, open **Settings** (gear icon or tray → Settings…), and fill 
 
 | Field | Where to get it | Required? |
 |---|---|---|
-| **Local URL** | `http://localhost:1234/v1` (pre-filled) | yes (just run LM Studio) |
-| **Remote URL / token** | `Mac-mini.local:1234/v1` + LM Studio API token | optional fallback |
+| **Remote URL (primary)** | `http://Mac-mini.local:1234/v1` (pre-filled) — the 24GB Mac | yes |
+| **Remote API token** | the LM Studio API token from the 24GB Mac | yes (auth required) |
+| **Local URL (fallback)** | `http://localhost:1234/v1` — this host | optional |
 | **Groq API key** | <https://console.groq.com/keys> | only for voice |
 | **Brave API key** | <https://brave.com/search/api/> | only for web search |
 | **gbrain / m365 path** | pre-filled (`~/.bun/bin/gbrain`, `/opt/homebrew/bin/m365`) | yes |
@@ -96,15 +97,17 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
 - **Web** — Brave Search API.
 - **Voice in** — records the mic, sends to Groq Whisper for transcription.
 - **Voice out** — the macOS system voice via the webview's `speechSynthesis`.
-- **LLM** — OpenAI-compatible LM Studio. Tries local `:1234` first, falls back to the
-  remote Mac (with bearer token) if local is down.
+- **LLM** — OpenAI-compatible LM Studio. The **remote 24GB Mac (`Mac-mini.local:1234`)**
+  runs the heavy human-facing model (Gemma) and is the **primary** endpoint (with bearer
+  token); the local host is only a fallback.
 - **History** — each turn is POSTed to the Vercel API → Supabase. Skipped silently if not
   configured, so the app is fully usable offline.
 
 ## Troubleshooting
 
-- **"No LM Studio endpoint is reachable"** — start LM Studio and load a model; confirm
-  `curl http://localhost:1234/v1/models` returns JSON.
+- **"No LM Studio endpoint is reachable"** — make sure the 24GB Mac is awake and serving;
+  confirm `curl -H "Authorization: Bearer <token>" http://Mac-mini.local:1234/v1/models`
+  returns JSON. Set the same token in the app's Settings.
 - **"The brain is busy"** — a Claude Code `gbrain` MCP session holds the PGLite lock.
   It retries; if it persists, close that session momentarily.
 - **Calendar empty/erroring** — run `m365 status`; re-`m365 login` if your session expired.

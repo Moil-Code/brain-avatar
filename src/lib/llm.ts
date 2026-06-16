@@ -1,7 +1,11 @@
 import { llmProbe } from "./tauri";
 import type { ChatMessage, LlmEndpoint, Settings, ToolCall } from "./types";
 
-/** Pick a healthy LM Studio endpoint: local first, remote (Mac-mini) as fallback. */
+/**
+ * Pick a healthy LM Studio endpoint. The remote 24GB Mac (Mac-mini.local) runs
+ * the heavy/human-facing model (Gemma) and is where inference normally runs, so
+ * it is tried FIRST. The local host is only a fallback if the remote is down.
+ */
 export async function resolveEndpoint(settings: Settings): Promise<LlmEndpoint> {
   const pickModel = (models: string[]) => {
     if (settings.model && models.includes(settings.model)) return settings.model;
@@ -9,11 +13,7 @@ export async function resolveEndpoint(settings: Settings): Promise<LlmEndpoint> 
     return models[0] ?? settings.model ?? "";
   };
 
-  const local = await llmProbe(settings.lm_studio_local_url).catch(() => null);
-  if (local?.ok) {
-    return { baseUrl: settings.lm_studio_local_url, model: pickModel(local.models) };
-  }
-
+  // 1) Remote 24GB Mac (primary inference box).
   if (settings.lm_studio_remote_url) {
     const remote = await llmProbe(
       settings.lm_studio_remote_url,
@@ -28,9 +28,17 @@ export async function resolveEndpoint(settings: Settings): Promise<LlmEndpoint> 
     }
   }
 
+  // 2) Local host fallback.
+  if (settings.lm_studio_local_url) {
+    const local = await llmProbe(settings.lm_studio_local_url).catch(() => null);
+    if (local?.ok) {
+      return { baseUrl: settings.lm_studio_local_url, model: pickModel(local.models) };
+    }
+  }
+
   throw new Error(
-    "No LM Studio endpoint is reachable. Make sure LM Studio is running locally on " +
-      `${settings.lm_studio_local_url}, or that the remote host is up and the token is set.`
+    `No LM Studio endpoint is reachable. Make sure the remote host (${settings.lm_studio_remote_url}) ` +
+      "is awake and its API token is set in Settings, or that local LM Studio is running."
   );
 }
 
