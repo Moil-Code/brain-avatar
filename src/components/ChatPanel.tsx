@@ -58,6 +58,7 @@ const TOOL_LABEL: Record<string, string> = {
   run_applescript: "⚙️ control",
   read_emails: "📨 inbox",
   email_details: "✉️ email",
+  x_bookmarks: "🔖 bookmarks",
   send_email: "✉️ email",
   create_reminder: "⏰ reminder",
   send_teams_message: "💬 teams",

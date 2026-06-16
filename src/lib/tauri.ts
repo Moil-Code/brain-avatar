@@ -103,6 +103,7 @@ export const sendEmail = (to: string[], subject: string, body: string, cc?: stri
   invoke<string>("send_email", { to, subject, body, cc });
 export const readEmails = (count?: number) => invoke<string>("read_emails", { count });
 export const emailDetails = (query: string) => invoke<string>("email_details", { query });
+export const xBookmarks = (count?: number) => invoke<string>("x_bookmarks", { count });
 export const createReminder = (title: string, due?: string, remindAt?: string) =>
   invoke<string>("create_reminder", { title, due, remindAt });
 export const sendTeamsMessage = (recipientEmail: string, message: string) =>
@@ -126,7 +127,7 @@ export const openApp = (name: string) => invoke<string>("open_app", { name });
 export const listApps = () => invoke<string>("list_apps");
 export const runAppleScript = (script: string) => invoke<string>("run_applescript", { script });
 
-// --- History sync ---
+// --- History sync (optional Supabase mirror) ---
 export const saveMessage = (conversationId: string, role: string, content: string) =>
   invoke<void>("save_message", { conversationId, role, content });
 export const fetchMessages = (conversationId: string, limit?: number) =>
@@ -134,3 +135,18 @@ export const fetchMessages = (conversationId: string, limit?: number) =>
     "fetch_messages",
     { conversationId, limit }
   );
+
+// --- Local conversation store (durable "recent chats") ---
+export interface ConvSummary {
+  id: string;
+  title: string;
+  updated_at: string;
+  message_count: number;
+}
+export const listConversations = () => invoke<ConvSummary[]>("list_conversations");
+export const getConversation = (conversationId: string) =>
+  invoke<{ role: string; content: string; ts: string }[]>("get_conversation", { conversationId });
+export const appendTurn = (conversationId: string, role: string, content: string) =>
+  invoke<void>("append_turn", { conversationId, role, content });
+export const deleteConversation = (conversationId: string) =>
+  invoke<void>("delete_conversation", { conversationId });

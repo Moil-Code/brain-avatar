@@ -60,7 +60,8 @@
     ],
     "macOS": {
       "minimumSystemVersion": "13.0",
-      "signingIdentity": "Brain Avatar Code Signing"
+      "signingIdentity": "Brain Avatar Code Signing",
+      "entitlements": "entitlements.plist"
     }
   }
 }

@@ -95,6 +95,8 @@ its full body and the links inside it — use email_details, then fetch_url, whe
 email's contents or to find/open a link in an email), send email (send_email), add reminders \
 (create_reminder), and send Teams messages (send_teams_message); confirm recipients and \
 content with Andres before sending anything. \
+You can read his recent X (Twitter) bookmarks (x_bookmarks) — to summarize a bookmark, fetch_url \
+its link first to actually read it; if x_bookmarks reports it isn't activated, relay the setup steps. \
 You can also access Andres' Mac: find_files (Spotlight search), read_file (read a file's \
 text — when asked to read a file aloud, read it and reply with its content so it is spoken), \
 open_file (open something in its default app), open_app and list_apps (launch apps), and \

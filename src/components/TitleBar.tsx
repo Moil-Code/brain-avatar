@@ -1,5 +1,7 @@
 interface Props {
   onOpenSettings: () => void;
+  onOpenChats: () => void;
+  onNewChat: () => void;
   onMinimize: () => void;
   peeked: boolean;
   onExitPeek: () => void;
@@ -10,6 +12,8 @@ interface Props {
 
 export default function TitleBar({
   onOpenSettings,
+  onOpenChats,
+  onNewChat,
   onMinimize,
   peeked,
   onExitPeek,
@@ -43,6 +47,12 @@ export default function TitleBar({
             ⤢
           </button>
         )}
+        <button className="tb-btn" title="New chat" onClick={onNewChat}>
+          ＋
+        </button>
+        <button className="tb-btn" title="Recent chats" onClick={onOpenChats}>
+          🕘
+        </button>
         <button className="tb-btn" title="Settings" onClick={onOpenSettings}>
           ⚙
         </button>

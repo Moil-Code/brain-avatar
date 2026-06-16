@@ -22,6 +22,7 @@ import {
   sendEmail,
   sendTeamsMessage,
   webSearch,
+  xBookmarks,
 } from "./tauri";
 import type { Attachment, AvatarState, ChatMessage, Settings, UiStep } from "./types";
 
@@ -58,6 +59,8 @@ function toolStepLabel(name: string, a: any): string {
       return "Deleting the event";
     case "create_teams_meeting":
       return "Setting up the Teams meeting";
+    case "x_bookmarks":
+      return "Fetching your X bookmarks";
     case "web_search":
       return a.query ? `Searching the web for “${a.query}”` : "Searching the web";
     case "fetch_url":
@@ -217,6 +220,24 @@ export const TOOL_DEFS = [
           end: { type: "string", description: "e.g. 2026-06-17T10:30:00-05:00" },
         },
         required: ["subject", "start", "end"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "x_bookmarks",
+      description:
+        "Get Andres' most recent X (Twitter) bookmarks. Use for 'my bookmarks', 'my last N " +
+        "X/Twitter bookmarks', 'what did I bookmark'. Returns each bookmark's author, text, tweet " +
+        "URL, and any outbound article links. To 'actually read' a bookmark before summarizing, " +
+        "call fetch_url on its link(s), then summarize. If the result says it's not activated, " +
+        "relay the activation steps to Andres.",
+      parameters: {
+        type: "object",
+        properties: {
+          count: { type: "integer", description: "How many recent bookmarks (default 5, max 25)" },
+        },
       },
     },
   },
@@ -471,6 +492,8 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
           String(args.start ?? ""),
           String(args.end ?? "")
         );
+      case "x_bookmarks":
+        return await xBookmarks(args.count);
       case "web_search":
         return await webSearch(String(args.query ?? ""));
       case "fetch_url":

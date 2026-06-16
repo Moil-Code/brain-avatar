@@ -858,6 +858,29 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
+/// Fetch Andres' most recent X (Twitter) bookmarks as JSON (author, text, tweet
+/// URL, outbound article links). Reuses the Brain's sanctioned X-API scraper
+/// (OAuth2 + refresh) read-only — never writes the daily digest. The model can
+/// then fetch_url each link to actually read and summarize a bookmark.
+#[tauri::command]
+pub async fn x_bookmarks(count: Option<u32>) -> Result<String, String> {
+    let n = count.unwrap_or(5).clamp(1, 25);
+    let py = "/Users/jarvisurrego/My Brain/pi-workspace/.venv/bin/python3";
+    let script = "/Users/jarvisurrego/My Brain/pi-workspace/bin/x-bookmarks-recent.py";
+    let args = vec![
+        script.to_string(),
+        "--count".to_string(),
+        n.to_string(),
+    ];
+    // The script exits 0 and emits JSON even for the not-activated / error cases,
+    // so surface its stdout to the model rather than treating it as a hard error.
+    match run_cli(py, &args).await {
+        Ok(s) if !s.trim().is_empty() => Ok(s),
+        Ok(_) => Ok("{\"ok\":false,\"error\":\"x-bookmarks returned no output\"}".to_string()),
+        Err(e) => Ok(format!("{{\"ok\":false,\"error\":\"{}\"}}", e.replace('"', "'"))),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // fetch_url  ->  read a web page's text locally (no cloud service)
 // ---------------------------------------------------------------------------

@@ -5,7 +5,17 @@ import ChatPanel from "./components/ChatPanel";
 import SettingsView from "./components/Settings";
 import TitleBar from "./components/TitleBar";
 import { runAgent } from "./lib/agent";
-import { featureFlags, fetchMessages, getSettings, saveMessage } from "./lib/tauri";
+import {
+  appendTurn,
+  deleteConversation,
+  featureFlags,
+  getConversation,
+  getSettings,
+  listConversations,
+  saveMessage,
+  type ConvSummary,
+} from "./lib/tauri";
+import ChatsView from "./components/Chats";
 import { probeModels } from "./lib/llm";
 import { primeVoices, speak, startRecording, stopSpeaking, type Recorder } from "./lib/voice";
 import { checkForUpdate, installUpdate, type Update } from "./lib/updater";
@@ -61,13 +71,32 @@ export default function App() {
   const [expanded, setExpanded] = useState(false);
   const [models, setModels] = useState<string[]>([]);
   const [modelOverride, setModelOverride] = useState<string | null>(null);
+  const [showChats, setShowChats] = useState(false);
+  const [conversations, setConversations] = useState<ConvSummary[]>([]);
+  const [activeConv, setActiveConv] = useState<string>(() => getConversationId());
   const collapseTimer = useRef<number | null>(null);
 
   const modelHistory = useRef<ChatMessage[]>([]);
   const recorderRef = useRef<Recorder | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const conversationId = useRef<string>(getConversationId());
   const toggleMicRef = useRef<() => void>(() => {});
+
+  const setActiveConvId = (id: string) => {
+    localStorage.setItem("conversationId", id);
+    setActiveConv(id);
+  };
+
+  const loadConversation = useCallback(async (id: string) => {
+    const msgs = await getConversation(id).catch(() => []);
+    const turns = msgs.filter((m) => m.role === "user" || m.role === "assistant");
+    setMessages(
+      turns.map((m) => ({ id: uid(), role: m.role as "user" | "assistant", content: m.content }))
+    );
+    modelHistory.current = turns.map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
+  }, []);
 
   // --- bootstrap ---
   useEffect(() => {
@@ -79,17 +108,7 @@ export default function App() {
         setFeatures(await featureFlags());
         probeModels(s).then(setModels).catch(() => {});
         if (!s.lm_studio_local_url) setShowSettings(true);
-        const prior = await fetchMessages(conversationId.current, 50).catch(() => []);
-        if (prior.length) {
-          const turns = prior.filter((m) => m.role === "user" || m.role === "assistant");
-          setMessages(
-            turns.map((m) => ({ id: uid(), role: m.role as "user" | "assistant", content: m.content }))
-          );
-          modelHistory.current = turns.map((m) => ({
-            role: m.role as "user" | "assistant",
-            content: m.content,
-          }));
-        }
+        await loadConversation(localStorage.getItem("conversationId") || activeConv);
       } catch (e) {
         console.error("bootstrap failed", e);
       }
@@ -123,6 +142,7 @@ export default function App() {
         steps: [],
       };
       setMessages((ms) => [...ms, userMsg, botMsg]);
+      appendTurn(activeConv, "user", text).catch(() => {});
       setBusy(true);
       setAvatarState("thinking");
       stopSpeaking();
@@ -174,8 +194,9 @@ export default function App() {
           { role: "assistant", content: answer },
         ];
 
-        saveMessage(conversationId.current, "user", text).catch(() => {});
-        saveMessage(conversationId.current, "assistant", answer).catch(() => {});
+        appendTurn(activeConv, "assistant", answer).catch(() => {});
+        saveMessage(activeConv, "user", text).catch(() => {});
+        saveMessage(activeConv, "assistant", answer).catch(() => {});
 
         speak(answer, {
           onStart: () => setAvatarState("speaking"),
@@ -194,7 +215,37 @@ export default function App() {
         abortRef.current = null;
       }
     },
-    [settings, busy, modelOverride]
+    [settings, busy, modelOverride, activeConv]
+  );
+
+  // --- recent chats ---
+  const openChats = useCallback(async () => {
+    setConversations(await listConversations().catch(() => []));
+    setShowChats(true);
+  }, []);
+  const newChat = useCallback(() => {
+    abortRef.current?.abort();
+    setActiveConvId(uid());
+    setMessages([]);
+    modelHistory.current = [];
+    setShowChats(false);
+  }, []);
+  const switchChat = useCallback(
+    async (id: string) => {
+      abortRef.current?.abort();
+      setActiveConvId(id);
+      await loadConversation(id);
+      setShowChats(false);
+    },
+    [loadConversation]
+  );
+  const removeChat = useCallback(
+    async (id: string) => {
+      await deleteConversation(id).catch(() => {});
+      setConversations(await listConversations().catch(() => []));
+      if (id === activeConv) newChat();
+    },
+    [activeConv, newChat]
   );
 
   const handleToggleMic = useCallback(async () => {
@@ -289,6 +340,8 @@ export default function App() {
     <div className="app glass" onMouseLeave={onPeekLeave}>
       <TitleBar
         onOpenSettings={() => setShowSettings(true)}
+        onOpenChats={openChats}
+        onNewChat={newChat}
         onMinimize={startPeek}
         peeked={peeked}
         onExitPeek={stopPeek}
@@ -325,6 +378,16 @@ export default function App() {
         onToggleMic={handleToggleMic}
         onStop={handleStop}
       />
+      {showChats && (
+        <ChatsView
+          conversations={conversations}
+          activeId={activeConv}
+          onSelect={switchChat}
+          onNew={newChat}
+          onDelete={removeChat}
+          onClose={() => setShowChats(false)}
+        />
+      )}
       {showSettings && (
         <SettingsView
           initial={settings}
