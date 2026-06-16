@@ -8,6 +8,7 @@
 //!                                    (set to the Tailscale IP, e.g. 100.91.28.27:8787)
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::{Request, State},
@@ -67,6 +68,12 @@ async fn main() {
         .route("/llm/complete", post(llm_complete))
         .route("/llm/probe", post(llm_probe))
         .route("/stt/transcribe", post(stt_transcribe))
+        // OpenAI-shaped passthrough so the app's existing LM Studio prober/completer
+        // can point at the daemon and have it relay to the real LM Studio (on the
+        // 24GB Mac, reachable from here over the LAN) — works from anywhere.
+        .route("/api/v0/models", get(lm_api_v0_models))
+        .route("/v1/models", get(lm_v1_models))
+        .route("/v1/chat/completions", post(lm_v1_chat))
         .route("/auth/check", get(auth_check))
         .layer(middleware::from_fn_with_state(state.clone(), auth));
 
@@ -344,6 +351,83 @@ async fn llm_complete(
 async fn llm_probe(State(st): State<Arc<AppState>>) -> Json<llm::ProbeResult> {
     let (url, token) = resolve_llm(&st.settings);
     Json(llm::llm_probe(url, token).await)
+}
+
+// --- OpenAI-shaped passthrough: relay to the real LM Studio with its own token ---
+async fn relay_get(st: &Arc<AppState>, full_url: String) -> Result<Json<Value>, (StatusCode, String)> {
+    let (_url, token) = resolve_llm(&st.settings);
+    let client = reqwest::Client::new();
+    let mut req = client.get(&full_url).timeout(Duration::from_secs(15));
+    if let Some(t) = &token {
+        if !t.trim().is_empty() {
+            req = req.header("Authorization", format!("Bearer {t}"));
+        }
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("LM Studio unreachable: {e}")))?;
+    let status = resp.status();
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    if status.is_success() {
+        Ok(Json(v))
+    } else {
+        Err((
+            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+            v.to_string(),
+        ))
+    }
+}
+
+/// LM Studio base with any trailing `/v1` removed (its native API lives at the root).
+fn lm_native_base(settings: &Settings) -> String {
+    let (url, _) = resolve_llm(settings);
+    url.trim_end_matches('/').trim_end_matches("/v1").to_string()
+}
+
+async fn lm_api_v0_models(State(st): State<Arc<AppState>>) -> Result<Json<Value>, (StatusCode, String)> {
+    let full = format!("{}/api/v0/models", lm_native_base(&st.settings));
+    relay_get(&st, full).await
+}
+
+async fn lm_v1_models(State(st): State<Arc<AppState>>) -> Result<Json<Value>, (StatusCode, String)> {
+    let full = format!("{}/v1/models", lm_native_base(&st.settings));
+    relay_get(&st, full).await
+}
+
+async fn lm_v1_chat(
+    State(st): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let (_url, token) = resolve_llm(&st.settings);
+    let full = format!("{}/v1/chat/completions", lm_native_base(&st.settings));
+    let client = reqwest::Client::new();
+    let mut req = client.post(&full).json(&body).timeout(Duration::from_secs(300));
+    if let Some(t) = &token {
+        if !t.trim().is_empty() {
+            req = req.header("Authorization", format!("Bearer {t}"));
+        }
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("LM Studio unreachable: {e}")))?;
+    let status = resp.status();
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    if status.is_success() {
+        Ok(Json(v))
+    } else {
+        Err((
+            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+            v.to_string(),
+        ))
+    }
 }
 
 // ----------------------------------------------------------------------------- stt
