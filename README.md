@@ -67,6 +67,25 @@ app's Settings (**Vercel API URL** / **Sync token**).
 ```bash
 gh repo create brain-avatar --private --source . --remote origin --push
 ```
+If your repo isn't `Moil-Code/brain-avatar`, update the updater endpoint owner/repo in
+`src-tauri/tauri.conf.json` (`plugins.updater.endpoints`).
+
+## Smooth updates (the in-app "Update" button)
+
+The app is signed with a **stable self-signed identity** ("Brain Avatar Code Signing"), so
+updates no longer reset your macOS permissions. On launch it checks GitHub Releases; when a
+newer version is published, an **Update** banner appears — one click downloads, installs, and
+relaunches. To publish an update:
+
+```bash
+# bump "version" in src-tauri/tauri.conf.json, then:
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/brain-avatar-updater.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+npm run tauri build            # produces the signed .app, .dmg, .app.tar.gz + .app.tar.gz.sig
+```
+Create a GitHub Release for the new version and upload `Brain Avatar.app.tar.gz`, its `.sig`,
+and a `latest.json` manifest (Tauri prints the values; the public key is already baked into the
+app). Keep `~/.tauri/brain-avatar-updater.key` secret — it signs every update.
 
 ---
 

@@ -7,6 +7,7 @@ import TitleBar from "./components/TitleBar";
 import { runAgent } from "./lib/agent";
 import { featureFlags, fetchMessages, getSettings, saveMessage } from "./lib/tauri";
 import { primeVoices, speak, startRecording, stopSpeaking, type Recorder } from "./lib/voice";
+import { checkForUpdate, installUpdate, type Update } from "./lib/updater";
 import type { AvatarState, ChatMessage, FeatureFlags, Settings, UiMessage } from "./lib/types";
 
 function uid() {
@@ -35,6 +36,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [update, setUpdate] = useState<Update | null>(null);
+  const [updating, setUpdating] = useState(false);
 
   const modelHistory = useRef<ChatMessage[]>([]);
   const recorderRef = useRef<Recorder | null>(null);
@@ -66,6 +69,7 @@ export default function App() {
         console.error("bootstrap failed", e);
       }
     })();
+    checkForUpdate().then(setUpdate);
     const unlistenSettings = listen("open-settings", () => setShowSettings(true));
     const unlistenVoice = listen("toggle-voice", () => toggleMicRef.current());
     return () => {
@@ -192,6 +196,25 @@ export default function App() {
   return (
     <div className="app glass">
       <TitleBar onOpenSettings={() => setShowSettings(true)} />
+      {update && (
+        <div className="update-banner">
+          <span>✨ Update {update.version} available</span>
+          <button
+            disabled={updating}
+            onClick={async () => {
+              setUpdating(true);
+              try {
+                await installUpdate(update);
+              } catch (e) {
+                console.error("update failed", e);
+                setUpdating(false);
+              }
+            }}
+          >
+            {updating ? "Updating…" : "Update"}
+          </button>
+        </div>
+      )}
       <Avatar state={avatarState} onClick={() => !busy && !recording && handleToggleMic()} />
       <ChatPanel
         messages={messages}
