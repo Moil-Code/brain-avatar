@@ -65,6 +65,12 @@ export const createTeamsMeeting = (subject: string, start: string, end: string) 
 export const webSearch = (query: string) =>
   invoke<string>("web_search", { query });
 export const fetchUrl = (url: string) => invoke<string>("fetch_url", { url });
+export const sendEmail = (to: string[], subject: string, body: string, cc?: string[]) =>
+  invoke<string>("send_email", { to, subject, body, cc });
+export const createReminder = (title: string, due?: string, remindAt?: string) =>
+  invoke<string>("create_reminder", { title, due, remindAt });
+export const sendTeamsMessage = (recipientEmail: string, message: string) =>
+  invoke<string>("send_teams_message", { recipientEmail, message });
 
 // --- Voice ---
 export const transcribeAudio = (audioBase64: string, mime: string) =>

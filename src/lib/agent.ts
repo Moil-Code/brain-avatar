@@ -6,6 +6,7 @@ import {
   calendarDelete,
   calendarEvents,
   calendarUpdate,
+  createReminder,
   createTeamsMeeting,
   fetchUrl,
   findFiles,
@@ -15,6 +16,8 @@ import {
   openFileCmd,
   readFile,
   runAppleScript,
+  sendEmail,
+  sendTeamsMessage,
   webSearch,
 } from "./tauri";
 import type { AvatarState, ChatMessage, Settings } from "./types";
@@ -278,6 +281,60 @@ export const TOOL_DEFS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "send_email",
+      description:
+        "Send an email from Andres' Microsoft 365 account. CONFIRM recipients, subject, and body " +
+        "with Andres before sending.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" },
+          subject: { type: "string" },
+          body: { type: "string", description: "Email body (HTML or plain text)" },
+          cc: { type: "array", items: { type: "string" } },
+        },
+        required: ["to", "subject", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_reminder",
+      description:
+        "Add a reminder/task to Andres' Microsoft To Do. due/remind_at are local ISO datetimes " +
+        "like '2026-06-18T09:00:00'.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          due: { type: "string", description: "Optional due datetime" },
+          remind_at: { type: "string", description: "Optional reminder datetime" },
+        },
+        required: ["title"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_teams_message",
+      description:
+        "Send a 1:1 Microsoft Teams chat message to someone by email. CONFIRM the recipient and " +
+        "message with Andres before sending.",
+      parameters: {
+        type: "object",
+        properties: {
+          recipient_email: { type: "string" },
+          message: { type: "string" },
+        },
+        required: ["recipient_email", "message"],
+      },
+    },
+  },
 ];
 
 async function executeTool(name: string, argsJson: string): Promise<string> {
@@ -340,6 +397,20 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
         return await listApps();
       case "run_applescript":
         return await runAppleScript(String(args.script ?? ""));
+      case "send_email":
+        return await sendEmail(
+          Array.isArray(args.to) ? args.to : [String(args.to ?? "")],
+          String(args.subject ?? ""),
+          String(args.body ?? ""),
+          Array.isArray(args.cc) ? args.cc : undefined
+        );
+      case "create_reminder":
+        return await createReminder(String(args.title ?? ""), args.due, args.remind_at);
+      case "send_teams_message":
+        return await sendTeamsMessage(
+          String(args.recipient_email ?? ""),
+          String(args.message ?? "")
+        );
       default:
         return `Unknown tool: ${name}`;
     }

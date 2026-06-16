@@ -189,10 +189,7 @@ pub async fn calendar_events(
     days: Option<i64>,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let (m365, app_id) = {
-        let s = state.0.lock().unwrap();
-        (s.m365_path.clone(), s.m365_app_id.clone())
-    };
+    let m365 = { state.0.lock().unwrap().m365_path.clone() };
     let days = days.unwrap_or(1).clamp(1, 31);
 
     // Local day window -> UTC for Graph calendarView.
@@ -219,7 +216,7 @@ pub async fn calendar_events(
         "--output".to_string(),
         "json".to_string(),
     ];
-    let stdout = run_m365(&m365, &app_id, &args).await?;
+    let stdout = run_m365(&m365, "", &args).await?;
     Ok(format_calendar(&stdout, days))
 }
 
@@ -457,10 +454,7 @@ pub async fn create_teams_meeting(
     end: String,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let (m365, app_id) = {
-        let s = state.0.lock().unwrap();
-        (s.m365_path.clone(), s.m365_app_id.clone())
-    };
+    let m365 = { state.0.lock().unwrap().m365_path.clone() };
     let body = json!({
         "subject": subject,
         "startDateTime": start,
@@ -469,7 +463,7 @@ pub async fn create_teams_meeting(
     .to_string();
     match graph_write(
         &m365,
-        &app_id,
+        "",
         "post",
         "https://graph.microsoft.com/v1.0/me/onlineMeetings",
         Some(body),
@@ -489,6 +483,140 @@ pub async fn create_teams_meeting(
                 Ok(format!("Teams meeting ready: {join}"))
             }
         }
+        Err(e) => Ok(permission_hint(&e)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M365 actions (default app scopes: Mail.Send, Tasks.ReadWrite, Chat.ReadWrite)
+// ---------------------------------------------------------------------------
+
+async fn graph_get(m365: &str, url: &str) -> Result<String, String> {
+    let args = vec![
+        "request".to_string(),
+        "--url".to_string(),
+        url.to_string(),
+        "--output".to_string(),
+        "json".to_string(),
+    ];
+    run_m365(m365, "", &args).await
+}
+
+fn recipients(list: &[String]) -> Vec<Value> {
+    list.iter()
+        .filter(|a| a.contains('@'))
+        .map(|a| json!({ "emailAddress": { "address": a } }))
+        .collect()
+}
+
+/// Send an email on Andres' behalf. CONFIRM recipients + content first.
+#[tauri::command]
+pub async fn send_email(
+    to: Vec<String>,
+    subject: String,
+    body: String,
+    cc: Option<Vec<String>>,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let msg = json!({
+        "message": {
+            "subject": subject,
+            "body": { "contentType": "HTML", "content": body },
+            "toRecipients": recipients(&to),
+            "ccRecipients": cc.as_deref().map(recipients).unwrap_or_default(),
+        },
+        "saveToSentItems": true
+    });
+    match graph_write(&m365, "", "post", "https://graph.microsoft.com/v1.0/me/sendMail", Some(msg.to_string())).await {
+        Ok(_) => Ok(format!("Email \"{subject}\" sent to {}.", to.join(", "))),
+        Err(e) => Ok(permission_hint(&e)),
+    }
+}
+
+/// Add a reminder/task to Microsoft To Do. `due`/`remind_at` are local ISO datetimes.
+#[tauri::command]
+pub async fn create_reminder(
+    title: String,
+    due: Option<String>,
+    remind_at: Option<String>,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let lists = match graph_get(&m365, "https://graph.microsoft.com/v1.0/me/todo/lists").await {
+        Ok(s) => s,
+        Err(e) => return Ok(permission_hint(&e)),
+    };
+    let v: Value = serde_json::from_str(&lists).unwrap_or(Value::Null);
+    let arr = v.get("value").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+    let list_id = arr
+        .iter()
+        .find(|l| l.get("wellknownListName").and_then(|w| w.as_str()) == Some("defaultList"))
+        .or_else(|| arr.first())
+        .and_then(|l| l.get("id"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    if list_id.is_empty() {
+        return Ok("Couldn't find a To Do list to add the reminder to.".into());
+    }
+    let mut task = json!({ "title": title });
+    if let Some(d) = due {
+        task["dueDateTime"] = json!({ "dateTime": d, "timeZone": "Central Standard Time" });
+    }
+    if let Some(r) = remind_at {
+        task["reminderDateTime"] = json!({ "dateTime": r, "timeZone": "Central Standard Time" });
+        task["isReminderOn"] = json!(true);
+    }
+    let url = format!("https://graph.microsoft.com/v1.0/me/todo/lists/{list_id}/tasks");
+    match graph_write(&m365, "", "post", &url, Some(task.to_string())).await {
+        Ok(_) => Ok(format!("Reminder added: {title}")),
+        Err(e) => Ok(permission_hint(&e)),
+    }
+}
+
+/// Send a 1:1 Microsoft Teams chat message. CONFIRM recipient + message first.
+#[tauri::command]
+pub async fn send_teams_message(
+    recipient_email: String,
+    message: String,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let me = match graph_get(&m365, "https://graph.microsoft.com/v1.0/me?$select=id").await {
+        Ok(s) => s,
+        Err(e) => return Ok(permission_hint(&e)),
+    };
+    let my_id = serde_json::from_str::<Value>(&me)
+        .ok()
+        .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(String::from))
+        .unwrap_or_default();
+    if my_id.is_empty() {
+        return Ok("Couldn't resolve your Teams user id.".into());
+    }
+    let chat_body = json!({
+        "chatType": "oneOnOne",
+        "members": [
+            { "@odata.type": "#microsoft.graph.aadUserConversationMember", "roles": ["owner"],
+              "user@odata.bind": format!("https://graph.microsoft.com/v1.0/users('{my_id}')") },
+            { "@odata.type": "#microsoft.graph.aadUserConversationMember", "roles": ["owner"],
+              "user@odata.bind": format!("https://graph.microsoft.com/v1.0/users('{recipient_email}')") }
+        ]
+    });
+    let chat = match graph_write(&m365, "", "post", "https://graph.microsoft.com/v1.0/chats", Some(chat_body.to_string())).await {
+        Ok(s) => s,
+        Err(e) => return Ok(permission_hint(&e)),
+    };
+    let chat_id = serde_json::from_str::<Value>(&chat)
+        .ok()
+        .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(String::from))
+        .unwrap_or_default();
+    if chat_id.is_empty() {
+        return Ok("Couldn't open a Teams chat with that person.".into());
+    }
+    let url = format!("https://graph.microsoft.com/v1.0/chats/{chat_id}/messages");
+    let msg = json!({ "body": { "content": message } });
+    match graph_write(&m365, "", "post", &url, Some(msg.to_string())).await {
+        Ok(_) => Ok(format!("Teams message sent to {recipient_email}.")),
         Err(e) => Ok(permission_hint(&e)),
     }
 }

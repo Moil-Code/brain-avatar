@@ -27,6 +27,9 @@ const TOOL_LABEL: Record<string, string> = {
   open_app: "🚀 app",
   list_apps: "🚀 apps",
   run_applescript: "⚙️ control",
+  send_email: "✉️ email",
+  create_reminder: "⏰ reminder",
+  send_teams_message: "💬 teams",
 };
 
 export default function ChatPanel({
