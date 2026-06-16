@@ -1,5 +1,7 @@
-use crate::config::SettingsState;
+use crate::config::{Settings, SettingsState};
+use crate::tools::{proxy, use_daemon};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use serde_json::json;
 use std::time::Duration;
 use tauri::State;
 
@@ -10,10 +12,20 @@ pub async fn transcribe_audio(
     mime: Option<String>,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let (key, model) = {
-        let s = state.0.lock().unwrap();
-        (s.groq_api_key.clone(), s.groq_model.clone())
-    };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/stt/transcribe", json!({ "audio_base64": audio_base64, "mime": mime })).await;
+    }
+    transcribe_audio_core(&s, audio_base64, mime).await
+}
+
+pub async fn transcribe_audio_core(
+    settings: &Settings,
+    audio_base64: String,
+    mime: Option<String>,
+) -> Result<String, String> {
+    let key = settings.groq_api_key.clone();
+    let model = settings.groq_model.clone();
     if key.trim().is_empty() {
         return Err("Groq API key is not set — configure it in Settings to use voice.".into());
     }

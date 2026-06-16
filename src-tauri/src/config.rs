@@ -35,6 +35,14 @@ pub struct Settings {
     pub sync_api_url: String,
     pub sync_token: String,
 
+    // --- Remote brain (MacBook client -> Mac Mini brain-daemon) ---
+    /// When set, the brain-owner tools (brain/calendar/mail/web/stt) are proxied
+    /// to this daemon over Tailscale instead of running locally. Empty = run
+    /// locally (the Mac Mini's own behavior). e.g. "http://100.91.28.27:8787".
+    pub brain_daemon_url: String,
+    /// Bearer token the daemon requires (must match its BRAIN_DAEMON_TOKEN).
+    pub brain_daemon_token: String,
+
     // --- Voice output (macOS `say`; empty = system default voice) ---
     pub tts_voice: String,
 
@@ -63,6 +71,8 @@ impl Default for Settings {
             m365_app_id: String::new(),
             sync_api_url: String::new(),
             sync_token: String::new(),
+            brain_daemon_url: String::new(),
+            brain_daemon_token: String::new(),
             tts_voice: String::new(),
             system_prompt: default_system_prompt(),
         }
@@ -133,6 +143,24 @@ pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let path = settings_path(app).map_err(|e| e.to_string())?;
     let raw = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     std::fs::write(path, raw).map_err(|e| e.to_string())
+}
+
+/// The macOS path where the Tauri app persists settings.json. The headless
+/// brain-daemon reads the SAME file (no AppHandle available), so it uses exactly
+/// the keys/paths Andres configured in the app's Settings UI.
+pub fn config_file_path() -> PathBuf {
+    let home = dirs_home();
+    PathBuf::from(format!(
+        "{home}/Library/Application Support/com.moil.brainavatar/settings.json"
+    ))
+}
+
+/// Load settings without a Tauri AppHandle (for the brain-daemon binary).
+pub fn load_standalone() -> Settings {
+    match std::fs::read_to_string(config_file_path()) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        Err(_) => Settings::default(),
+    }
 }
 
 /// PATH that includes the dirs where node / bun / homebrew tools live, so the

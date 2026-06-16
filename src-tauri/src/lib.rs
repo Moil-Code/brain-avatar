@@ -1,11 +1,11 @@
 mod commands;
-mod config;
+pub mod config;
 mod files;
 mod history;
-mod llm;
-mod tools;
+pub mod llm;
+pub mod tools;
 mod tts;
-mod voice;
+pub mod voice;
 
 use config::{Settings, SettingsState};
 use std::sync::Mutex;
@@ -156,6 +156,7 @@ pub fn run() {
             tools::x_bookmarks,
             tools::create_reminder,
             tools::send_teams_message,
+            tools::daemon_probe,
             voice::transcribe_audio,
             llm::llm_probe,
             llm::llm_complete,

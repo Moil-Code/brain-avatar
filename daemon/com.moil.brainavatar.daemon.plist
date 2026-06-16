@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- brain-daemon LaunchAgent (Mac Mini / brain owner). Runs as the logged-in user
+     so gbrain + m365 have the user's session/keychain. Load manually:
+       cp daemon/com.moil.brainavatar.daemon.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.moil.brainavatar.daemon.plist
+     If the repo isn't at ~/brain-avatar, edit the ProgramArguments path below. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.moil.brainavatar.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/jarvisurrego/brain-avatar/daemon/run-brain-daemon.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/jarvisurrego/Library/Logs/brain-daemon.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jarvisurrego/Library/Logs/brain-daemon.log</string>
+</dict>
+</plist>

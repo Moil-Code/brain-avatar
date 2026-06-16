@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { listVoices, llmProbe, setSettings, ttsSpeak } from "../lib/tauri";
+import { daemonProbe, listVoices, llmProbe, setSettings, ttsSpeak } from "../lib/tauri";
 import type { Settings as SettingsType } from "../lib/types";
 
 interface Props {
@@ -49,6 +49,14 @@ const SECTIONS: { title: string; hint?: string; fields: Field[] }[] = [
       { key: "sync_token", label: "Sync token", secret: true },
     ],
   },
+  {
+    title: "Remote brain (MacBook client)",
+    hint: "Point this at the Mac Mini's brain-daemon (over Tailscale) to use the brain, calendar, mail, and web from this Mac. Leave blank to run everything locally. The local model endpoint above is still used directly for the LLM.",
+    fields: [
+      { key: "brain_daemon_url", label: "Daemon URL", placeholder: "http://100.91.28.27:8787" },
+      { key: "brain_daemon_token", label: "Daemon token", secret: true },
+    ],
+  },
 ];
 
 export default function Settings({ initial, onSaved, onClose }: Props) {
@@ -93,6 +101,19 @@ export default function Settings({ initial, onSaved, onClose }: Props) {
     else setProbe(`✗ Neither endpoint reachable. Remote: ${r.error ?? "?"}`);
   };
 
+  const testDaemon = async () => {
+    if (!draft.brain_daemon_url.trim()) {
+      setProbe("Enter a daemon URL first (or leave blank to run locally).");
+      return;
+    }
+    setProbe("Testing brain-daemon…");
+    try {
+      setProbe(`✓ ${await daemonProbe(draft.brain_daemon_url, draft.brain_daemon_token)}`);
+    } catch (e) {
+      setProbe(`✗ ${e}`);
+    }
+  };
+
   return (
     <div className="settings">
       <div className="settings-head">
@@ -121,6 +142,11 @@ export default function Settings({ initial, onSaved, onClose }: Props) {
             ))}
             {sec.title.startsWith("Model") && (
               <button className="ghost-btn" onClick={testConnection}>
+                Test connection
+              </button>
+            )}
+            {sec.title.startsWith("Remote brain") && (
+              <button className="ghost-btn" onClick={testDaemon}>
                 Test connection
               </button>
             )}

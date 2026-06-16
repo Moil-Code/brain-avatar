@@ -1,4 +1,4 @@
-use crate::config::{augmented_path, SettingsState};
+use crate::config::{augmented_path, Settings, SettingsState};
 use chrono::{Duration, Local, Utc};
 use serde_json::{json, Value};
 use std::time::Duration as StdDuration;
@@ -55,6 +55,74 @@ async fn run_m365(m365: &str, app_id: &str, args: &[String]) -> Result<String, S
 }
 
 // ---------------------------------------------------------------------------
+// Remote brain-daemon proxy (MacBook client -> Mac Mini, over Tailscale)
+// ---------------------------------------------------------------------------
+
+/// Proxy a brain-owner tool call to the remote brain-daemon. Uses native Rust
+/// HTTP (NOT webview fetch) so it bypasses WKWebView's App Transport Security,
+/// and keeps the daemon token in Rust — never in the webview. Returns the tool's
+/// text output (the daemon replies with the same string the local _core would).
+pub(crate) async fn proxy(settings: &Settings, route: &str, body: Value) -> Result<String, String> {
+    let base = settings.brain_daemon_url.trim_end_matches('/');
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}{route}"))
+        .header(
+            "Authorization",
+            format!("Bearer {}", settings.brain_daemon_token),
+        )
+        .json(&body)
+        .timeout(StdDuration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| format!("brain-daemon unreachable: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        Ok(text)
+    } else {
+        Err(format!(
+            "brain-daemon HTTP {status}: {}",
+            text.chars().take(300).collect::<String>()
+        ))
+    }
+}
+
+/// True when this app should proxy brain-owner tools to a remote daemon.
+pub(crate) fn use_daemon(settings: &Settings) -> bool {
+    !settings.brain_daemon_url.trim().is_empty()
+}
+
+/// Settings "Test connection": verify the daemon is reachable (/health) AND the
+/// token is accepted (/auth/check, which is behind the bearer gate).
+#[tauri::command]
+pub async fn daemon_probe(url: String, token: String) -> Result<String, String> {
+    let base = url.trim_end_matches('/');
+    let client = reqwest::Client::new();
+    let health = client
+        .get(format!("{base}/health"))
+        .timeout(StdDuration::from_secs(8))
+        .send()
+        .await
+        .map_err(|e| format!("unreachable: {e}"))?;
+    if !health.status().is_success() {
+        return Err(format!("health check failed: HTTP {}", health.status()));
+    }
+    let auth = client
+        .get(format!("{base}/auth/check"))
+        .header("Authorization", format!("Bearer {token}"))
+        .timeout(StdDuration::from_secs(8))
+        .send()
+        .await
+        .map_err(|e| format!("unreachable: {e}"))?;
+    match auth.status().as_u16() {
+        200 => Ok("Connected — daemon reachable and token accepted.".into()),
+        401 => Err("Reachable, but the token was rejected (401). Check it matches the daemon's BRAIN_DAEMON_TOKEN.".into()),
+        other => Err(format!("auth check returned HTTP {other}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // brain_search  ->  gbrain call query
 // ---------------------------------------------------------------------------
 
@@ -64,10 +132,20 @@ pub async fn brain_search(
     limit: Option<u32>,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let (gbrain, limit) = {
-        let s = state.0.lock().unwrap();
-        (s.gbrain_path.clone(), limit.unwrap_or(5))
-    };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/brain/search", json!({ "query": query, "limit": limit })).await;
+    }
+    brain_search_core(&s, query, limit).await
+}
+
+pub async fn brain_search_core(
+    settings: &Settings,
+    query: String,
+    limit: Option<u32>,
+) -> Result<String, String> {
+    let gbrain = settings.gbrain_path.clone();
+    let limit = limit.unwrap_or(5);
     let payload = json!({ "query": query, "detail": "low", "limit": limit }).to_string();
     let args = vec!["call".to_string(), "query".to_string(), payload];
 
@@ -105,7 +183,18 @@ pub async fn brain_page(
     name: String,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let gbrain = { state.0.lock().unwrap().gbrain_path.clone() };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/brain/page", json!({ "name": name })).await;
+    }
+    brain_page_core(&s, name).await
+}
+
+pub async fn brain_page_core(
+    settings: &Settings,
+    name: String,
+) -> Result<String, String> {
+    let gbrain = settings.gbrain_path.clone();
     let payload = json!({ "slug": name, "fuzzy": true }).to_string();
     let args = vec!["call".to_string(), "get_page".to_string(), payload];
 
@@ -189,7 +278,18 @@ pub async fn calendar_events(
     days: Option<i64>,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/calendar/events", json!({ "days": days })).await;
+    }
+    calendar_events_core(&s, days).await
+}
+
+pub async fn calendar_events_core(
+    settings: &Settings,
+    days: Option<i64>,
+) -> Result<String, String> {
+    let m365 = settings.m365_path.clone();
     let days = days.unwrap_or(1).clamp(1, 31);
 
     // Local day window -> UTC for Graph calendarView.
@@ -321,10 +421,27 @@ pub async fn calendar_create(
     body: Option<String>,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let (m365, app_id) = {
-        let s = state.0.lock().unwrap();
-        (s.m365_path.clone(), s.m365_app_id.clone())
-    };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/calendar/create", json!({ "subject": subject, "start": start, "end": end, "time_zone": time_zone, "attendees": attendees, "is_teams": is_teams, "location": location, "body": body })).await;
+    }
+    calendar_create_core(&s, subject, start, end, time_zone, attendees, is_teams, location, body).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn calendar_create_core(
+    settings: &Settings,
+    subject: String,
+    start: String,
+    end: String,
+    time_zone: Option<String>,
+    attendees: Option<Vec<String>>,
+    is_teams: Option<bool>,
+    location: Option<String>,
+    body: Option<String>,
+) -> Result<String, String> {
+    let m365 = settings.m365_path.clone();
+    let app_id = settings.m365_app_id.clone();
     let tz = time_zone.unwrap_or_else(|| "Central Standard Time".to_string());
 
     let mut ev = json!({
@@ -399,10 +516,26 @@ pub async fn calendar_update(
     location: Option<String>,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let (m365, app_id) = {
-        let s = state.0.lock().unwrap();
-        (s.m365_path.clone(), s.m365_app_id.clone())
-    };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/calendar/update", json!({ "event_id": event_id, "subject": subject, "start": start, "end": end, "time_zone": time_zone, "is_teams": is_teams, "location": location })).await;
+    }
+    calendar_update_core(&s, event_id, subject, start, end, time_zone, is_teams, location).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn calendar_update_core(
+    settings: &Settings,
+    event_id: String,
+    subject: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+    time_zone: Option<String>,
+    is_teams: Option<bool>,
+    location: Option<String>,
+) -> Result<String, String> {
+    let m365 = settings.m365_path.clone();
+    let app_id = settings.m365_app_id.clone();
     let tz = time_zone.unwrap_or_else(|| "Central Standard Time".to_string());
     let mut patch = json!({});
     if let Some(s) = subject {
@@ -434,10 +567,19 @@ pub async fn calendar_delete(
     event_id: String,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let (m365, app_id) = {
-        let s = state.0.lock().unwrap();
-        (s.m365_path.clone(), s.m365_app_id.clone())
-    };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/calendar/delete", json!({ "event_id": event_id })).await;
+    }
+    calendar_delete_core(&s, event_id).await
+}
+
+pub async fn calendar_delete_core(
+    settings: &Settings,
+    event_id: String,
+) -> Result<String, String> {
+    let m365 = settings.m365_path.clone();
+    let app_id = settings.m365_app_id.clone();
     let url = format!("https://graph.microsoft.com/v1.0/me/events/{event_id}");
     match graph_write(&m365, &app_id, "delete", &url, None).await {
         Ok(_) => Ok("Event deleted.".into()),
@@ -454,7 +596,20 @@ pub async fn create_teams_meeting(
     end: String,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/calendar/teams-meeting", json!({ "subject": subject, "start": start, "end": end })).await;
+    }
+    create_teams_meeting_core(&s, subject, start, end).await
+}
+
+pub async fn create_teams_meeting_core(
+    settings: &Settings,
+    subject: String,
+    start: String,
+    end: String,
+) -> Result<String, String> {
+    let m365 = settings.m365_path.clone();
     let body = json!({
         "subject": subject,
         "startDateTime": start,
@@ -518,7 +673,21 @@ pub async fn send_email(
     cc: Option<Vec<String>>,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/mail/send", json!({ "to": to, "subject": subject, "body": body, "cc": cc })).await;
+    }
+    send_email_core(&s, to, subject, body, cc).await
+}
+
+pub async fn send_email_core(
+    settings: &Settings,
+    to: Vec<String>,
+    subject: String,
+    body: String,
+    cc: Option<Vec<String>>,
+) -> Result<String, String> {
+    let m365 = settings.m365_path.clone();
     let msg = json!({
         "message": {
             "subject": subject,
@@ -542,7 +711,20 @@ pub async fn create_reminder(
     remind_at: Option<String>,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/reminder/create", json!({ "title": title, "due": due, "remind_at": remind_at })).await;
+    }
+    create_reminder_core(&s, title, due, remind_at).await
+}
+
+pub async fn create_reminder_core(
+    settings: &Settings,
+    title: String,
+    due: Option<String>,
+    remind_at: Option<String>,
+) -> Result<String, String> {
+    let m365 = settings.m365_path.clone();
     let lists = match graph_get(&m365, "https://graph.microsoft.com/v1.0/me/todo/lists").await {
         Ok(s) => s,
         Err(e) => return Ok(permission_hint(&e)),
@@ -581,7 +763,19 @@ pub async fn send_teams_message(
     message: String,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/teams/message", json!({ "recipient_email": recipient_email, "message": message })).await;
+    }
+    send_teams_message_core(&s, recipient_email, message).await
+}
+
+pub async fn send_teams_message_core(
+    settings: &Settings,
+    recipient_email: String,
+    message: String,
+) -> Result<String, String> {
+    let m365 = settings.m365_path.clone();
     let me = match graph_get(&m365, "https://graph.microsoft.com/v1.0/me?$select=id").await {
         Ok(s) => s,
         Err(e) => return Ok(permission_hint(&e)),
@@ -630,7 +824,18 @@ pub async fn web_search(
     query: String,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let key = { state.0.lock().unwrap().brave_api_key.clone() };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/web/search", json!({ "query": query })).await;
+    }
+    web_search_core(&s, query).await
+}
+
+pub async fn web_search_core(
+    settings: &Settings,
+    query: String,
+) -> Result<String, String> {
+    let key = settings.brave_api_key.clone();
     if key.trim().is_empty() {
         return Ok("(Web search is not configured — no Brave API key set.)".to_string());
     }
@@ -673,7 +878,18 @@ pub async fn read_emails(
     count: Option<u32>,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/mail/read", json!({ "count": count })).await;
+    }
+    read_emails_core(&s, count).await
+}
+
+pub async fn read_emails_core(
+    settings: &Settings,
+    count: Option<u32>,
+) -> Result<String, String> {
+    let m365 = settings.m365_path.clone();
     let n = count.unwrap_or(10).clamp(1, 25);
     let url = format!(
         "https://graph.microsoft.com/v1.0/me/messages?$top={n}&$select=subject,from,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime%20desc"
@@ -728,7 +944,18 @@ pub async fn email_details(
     query: String,
     state: State<'_, SettingsState>,
 ) -> Result<String, String> {
-    let m365 = { state.0.lock().unwrap().m365_path.clone() };
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/mail/details", json!({ "query": query })).await;
+    }
+    email_details_core(&s, query).await
+}
+
+pub async fn email_details_core(
+    settings: &Settings,
+    query: String,
+) -> Result<String, String> {
+    let m365 = settings.m365_path.clone();
     let q = query.replace('"', "").replace('\\', "");
     // $search ranks by relevance, not date, so pull several and pick the newest.
     let url = format!(

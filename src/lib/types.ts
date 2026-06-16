@@ -63,6 +63,8 @@ export interface Settings {
   m365_app_id: string;
   sync_api_url: string;
   sync_token: string;
+  brain_daemon_url: string;
+  brain_daemon_token: string;
   tts_voice: string;
   system_prompt: string;
 }
