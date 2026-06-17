@@ -1419,7 +1419,7 @@ pub async fn facebook_insights_core(page: Option<String>) -> Result<String, Stri
                      read_insights permission.)\n"
                 ));
             } else if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
-                let label = |name: &str| -> &str {
+                fn label(name: &str) -> &str {
                     match name {
                         "page_impressions_unique" => "Reach (people, 28d)",
                         "page_impressions" => "Impressions (28d)",
@@ -1427,7 +1427,7 @@ pub async fn facebook_insights_core(page: Option<String>) -> Result<String, Stri
                         "page_views_total" => "Page views (28d)",
                         other => other,
                     }
-                };
+                }
                 for m in data {
                     let name = m.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     // The latest period entry is the most recent cumulative value.
