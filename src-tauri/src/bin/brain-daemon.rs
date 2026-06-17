@@ -63,6 +63,7 @@ async fn main() {
         .route("/mail/details", post(mail_details))
         .route("/reminder/create", post(reminder_create))
         .route("/teams/message", post(teams_message))
+        .route("/chat/push", post(chat_push))
         .route("/web/search", post(web_search))
         .route("/web/fetch", post(web_fetch))
         .route("/llm/complete", post(llm_complete))
@@ -257,6 +258,23 @@ struct MailRead {
 }
 async fn mail_read(State(st): State<Arc<AppState>>, Json(p): Json<MailRead>) -> ToolResult {
     tools::read_emails_core(&st.settings, p.count)
+        .await
+        .map_err(err)
+}
+
+#[derive(Deserialize)]
+struct ChatPush {
+    conversation_id: String,
+    #[serde(default)]
+    title: String,
+    role: String,
+    content: String,
+}
+
+/// Receive a chat turn pushed from a client (MacBook) and append it to the
+/// cross-machine inbox so the nightly avatar-chat ingest captures it.
+async fn chat_push(State(_st): State<Arc<AppState>>, Json(p): Json<ChatPush>) -> ToolResult {
+    tools::push_chat_core(p.conversation_id, p.title, p.role, p.content)
         .await
         .map_err(err)
 }

@@ -12,6 +12,7 @@ import {
   getConversation,
   getSettings,
   listConversations,
+  pushChat,
   saveMessage,
   type ConvSummary,
 } from "./lib/tauri";
@@ -177,6 +178,7 @@ export default function App() {
       setMessages((ms) => [...ms, userMsg, botMsg]);
       activeBotIdRef.current = botId;
       appendTurn(activeConv, "user", text).catch(() => {});
+      pushChat(activeConv, text, "user", text).catch(() => {});
       setBusy(true);
       setAvatarState("thinking");
       stopSpeaking();
@@ -229,6 +231,7 @@ export default function App() {
         ];
 
         appendTurn(activeConv, "assistant", answer).catch(() => {});
+        pushChat(activeConv, "", "assistant", answer).catch(() => {});
         saveMessage(activeConv, "user", text).catch(() => {});
         saveMessage(activeConv, "assistant", answer).catch(() => {});
 

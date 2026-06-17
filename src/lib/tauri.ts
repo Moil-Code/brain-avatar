@@ -124,6 +124,8 @@ export const ttsSpeak = (text: string, voice?: string) =>
   invoke<void>("tts_speak", { text, voice });
 export const ttsStop = () => invoke<void>("tts_stop");
 export const listVoices = () => invoke<string[]>("list_voices");
+/** Open macOS System Settings → Spoken Content to download a natural voice. */
+export const openVoiceDownload = () => invoke<void>("open_voice_download");
 
 // --- Computer access ---
 export const findFiles = (query: string, scope?: string) =>
@@ -156,5 +158,8 @@ export const getConversation = (conversationId: string) =>
   invoke<{ role: string; content: string; ts: string }[]>("get_conversation", { conversationId });
 export const appendTurn = (conversationId: string, role: string, content: string) =>
   invoke<void>("append_turn", { conversationId, role, content });
+// Cross-machine: pushes the turn to the brain-daemon (no-op when no daemon configured).
+export const pushChat = (conversationId: string, title: string, role: string, content: string) =>
+  invoke<void>("push_chat", { conversationId, title, role, content });
 export const deleteConversation = (conversationId: string) =>
   invoke<void>("delete_conversation", { conversationId });

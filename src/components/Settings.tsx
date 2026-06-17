@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { daemonProbe, listVoices, llmProbe, setSettings, ttsSpeak } from "../lib/tauri";
+import { daemonProbe, listVoices, llmProbe, openVoiceDownload, setSettings, ttsSpeak } from "../lib/tauri";
 import type { Settings as SettingsType } from "../lib/types";
 
 interface Props {
@@ -156,9 +156,14 @@ export default function Settings({ initial, onSaved, onClose }: Props) {
         <div className="settings-section">
           <h3>Voice</h3>
           <p className="settings-hint">
-            For a natural voice, download an Enhanced/Premium voice in System Settings → Accessibility →
-            Spoken Content → System Voice → Manage Voices, then pick it here.
+            macOS ships only robotic voices by default. Click <strong>Download better voices…</strong> to
+            open the right screen, download a <strong>Premium</strong> voice, and set it as your{" "}
+            <strong>System Voice</strong> — then leave this on “System default” and the avatar uses it.
+            (The newest Premium voices won’t appear in the list below, so the System-Voice route is best.)
           </p>
+          <button className="ghost-btn" onClick={() => openVoiceDownload().catch(() => {})}>
+            🔊 Download better voices…
+          </button>
           <label className="field">
             <span>Spoken voice</span>
             <select

@@ -68,6 +68,26 @@ pub fn tts_stop(tts: State<'_, TtsState>) {
     }
 }
 
+/// Open macOS System Settings to the Spoken Content pane so the user can download a
+/// natural Premium/Enhanced voice and set it as their System Voice. macOS does not
+/// let apps download voices directly (gated behind Settings for consent + storage),
+/// so this is the closest to "one click": it opens the right screen and macOS runs
+/// its own download UI. Runs on whichever Mac the app is on (local, not proxied).
+#[tauri::command]
+pub fn open_voice_download() -> Result<(), String> {
+    std::process::Command::new("/usr/bin/open")
+        .arg("x-apple.systempreferences:com.apple.preference.universalaccess?SpokenContent")
+        .status()
+        .map_err(|e| format!("Couldn't open System Settings: {e}"))
+        .and_then(|s| {
+            if s.success() {
+                Ok(())
+            } else {
+                Err("System Settings didn't open.".into())
+            }
+        })
+}
+
 /// List installed voices (includes Enhanced/Premium ones once downloaded) for the
 /// Settings voice picker.
 #[tauri::command]

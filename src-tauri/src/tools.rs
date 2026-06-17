@@ -891,8 +891,10 @@ pub async fn read_emails_core(
 ) -> Result<String, String> {
     let m365 = settings.m365_path.clone();
     let n = count.unwrap_or(10).clamp(1, 25);
+    // INBOX ONLY. /me/messages spans every folder (Sent, Deleted, …) so Andres'
+    // own sent mail leaks in; /me/mailFolders/inbox/messages is the actual inbox.
     let url = format!(
-        "https://graph.microsoft.com/v1.0/me/messages?$top={n}&$select=subject,from,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime%20desc"
+        "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$top={n}&$select=subject,from,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime%20desc"
     );
     let stdout = match graph_get(&m365, &url).await {
         Ok(s) => s,
@@ -1320,6 +1322,84 @@ pub async fn post_to_facebook(
     Ok(format!(
         "Posted to the {page_key} Facebook page. Post id {post_id} — https://facebook.com/{post_id}"
     ))
+}
+
+/// Append one chat turn to the cross-machine inbox (~/.brain-chat-inbox/pushed.json,
+/// conversations.json-shaped). Runs ON the brain-owner (Mac Mini, via the daemon)
+/// so the nightly ingest sees MacBook chats too. Conversation ids are random, so a
+/// single file with no per-machine namespacing is collision-safe.
+pub async fn push_chat_core(
+    conversation_id: String,
+    title: String,
+    role: String,
+    content: String,
+) -> Result<String, String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/jarvisurrego".into());
+    let dir = std::path::Path::new(&home).join(".brain-chat-inbox");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("pushed.json");
+    let mut store: Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({ "conversations": [] }));
+    let now = Utc::now().to_rfc3339();
+    let is_user = role == "user";
+    let msg = json!({ "role": role, "content": content, "ts": now });
+    let convs = store
+        .get_mut("conversations")
+        .and_then(|c| c.as_array_mut())
+        .ok_or("bad inbox store")?;
+    if let Some(c) = convs
+        .iter_mut()
+        .find(|c| c.get("id").and_then(|x| x.as_str()) == Some(conversation_id.as_str()))
+    {
+        if is_user && c.get("title").and_then(|t| t.as_str()).unwrap_or("").is_empty() {
+            c["title"] = json!(title);
+        }
+        c["updated_at"] = json!(now);
+        if let Some(m) = c.get_mut("messages").and_then(|m| m.as_array_mut()) {
+            m.push(msg);
+        }
+    } else {
+        convs.push(json!({
+            "id": conversation_id,
+            "title": title,
+            "created_at": now,
+            "updated_at": now,
+            "messages": [msg],
+        }));
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&store).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok("ok".into())
+}
+
+/// Avatar-side: push a chat turn to the brain-daemon so the Mac Mini's nightly
+/// ingest captures this client's chats. No-op on the brain owner (no daemon URL).
+/// Best-effort — never blocks or fails the chat.
+#[tauri::command]
+pub async fn push_chat(
+    conversation_id: String,
+    title: String,
+    role: String,
+    content: String,
+    state: State<'_, SettingsState>,
+) -> Result<(), String> {
+    let s = { state.0.lock().unwrap().clone() };
+    if !use_daemon(&s) {
+        return Ok(());
+    }
+    let body = json!({
+        "conversation_id": conversation_id,
+        "title": title,
+        "role": role,
+        "content": content,
+    });
+    let _ = proxy(&s, "/chat/push", body).await;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
