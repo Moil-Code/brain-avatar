@@ -19,11 +19,15 @@ memory on the 24GB Mac Mini, and what the best-possible local setup looks like._
   + KV cache once the OS and the Tauri app are accounted for.
 - **Runtime:** LM Studio (OpenAI-compatible `:1234/v1`), fronted by `brain-daemon`
   (Rust, single-flight semaphore) over Tailscale, optional `lm-queue-proxy`.
-- **Models in rotation:**
+- **Models in rotation (exact strings from `router.ts` / `llm.rs` / `agent.ts`):**
   - `qwen3-8b` — fast / primary tool-calling tier (~5GB @ Q4), `enable_thinking:false`.
-  - `gemma-*-12b` — fast fallback / multimodal (~7–8GB @ Q4).
-  - `gemma-…-26b` MoE — deep reasoning tier (slow first token, 60–120s).
-  - optional VL/vision model.
+    **Qwen3 (mid-2025) — the oldest model in the stack.**
+  - **`gemma-4-12b`** — fast fallback / vision tier (~7–8GB @ Q4). **Gemma 4,
+    released 2026-06-03**, 256K context, native multimodal (text/image/audio/video).
+    Current-gen. _(Note: `router.ts:39` comment still says "Gemma 3" — stale comment.)_
+  - **`gemma-4-26b-a4b`** — deep reasoning tier (slow first token, 60–120s).
+    **Gemma 4 MoE, released 2026-04-02: 26B total / 4B active** — i.e. already a
+    small-active MoE, the architecture this audit recommends. Current-gen.
 - **Inference config:** temp `0.4` fixed, `max_tokens` 4096, **non-streaming**
   frontend, 300s timeout, 5-round agent loop. STT = Groq Whisper (cloud, **0 local
   VRAM** — good), TTS = macOS `say` (free).
@@ -31,56 +35,61 @@ memory on the 24GB Mac Mini, and what the best-possible local setup looks like._
 
 ### Key problems identified
 
-1. **VRAM juggling.** Three+ chat models (8B, 12B, 26B) means either model-swap
-   latency or — worse — several resident at once, which is what historically
-   stalled the box. Single-flight fixes _compute_ contention, not _memory_
-   residency.
-2. **Dense 8B is no longer the efficiency frontier.** In 2026 a 3–4B dense model
-   matches the old 8B on tool-calling, and small-active MoEs (≈3B active) beat it
-   on quality at similar speed.
-3. **Likely on GGUF, not MLX.** On Apple Silicon, MLX is materially faster for
+1. **The Gemma models are NOT the problem — they're current-gen.** Both
+   `gemma-4-12b` (2026-06-03) and `gemma-4-26b-a4b` (2026-04-02) are recent
+   Gemma 4 releases. The 26B is already a small-active MoE (4B active) and the
+   12B is the natively-multimodal vision tier. **Keep them.**
+2. **`qwen3-8b` is the genuinely stale link.** Qwen3 dense 8B (mid-2025) is both
+   bigger and slower than a modern ~4B for the fast/tool-routing job it actually
+   does. This is the one model worth replacing.
+3. **VRAM residency, not model age.** Three chat models means either model-swap
+   latency or several resident at once — what historically stalled the box.
+   Single-flight fixes _compute_ contention, not _memory_ residency.
+4. **Likely on GGUF, not MLX.** On Apple Silicon, MLX is materially faster for
    decode (esp. MoE). If we're on llama.cpp/GGUF builds we're leaving 20–40% on
    the table for free.
-4. **KV cache / context not tuned.** No explicit context cap or KV-cache quant.
-   Context memory is often the silent VRAM hog, not weights.
-5. **Non-streaming UI** hurts perceived latency even when throughput is fine.
+5. **KV cache / context not tuned.** No explicit context cap or KV-cache quant —
+   and Gemma 4 ships a **256K** window, so an uncapped context can balloon the KV
+   cache and silently eat VRAM. This matters more than weights here.
+6. **Non-streaming UI** hurts perceived latency even when throughput is fine.
 
-## 2. Should we replace the 8B? — Yes.
+## 2. What to replace — just the 8B fast tier.
 
-The 8B dense model is the weakest link on two fronts: it's bigger and slower than
-a modern 4B for the same tool-calling job, and it's weaker than a small MoE for
-reasoning. The 2026 frontier for this exact use case (agentic tool-calling, local,
-memory-constrained) is:
+Keep both Gemma 4 models. The only worthwhile model swap is the fast tier:
 
-| Tier | Old | 2026 replacement | Why |
-|------|-----|------------------|-----|
-| Fast / tool-routing | `qwen3-8b` (~5GB) | **~4B dense** (Qwen3.5-4B-class / Nemotron Nano 4B / Granite 4 ~4B), ~3GB | ~97% tool-calling accuracy at <½ the size & faster TTFT. Frees ~2GB. |
-| Deep reasoning | 12B + 26B MoE | **one small-active MoE** (Qwen3-30B-A3B-class, ~18GB @ Q4) | 30B total / **3B active** → ~3B-dense speed, ~8B+ quality, strong BFCL tool-use. Collapses two models into one better one. |
+| Tier | Today | Recommendation | Why |
+|------|-------|----------------|-----|
+| Fast / tool-routing | `qwen3-8b` (~5GB, mid-2025) | **a 2026 ~4B** — `gemma-4-e4b` (~4.5B eff) _or_ Qwen3.5-4B-class | ~95–97% tool-calling at <½ the size & faster TTFT; frees ~2GB. |
+| Vision / fast-fallback | `gemma-4-12b` (2026-06) | **keep** | Current, native multimodal, 256K ctx — load-bearing for the vision route. |
+| Deep reasoning | `gemma-4-26b-a4b` (2026-04) | **keep** | Already a 26B/4B-active MoE; current-gen. |
 
-**Net effect:** 4 chat models → **2**. Newer, more capable, and far more free
-memory in the common case.
+**Recommended fast-tier pick: `gemma-4-e4b`.** It keeps the whole stack on one
+Gemma 4 family (consistent tokenizer/template/multimodal behavior, one set of
+quirks to manage) and is natively multimodal, so it can even serve light vision
+without falling back to the 12B. Choose Qwen3.5-4B instead only if A/B testing
+shows it meaningfully wins on _your_ tool-calling traffic.
+
+**Optional, only if deep-tier agentic/coding quality is a priority:** independent
+2026 comparisons report **Qwen3.6-35B-A3B** beating Gemma 4 26B-A4B on coding and
+MCP tool-use (e.g. SWE-bench, ~2× MCP tool use). But your deep tier does synthesis
+/ long-form writing, and swapping it loses Gemma 4's multimodal. Treat this as an
+experiment, not a default — and not a reason to drop the Gemma family.
 
 ## 3. The 24GB memory tension (the real engineering decision)
 
-A 4B (3GB) + a 30B-A3B (18GB) cannot _both_ stay resident on 24GB alongside macOS.
-Two viable shapes:
+The constraint was never model age — it's residency. Even all-current models
+can't all stay loaded: `gemma-4-e4b` (~3GB) + `gemma-4-12b` (~7–8GB) +
+`gemma-4-26b-a4b` (~15–16GB @ Q4) ≈ 25GB+ before KV cache and macOS. So:
 
-- **Option A — Two-tier with JIT eviction (recommended).** Keep the **4B always
-  resident** (~3GB → lots of headroom most of the time). The MoE is **JIT-loaded
-  with an idle TTL** and only loads when the router picks a deep task; it evicts
-  after idle. Single-flight already serializes generations, so the only cost is a
-  model-swap on the first deep request after idle. Best everyday memory profile.
-- **Option B — Single MoE for everything.** Run only the 30B-A3B (thinking-mode
-  toggled per task). Simplest mentally, top quality, but ~18–20GB resident is
-  _tight_ on 24GB — long contexts + KV cache can tip it into swap. Use only if you
-  rarely need the snappiest tool-routing latency.
-- **Option C — Two-tier that co-resides.** 4B (3GB) + a **14B dense or smaller MoE
-  @ Q4 (~9–10GB)** → both fit (~13GB) with headroom, no swap latency, but you give
-  up some of the 30B-A3B's deep-reasoning quality.
-
-Recommendation: **Option A** matches the app's "fast tool calls + occasional deep
-work" profile and single-flight design best. Fall back to **C** if model-swap
-latency on deep tasks proves annoying.
+- **Recommended — Tiered JIT eviction.** Keep the **fast ~4B always resident**
+  (~3GB → lots of headroom most of the time). Load the **12B** and **26B-A4B**
+  on demand with an idle TTL and let them evict. Single-flight already serializes
+  generations, so the only cost is a model-swap on the first heavy request after
+  idle. Everyday footprint drops to ~3GB instead of 15–25GB.
+- **If swap latency annoys you:** keep `gemma-4-e4b` + `gemma-4-12b` co-resident
+  (~11GB, fits with headroom) and JIT-load only the 26B-A4B for deep tasks. The
+  12B "nearly matches the 26B across benchmarks," so it covers most non-deep work
+  without paying for the MoE swap.
 
 ## 4. Performance audit — VRAM/latency wins (independent of model choice)
 
@@ -97,9 +106,9 @@ Apply these regardless of which models you land on:
    16–32K, not 128K+). KV cache scales linearly with context; capping reclaims GB.
 5. **LM Studio JIT load + idle TTL auto-evict.** Guarantees only the active model
    is resident — directly fixes the historic multi-model stall.
-6. **Speculative decoding** for any _dense_ deep model (4B or a 0.6B draft → 1.5–3×).
-   Note: a 30B-**A3B** MoE already decodes ~3B-fast, so spec-decode adds little
-   there — apply it to dense models (Option C's 14B), not the A3B.
+6. **Speculative decoding** helps _dense_ models most (a small draft → 1.5–3×).
+   `gemma-4-26b-a4b` already decodes ~4B-fast as an MoE, so spec-decode adds
+   little there; it's more useful if you ever lean on a dense deep model.
 7. **Enable streaming in the frontend.** `brain-daemon` already relays SSE; the UI
    currently batches non-streaming. Streaming cuts _perceived_ latency on long
    answers with zero throughput cost.
@@ -111,30 +120,34 @@ Apply these regardless of which models you land on:
 ## 5. Recommended target setup
 
 ```
-Fast tier  : <model>-4B            MLX 4-bit   (~3GB, always resident)
-Deep tier  : <model>-30B-A3B MoE   MLX 4-bit   (~18GB, JIT + idle TTL)
-Vision     : reuse deep tier if multimodal, else a small VL model JIT-loaded
+Fast tier  : gemma-4-e4b            MLX 4-bit   (~3GB, always resident)
+Vision/mid : gemma-4-12b            MLX 4-bit   (~7-8GB, JIT + idle TTL)   [keep]
+Deep tier  : gemma-4-26b-a4b MoE    MLX 4-bit   (~15-16GB, JIT + idle TTL) [keep]
 Runtime    : MLX, Flash Attention ON, KV-cache Q8_0, context capped ~32K
 UI         : streaming completions
 STT/TTS    : unchanged (Groq Whisper cloud + macOS say) — already 0 local VRAM
 ```
 
-Outcome vs today: fewer models, newer + more capable per GB, snappier tool calls,
-and in the common (fast-tier-only) case the box sits at ~3GB resident instead of
-juggling 12–26GB — i.e. **most of the 24GB is freed** for KV cache / headroom.
+Outcome vs today: one stale model retired, the whole stack on current Gemma 4 +
+one tiny fast tier, and in the common (fast-tier-only) case the box sits at ~3GB
+resident instead of juggling 15–25GB — i.e. **most of the 24GB is freed** for KV
+cache / headroom. The big wins here are the runtime/KV/context/JIT changes, not
+swapping good models for the sake of it.
 
 ## 6. Suggested rollout order (low-risk → high-leverage)
 
-1. Turn on **MLX + Flash Attention + KV-cache Q8 + context cap** on the _current_
-   models. Measure tok/s and TTFT. (Pure config; no model change.)
-2. Swap `qwen3-8b` → a **4B** MLX model; A/B the tool-calling success rate against
-   the existing eval/usage. Keep the router's fast-tier regex pointed at it.
-3. Replace 12B + 26B with **one 30B-A3B MoE** (JIT + TTL); update `router.ts`
-   `pickPrimary`/`pickFast` patterns and remove the now-unused tiers.
-4. Enable **frontend streaming**; right-size `max_tokens`.
-5. (Optional) speculative decoding if you adopt a dense deep model.
+1. Turn on **MLX + Flash Attention + KV-cache Q8 + context cap (~32K)** and
+   **JIT load + idle TTL** on the _current_ models. Measure tok/s, TTFT, and
+   resident memory. (Pure config; no model change — this is the bulk of the win.)
+2. Swap `qwen3-8b` → **`gemma-4-e4b`** (or Qwen3.5-4B); A/B the tool-calling
+   success rate against current usage. Update the router's fast-tier pick.
+3. Enable **frontend streaming**; right-size the 4096 `max_tokens` default.
+4. Fix the stale "Gemma 3" comment in `router.ts:39` (it's Gemma 4 now).
+5. (Optional experiment) trial `Qwen3.6-35B-A3B` against `gemma-4-26b-a4b` on
+   real deep-tier tasks — adopt only if it wins enough to justify losing multimodal.
 
-Each step is independently revertible and measurable.
+Each step is independently revertible and measurable. Note: steps 1 and 3 deliver
+most of the performance/VRAM gain without changing any model.
 
 ---
 
@@ -146,6 +159,8 @@ Each step is independently revertible and measurable.
 - [Qwen3 lineup guide 2026](https://baeseokjae.github.io/posts/qwen-3-full-lineup-guide-2026/) · [Qwen3-30B-A3B which version](https://blog.laozhang.ai/en/posts/qwen3-30b-a3b) · [apxml Qwen3-30B-A3B specs](https://apxml.com/models/qwen3-30b-a3b)
 - [Qwen3.5 medium series benchmarks](https://www.digitalapplied.com/blog/qwen-3-5-medium-model-series-benchmarks-pricing-guide) · [BFCL-V4 leaderboard](https://llm-stats.com/benchmarks/bfcl-v4)
 - [Granite 4.1 vs Gemma 4](https://www.aimadetools.com/blog/granite-4-1-vs-gemma-4/) · [7 best SLMs under 10B 2026](https://www.labellerr.com/blog/best-small-language-models-under-10b-parameters/)
+- **Gemma 4 (verifying the current models):** [Google: Gemma 4 launch](https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/) · [Engadget: Gemma 4 family off Gemini 3](https://www.engadget.com/ai/google-releases-gemma-4-a-family-of-open-models-built-off-of-gemini-3-160000332.html) · [Gemma 4 12B (2026-06-03) specs](https://www.buildfastwithai.com/blogs/gemma-4-12b-guide) · [Gemma 3 12B vs Gemma 4 12B](https://www.llmreference.com/compare/gemma-3-12b-it/gemma-4-12b-it)
+- **Gemma 4 26B-A4B vs Qwen3.6-35B-A3B:** [Towards AI head-to-head](https://pub.towardsai.net/i-tested-alibaba-qwen3-6-35b-a3b-30cc4658a382) · [grigio coding benchmark](https://grigio.org/can-i-really-code-on-my-pc-gemma4-26b-a4b-vs-qwen3-6-35b-a3b-coding-benchmark/) · [KV-cache quant KL-divergence (Gemma 4 / Qwen 3.6)](https://localbench.substack.com/p/kv-cache-quantization-benchmark)
 - [Best local LLMs for 24GB Apple Silicon](https://willitrunai.com/macs/m4-pro-24gb) · [Apple Silicon LLM guide 2026](https://codersera.com/blog/apple-silicon-llms-complete-guide-2026/)
 - [MLX vs llama.cpp on Apple Silicon (Ollama switch, M5)](https://yage.ai/share/mlx-apple-silicon-en-20260331.html) · [MLX 3x faster until 40K context](https://pub.towardsai.net/apples-mlx-runs-local-llms-3x-faster-than-llama-cpp-until-your-context-hits-40k-715ec441afbb)
 - [LM Studio speculative decoding](https://lmstudio.ai/docs/app/advanced/speculative-decoding) · [LLM quantization 2026 (KV cache, Q4 vs Q8)](https://www.promptquorum.com/local-llms/llm-quantization-explained) · [LM Studio tips (flash attn / KV quant)](https://insiderllm.com/guides/lm-studio-tips-and-tricks/)
