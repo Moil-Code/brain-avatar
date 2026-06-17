@@ -827,8 +827,10 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   // it", "let me open it") with NO tool_call. Returning that answer both misleads the
   // user and poisons the history (it few-shot-teaches the model to keep narrating). If a
   // no-tool reply looks like an unfulfilled action claim, nudge ONCE to force the call.
+  // NOTE: "I'll"/"I will"/"let me" must be followed by an ACTION verb — otherwise common
+  // benign closings ("let me know if you need anything", "I'll be here") false-trigger.
   const ACTION_CLAIM =
-    /\b(i'?ll|i will|let me|i'?ve (?:opened|found|located|searched|scheduled|sent)|i (?:opened|found|located|searched|scheduled|sent)|searching for|i'?ll (?:search|look|find|open|check|attempt|handle)|attempt to (?:locate|find|search|open))\b/i;
+    /\b(i(?:['’]?ll| will)\s+(?:search|look\s+up|find|locate|open|check|attempt|handle|retrieve|pull\s+up|fetch|get)|let me\s+(?:search|look\s+up|find|locate|open|check|retrieve|pull\s+up|fetch|get|access)|i(?:['’]?ve)\s+(?:opened|found|located|searched|scheduled|sent|retrieved)|i\s+(?:opened|found|located|searched|scheduled|sent|retrieved)\b|searching for|attempt to\s+(?:locate|find|search|open|access))/i;
   let nudged = false;
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
