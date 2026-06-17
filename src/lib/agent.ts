@@ -823,6 +823,13 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   ];
 
   const toolsUsed: string[] = [];
+  // Spiral-breaker: small models sometimes narrate an action ("I'll search…", "I found
+  // it", "let me open it") with NO tool_call. Returning that answer both misleads the
+  // user and poisons the history (it few-shot-teaches the model to keep narrating). If a
+  // no-tool reply looks like an unfulfilled action claim, nudge ONCE to force the call.
+  const ACTION_CLAIM =
+    /\b(i'?ll|i will|let me|i'?ve (?:opened|found|located|searched|scheduled|sent)|i (?:opened|found|located|searched|scheduled|sent)|searching for|i'?ll (?:search|look|find|open|check|attempt|handle)|attempt to (?:locate|find|search|open))\b/i;
+  let nudged = false;
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     if (signal?.aborted) throw new Error("aborted");
@@ -845,6 +852,18 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     const toolCalls = Array.isArray(res.tool_calls) ? res.tool_calls : [];
 
     if (toolCalls.length === 0) {
+      // The model answered without calling a tool. If it's narrating an action it never
+      // performed, nudge it once to actually emit the call instead of returning the
+      // hallucination (and storing it as history that reinforces the behavior).
+      if (!nudged && ACTION_CLAIM.test(content)) {
+        nudged = true;
+        messages.push({
+          role: "system",
+          content:
+            "You have NOT called any tool this turn. If the request needs the web (web_search/fetch_url), files (find_files/open_file/read_file), the calendar, email, or the brain, emit the tool call NOW — do not describe doing it or invent results. If genuinely no tool is needed, answer directly.",
+        });
+        continue;
+      }
       const answer = content.trim();
       onStep?.({ id: "answer", label: "Writing the answer", done: true });
       onToken?.(answer);

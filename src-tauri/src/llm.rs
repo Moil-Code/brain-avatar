@@ -105,10 +105,15 @@ pub async fn llm_complete_core(
     max_tokens: Option<u32>,
     cancel: Option<tokio::sync::watch::Receiver<u64>>,
 ) -> Result<LlmResult, String> {
+    // Tool-calling should be near-deterministic: at higher temperatures small models
+    // (qwen3-8b) occasionally narrate an action ("I'll search…", "I found it") instead
+    // of emitting the tool call, which then poisons the history and spirals. Use a low
+    // temp when tools are offered; keep it warmer for plain prose answers.
+    let has_tools = tools.as_ref().map(|t| !t.is_null()).unwrap_or(false);
     let mut body = json!({
         "model": model,
         "messages": messages,
-        "temperature": 0.4,
+        "temperature": if has_tools { 0.1 } else { 0.4 },
         "max_tokens": max_tokens.unwrap_or(4096),
         "stream": false,
     });
