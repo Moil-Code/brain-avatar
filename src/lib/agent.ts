@@ -22,6 +22,7 @@ import {
   readEmails,
   readFile,
   runAppleScript,
+  systemControl,
   sendEmail,
   sendTeamsMessage,
   webSearch,
@@ -107,6 +108,25 @@ function toolStepLabel(name: string, a: any): string {
       return "Listing your apps";
     case "run_applescript":
       return "Controlling the app";
+    case "system_control": {
+      const map: Record<string, string> = {
+        volume_get: "Checking the volume",
+        volume_set: "Setting the volume",
+        volume_up: "Turning the volume up",
+        volume_down: "Turning the volume down",
+        mute: "Muting system audio",
+        unmute: "Unmuting system audio",
+        brightness_up: "Raising brightness",
+        brightness_down: "Lowering brightness",
+        media_playpause: "Play/pausing media",
+        media_next: "Skipping to next track",
+        media_prev: "Going to previous track",
+        media_previous: "Going to previous track",
+        sleep_display: "Putting the display to sleep",
+        lock_screen: "Locking the screen",
+      };
+      return map[String(a.action)] ?? "Adjusting a system setting";
+    }
     case "send_email":
       return "Preparing the email";
     case "create_reminder":
@@ -524,6 +544,37 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "system_control",
+      description:
+        "Control the Mac's SYSTEM settings reliably. Use this (not run_applescript) for: " +
+        "volume ('turn it down/up', 'set volume to 30', 'how loud is it', 'mute'/'unmute' — this " +
+        "mutes the WHOLE Mac, not just the avatar's voice), screen brightness, media playback " +
+        "(play/pause, next/previous track in Spotify or Music), putting the display to sleep, and " +
+        "locking the screen. Pick the matching `action`. For volume_set pass `value` 0–100; for " +
+        "volume_up/volume_down `value` is the optional step (default 10). Confirm before " +
+        "sleep_display or lock_screen.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            description:
+              "One of: volume_get, volume_set, volume_up, volume_down, mute, unmute, " +
+              "brightness_up, brightness_down, media_playpause, media_next, media_prev, " +
+              "sleep_display, lock_screen",
+          },
+          value: {
+            type: "integer",
+            description: "For volume_set: 0–100. For volume_up/volume_down: step size (default 10).",
+          },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "read_emails",
       description:
         "Read Andres' most recent inbox emails (sender, subject, date, preview). Use for 'read/" +
@@ -726,6 +777,11 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
         return await listApps();
       case "run_applescript":
         return await runAppleScript(String(args.script ?? ""));
+      case "system_control":
+        return await systemControl(
+          String(args.action ?? ""),
+          typeof args.value === "number" ? args.value : undefined
+        );
       case "read_emails":
         return await readEmails(args.count);
       case "email_details":

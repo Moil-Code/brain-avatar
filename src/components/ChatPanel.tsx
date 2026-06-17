@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { extractDocText } from "../lib/tauri";
+import { renderMarkdown } from "../lib/markdown";
 import type { Attachment, UiMessage } from "../lib/types";
 
 interface Props {
@@ -63,6 +64,7 @@ const TOOL_LABEL: Record<string, string> = {
   open_app: "🚀 app",
   list_apps: "🚀 apps",
   run_applescript: "⚙️ control",
+  system_control: "🎛 system",
   read_emails: "📨 inbox",
   email_details: "✉️ email",
   x_bookmarks: "🔖 bookmarks",
@@ -164,12 +166,17 @@ export default function ChatPanel({
               )
             )}
             <div className="msg-body">
-              {m.content ||
-                (m.pending && !(m.steps && m.steps.length) ? (
-                  <span className="typing">▋</span>
+              {m.content ? (
+                m.role === "assistant" ? (
+                  renderMarkdown(m.content)
                 ) : (
-                  ""
-                ))}
+                  m.content
+                )
+              ) : m.pending && !(m.steps && m.steps.length) ? (
+                <span className="typing">▋</span>
+              ) : (
+                ""
+              )}
             </div>
             {m.images && m.images.length > 0 && (
               <div className="msg-images">

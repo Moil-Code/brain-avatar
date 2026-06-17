@@ -150,6 +150,9 @@ export const openFileCmd = (path: string) => invoke<string>("open_file", { path 
 export const openApp = (name: string) => invoke<string>("open_app", { name });
 export const listApps = () => invoke<string>("list_apps");
 export const runAppleScript = (script: string) => invoke<string>("run_applescript", { script });
+/** Curated macOS system controls: volume/mute/brightness/media/display sleep/lock. */
+export const systemControl = (action: string, value?: number) =>
+  invoke<string>("system_control", { action, value });
 
 // --- History sync (optional Supabase mirror) ---
 export const saveMessage = (

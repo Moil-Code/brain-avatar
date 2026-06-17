@@ -296,3 +296,122 @@ pub async fn run_applescript(script: String) -> Result<String, String> {
         Err(format!("AppleScript error: {err}"))
     }
 }
+
+/// Run an osascript snippet, returning trimmed stdout. Maps macOS permission
+/// denials (Automation/Accessibility) to a clear, actionable message.
+async fn osa(script: &str) -> Result<String, String> {
+    let out = timeout(
+        Duration::from_secs(15),
+        Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .env("PATH", augmented_path())
+            .output(),
+    )
+    .await
+    .map_err(|_| "AppleScript timed out".to_string())?
+    .map_err(|e| format!("osascript failed: {e}"))?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
+    }
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let low = err.to_lowercase();
+    if err.contains("-1743") || low.contains("not allowed") || low.contains("not authori") {
+        Err(format!(
+            "macOS hasn't granted the needed permission yet (Automation/Accessibility). Approve \
+             the prompt when it appears, or enable it under System Settings → Privacy & Security, \
+             then ask again. ({err})"
+        ))
+    } else {
+        Err(format!("AppleScript error: {err}"))
+    }
+}
+
+/// Read the current system output volume (0–100), defaulting to 50 if unreadable.
+async fn current_volume() -> i64 {
+    osa("output volume of (get volume settings)")
+        .await
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(50)
+}
+
+/// Play/pause or skip on whichever supported media app is running.
+async fn media_control(cmd: &str) -> Result<String, String> {
+    let script = format!(
+        "if application \"Spotify\" is running then\n\
+            tell application \"Spotify\" to {cmd}\n\
+            return \"Spotify\"\n\
+         else if application \"Music\" is running then\n\
+            tell application \"Music\" to {cmd}\n\
+            return \"Music\"\n\
+         else\n\
+            return \"none\"\n\
+         end if"
+    );
+    let who = osa(&script).await?;
+    if who == "none" {
+        Err("No supported media app is running (open Spotify or Music first).".into())
+    } else {
+        Ok(format!("{cmd} on {who}."))
+    }
+}
+
+/// Curated, reliable macOS system controls — volume, mute, brightness, media
+/// transport, display sleep, and lock. Each action is a known-good incantation,
+/// which is far more reliable for a small local model than free-form AppleScript.
+#[tauri::command]
+pub async fn system_control(action: String, value: Option<i64>) -> Result<String, String> {
+    match action.trim().to_lowercase().as_str() {
+        "volume_get" => Ok(format!("System volume is at {}%.", current_volume().await)),
+        "volume_set" => {
+            let v = value.unwrap_or(50).clamp(0, 100);
+            osa(&format!("set volume output volume {v}")).await?;
+            Ok(format!("Set system volume to {v}%."))
+        }
+        "volume_up" => {
+            let v = (current_volume().await + value.unwrap_or(10)).clamp(0, 100);
+            osa(&format!("set volume output volume {v}")).await?;
+            Ok(format!("Turned the volume up to {v}%."))
+        }
+        "volume_down" => {
+            let v = (current_volume().await - value.unwrap_or(10)).clamp(0, 100);
+            osa(&format!("set volume output volume {v}")).await?;
+            Ok(format!("Turned the volume down to {v}%."))
+        }
+        "mute" => {
+            osa("set volume with output muted").await?;
+            Ok("Muted system audio.".into())
+        }
+        "unmute" => {
+            osa("set volume without output muted").await?;
+            Ok("Unmuted system audio.".into())
+        }
+        "brightness_up" => {
+            osa("tell application \"System Events\" to key code 144").await?;
+            Ok("Increased screen brightness.".into())
+        }
+        "brightness_down" => {
+            osa("tell application \"System Events\" to key code 145").await?;
+            Ok("Decreased screen brightness.".into())
+        }
+        "media_playpause" | "media_play" | "media_pause" => media_control("playpause").await,
+        "media_next" => media_control("next track").await,
+        "media_prev" | "media_previous" => media_control("previous track").await,
+        "sleep_display" => {
+            run("/usr/bin/pmset", &["displaysleepnow"]).await?;
+            Ok("Put the display to sleep.".into())
+        }
+        "lock_screen" => {
+            // With "require password after sleep" on (the default), sleeping the
+            // display locks the Mac. Avoids needing Accessibility for a keystroke.
+            run("/usr/bin/pmset", &["displaysleepnow"]).await?;
+            Ok("Locking the screen (display put to sleep).".into())
+        }
+        other => Err(format!(
+            "Unknown system action '{other}'. Supported: volume_get, volume_set, volume_up, \
+             volume_down, mute, unmute, brightness_up, brightness_down, media_playpause, \
+             media_next, media_prev, sleep_display, lock_screen."
+        )),
+    }
+}
