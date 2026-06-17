@@ -103,6 +103,7 @@ export const createTeamsMeeting = (subject: string, start: string, end: string) 
 export const webSearch = (query: string) =>
   invoke<string>("web_search", { query });
 export const fetchUrl = (url: string) => invoke<string>("fetch_url", { url });
+export const webTask = (intent: string) => invoke<string>("web_task", { intent });
 export const sendEmail = (to: string[], subject: string, body: string, cc?: string[]) =>
   invoke<string>("send_email", { to, subject, body, cc });
 export const readEmails = (count?: number) => invoke<string>("read_emails", { count });

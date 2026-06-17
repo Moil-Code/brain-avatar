@@ -14,6 +14,14 @@ fn kill_pid(pid: u32) {
         .status();
 }
 
+/// The bundled neural TTS sidecar (next to the app binary), if present. It uses
+/// AVSpeechSynthesizer, which can speak Premium/Enhanced "Siri" voices that the
+/// legacy `say` can't reach. Falls back to `say` when absent (e.g. swiftc-less build).
+fn speak_helper() -> Option<std::path::PathBuf> {
+    let p = std::env::current_exe().ok()?.with_file_name("speak-helper");
+    p.exists().then_some(p)
+}
+
 /// Speak text using macOS `say`, which can use the high-quality Enhanced/Premium
 /// voices (downloaded free in System Settings) that the webview cannot reach.
 /// Interrupts any in-progress speech first. Resolves when speech finishes.
@@ -36,12 +44,24 @@ pub async fn tts_speak(
         return Ok(());
     }
 
-    let mut cmd = Command::new("/usr/bin/say");
-    if !voice.trim().is_empty() {
-        cmd.arg("-v").arg(&voice);
-    }
+    // Prefer the neural helper (Premium voices); fall back to `say`. Both read the
+    // text from stdin, so only the program + voice flag differ.
+    let mut cmd = match speak_helper() {
+        Some(h) => {
+            let mut c = Command::new(h);
+            c.arg(voice.trim()); // "" => helper uses the default voice
+            c
+        }
+        None => {
+            let mut c = Command::new("/usr/bin/say");
+            if !voice.trim().is_empty() {
+                c.arg("-v").arg(&voice);
+            }
+            c
+        }
+    };
     cmd.stdin(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("`say` failed to start: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("voice failed to start: {e}"))?;
     let pid = child.id();
     *tts.0.lock().unwrap() = pid;
 
@@ -92,6 +112,20 @@ pub fn open_voice_download() -> Result<(), String> {
 /// Settings voice picker.
 #[tauri::command]
 pub async fn list_voices() -> Vec<String> {
+    // Prefer the neural helper's list (Premium/Enhanced voices, quality-labelled,
+    // best first). Fall back to `say -v ?` if the helper isn't bundled.
+    if let Some(h) = speak_helper() {
+        if let Ok(o) = Command::new(&h).arg("--list").output().await {
+            let names: Vec<String> = String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            if !names.is_empty() {
+                return names;
+            }
+        }
+    }
     let out = Command::new("/usr/bin/say").arg("-v").arg("?").output().await;
     match out {
         Ok(o) => parse_voices(&String::from_utf8_lossy(&o.stdout)),

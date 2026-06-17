@@ -12,6 +12,7 @@ import {
   emailDetails,
   fetchUrl,
   generateImage,
+  webTask,
   postToFacebook,
   findFiles,
   listApps,
@@ -69,6 +70,8 @@ function toolStepLabel(name: string, a: any): string {
       return "Fetching your X bookmarks";
     case "web_search":
       return a.query ? `Searching the web for “${a.query}”` : "Searching the web";
+    case "web_task":
+      return a.intent ? `Browser: ${String(a.intent).slice(0, 40)}…` : "Working in the browser";
     case "fetch_url":
       return `Opening ${shortUrl(a.url)}`;
     case "find_files":
@@ -299,6 +302,30 @@ export const TOOL_DEFS = [
         type: "object",
         properties: { query: { type: "string", description: "Web search query" } },
         required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_task",
+      description:
+        "Drive a REAL logged-in browser to do a web task: log into a site, navigate it, " +
+        "read an authenticated page, fill a form, click through a flow. Use this (not fetch_url) " +
+        "for anything that needs a real session — especially 'log into moilapp.com', 'open my Moil " +
+        "dashboard', 'go to X and tell me what's there'. fetch_url only gets public page text and " +
+        "can't log in. Pass a clear, specific natural-language instruction including the site/URL. " +
+        "Sites Andres logged into once stay logged in. If the result mentions a login wall, tell him " +
+        "to run the one-time login. For any task that POSTS/SUBMITS/sends, confirm with Andres first.",
+      parameters: {
+        type: "object",
+        properties: {
+          intent: {
+            type: "string",
+            description: "The browser task, e.g. 'Log into moilapp.com and read my dashboard'",
+          },
+        },
+        required: ["intent"],
       },
     },
   },
@@ -553,6 +580,8 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
         return await xBookmarks(args.count);
       case "web_search":
         return await webSearch(String(args.query ?? ""));
+      case "web_task":
+        return await webTask(String(args.intent ?? ""));
       case "fetch_url":
         return await fetchUrl(String(args.url ?? ""));
       case "find_files":

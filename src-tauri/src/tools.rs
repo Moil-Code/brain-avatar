@@ -1402,6 +1402,39 @@ pub async fn push_chat(
     Ok(())
 }
 
+/// Delegate a real browser task (login, navigate, read, interact) to the local
+/// Browser Agent (Playwright + the 24GB vision model) on :3939. It drives a
+/// PERSISTENT Chromium profile, so sites Andres logged into once (via `npm run
+/// login`) stay logged in. Use for "log into moilapp.com", "go to my dashboard",
+/// "navigate X and read it" — anything fetch_url can't do because it needs a
+/// real, authenticated browser session.
+#[tauri::command]
+pub async fn web_task(intent: String) -> Result<String, String> {
+    let base = std::env::var("BROWSER_AGENT_URL")
+        .unwrap_or_else(|_| "http://localhost:3939".into());
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/api/solve"))
+        .json(&json!({ "intent": intent }))
+        .timeout(StdDuration::from_secs(180))
+        .send()
+        .await
+        .map_err(|e| {
+            format!("The browser agent isn't reachable ({e}). It should be running on :3939.")
+        })?;
+    let v: Value = resp.json().await.map_err(|e| e.to_string())?;
+    if v.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+        let data = serde_json::to_string(&v.get("data").cloned().unwrap_or(Value::Null))
+            .unwrap_or_default();
+        Ok(format!(
+            "Browser task done. Result: {}",
+            data.chars().take(3500).collect::<String>()
+        ))
+    } else {
+        let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
+        Ok(format!("Browser task didn't complete: {err}"))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // fetch_url  ->  read a web page's text locally (no cloud service)
 // ---------------------------------------------------------------------------

@@ -97,6 +97,10 @@ attendee emails to invite them), calendar_update to edit (e.g. make an event a T
 and calendar_delete to remove one. ALWAYS confirm the title, time, attendees, and Teams yes/no \
 with Andres before creating, changing, or deleting an event. Use web_search to find public/current \
 information not in the brain, and fetch_url to actually read a specific web page. \
+For anything that needs a REAL logged-in browser — logging into a site, navigating moilapp.com, \
+reading an authenticated dashboard, filling a form — use web_task with a clear instruction (fetch_url \
+can't log in). Sites Andres logged into once stay logged in; if web_task hits a login wall, tell him to \
+run the one-time login. Confirm before any web_task that posts or submits. \
 When Andres explicitly asks you to web-search something, look up a website, or say what a \
 site/URL is about (e.g. \"web search moilapp.com\"), you MUST call web_search and/or fetch_url \
 and answer from the LIVE page — do NOT answer from the brain, which may be outdated. \

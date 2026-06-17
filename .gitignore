@@ -29,6 +29,7 @@ dist-ssr
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/schemas/
+src-tauri/binaries/
 
 # Vercel
 .vercel

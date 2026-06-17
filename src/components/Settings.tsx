@@ -156,10 +156,10 @@ export default function Settings({ initial, onSaved, onClose }: Props) {
         <div className="settings-section">
           <h3>Voice</h3>
           <p className="settings-hint">
-            macOS ships only robotic voices by default. Click <strong>Download better voices…</strong> to
-            open the right screen, download a <strong>Premium</strong> voice, and set it as your{" "}
-            <strong>System Voice</strong> — then leave this on “System default” and the avatar uses it.
-            (The newest Premium voices won’t appear in the list below, so the System-Voice route is best.)
+            macOS ships only robotic voices by default. Click <strong>Download better voices…</strong>,
+            download a <strong>Premium</strong> voice (e.g. Zoe), then pick it in the{" "}
+            <strong>Spoken voice</strong> list below — it appears as “Zoe (Premium)”. The avatar speaks
+            through the neural voice engine, so Premium/Enhanced voices work directly here.
           </p>
           <button className="ghost-btn" onClick={() => openVoiceDownload().catch(() => {})}>
             🔊 Download better voices…

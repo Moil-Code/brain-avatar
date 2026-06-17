@@ -150,6 +150,7 @@ pub fn run() {
             tools::create_teams_meeting,
             tools::web_search,
             tools::fetch_url,
+            tools::web_task,
             tools::send_email,
             tools::read_emails,
             tools::email_details,
