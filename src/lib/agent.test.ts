@@ -48,6 +48,7 @@ vi.mock("./tauri", () => ({
 }));
 
 import { runAgent } from "./agent";
+import { brainPage } from "./tauri"; // the mocked wrapper, for call-count assertions
 
 const settings = { system_prompt: "you are brain", max_tokens: 4096 } as any;
 
@@ -55,6 +56,7 @@ beforeEach(() => {
   store = null;
   llmIdx = 0;
   llmScript = [];
+  vi.clearAllMocks(); // reset call history (keeps the inline implementations)
 });
 
 const mt = (id: string, cards: any[]) => ({
@@ -279,6 +281,43 @@ describe("real-model failure patterns (found via live testing)", () => {
     } as any);
     // The round-0 prose was NOT returned; the board was built and finished.
     expect(res.content).not.toMatch(/i can help/i);
+    expect(store!.tasks).toHaveLength(2);
+    expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
+  });
+
+  it("defers a non-board tool on round 0 and forces the board first (board-first)", async () => {
+    // tool_choice "required" forces *a* tool but can't force manage_tasks, so the
+    // real model dives into brain_page first. The harness must DROP that round-0 call
+    // and require the board before any domain tool runs.
+    llmScript = [
+      // R0: model dives into brain_page WITHOUT laying out the board — must be deferred.
+      { content: "", tool_calls: [tool("a", "brain_page", { name: "Josh" })] },
+      // R1: forced to create the board first.
+      { content: "", tool_calls: [mt("b", [
+        { id: "", title: "Find Josh", status: "in_progress" },
+        { id: "", title: "Read TEDC", status: "todo" },
+      ])] },
+      // R2: now the real work runs, card 1 done.
+      { content: "", tool_calls: [tool("c", "brain_page", { name: "Josh" }), mt("d", [
+        { id: "t_0", title: "Find Josh", status: "done", evidence: "brain_page returned Josh page" },
+        { id: "t_1", title: "Read TEDC", status: "in_progress" },
+      ])] },
+      { content: "", tool_calls: [tool("e", "read_file", {}), mt("f", [
+        { id: "t_0", title: "Find Josh", status: "done", evidence: "brain_page returned Josh page" },
+        { id: "t_1", title: "Read TEDC", status: "done", evidence: "read_file returned 9 lines" },
+      ])] },
+      { content: "done.", tool_calls: [] },
+    ];
+    await runAgent({
+      userText: "find Josh in the brain and then read the TEDC document",
+      history: [],
+      settings,
+      conversationId: "bf1",
+    } as any);
+    // brain_page ran ONCE (in R2, after the board existed) — the R0 attempt was
+    // deferred. Without the guard it would have run in R0 too (2 calls).
+    expect((brainPage as any).mock.calls.length).toBe(1);
+    expect(store).not.toBeNull();
     expect(store!.tasks).toHaveLength(2);
     expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
   });
