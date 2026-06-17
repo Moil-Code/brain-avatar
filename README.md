@@ -187,8 +187,15 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
   to send). No always-on mic.
 - **LLM** — OpenAI-compatible LM Studio. The **remote 24GB Mac (`Mac-mini.local:1234`)**
   is the **primary** endpoint (with bearer token); the app auto-uses whichever model is
-  loaded. For a **snappy** avatar, keep **`qwen3-8b`** loaded (fast + reliable tool calls);
-  Gemma 26B works but each answer can take 30–110s.
+  loaded. For a **snappy** avatar, keep **`gemma-4-e4b`** loaded (small, fast + reliable
+  tool calls — thinking is auto-disabled for it); the deep **`gemma-4-26b-a4b`** works for
+  synthesis/long-form but each answer can take 30–110s.
+  - **Best on the 24GB Mac:** load MLX builds, enable Flash Attention + KV-cache quant
+    (Q8_0), cap the context to ~32K, and use LM Studio's JIT load with an idle TTL so only
+    the active model stays resident. See [`docs/MODEL_PERFORMANCE_AUDIT.md`](docs/MODEL_PERFORMANCE_AUDIT.md).
+  - **Gemma 4 in LM Studio:** if `<think>` markup leaks into answers, point the reasoning
+    parser at Gemma 4's tokens (`<|channel>thought` … `<channel|>`); the daemon also strips
+    common reasoning markup as a backstop.
   - **On a MacBook that isn't on the Mac Mini's LAN** (i.e. remote/travelling), `Mac-mini.local`
     mDNS won't resolve. Use **remote mode**: point the app at the **brain-daemon** over Tailscale
     (`http://<mac-mini-tailscale-ip>:8787`, printed by `daemon/setup-daemon.sh`) — the daemon
@@ -220,8 +227,9 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
   Access** in System Settings → Privacy & Security, then relaunch.
 - **Can't control an app** — approve the macOS "Brain Avatar wants to control X" prompt, or
   enable it under System Settings → Privacy & Security → Automation.
-- **Answers are slow** — Gemma 26B is a big reasoning model; load `qwen3-8b` on the 24GB
-  Mac for near-instant responses (the app auto-detects the loaded model).
+- **Answers are slow** — `gemma-4-26b-a4b` is a big reasoning model; load `gemma-4-e4b` on
+  the 24GB Mac for near-instant responses (the app auto-detects the loaded model and routes
+  quick/tool tasks to it).
 
 ---
 

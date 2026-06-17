@@ -118,9 +118,14 @@ pub async fn llm_complete_core(
             body["tool_choice"] = json!("auto");
         }
     }
-    // Qwen3 is a reasoning model; disable its <think> phase so tool-calling /
-    // quick answers are fast and don't burn the token budget on reasoning.
-    if model.to_lowercase().contains("qwen") {
+    // Gemma 4 is a reasoning model with a <think> phase. Disable it for the fast
+    // tiers (E-series + dense 12B) so tool-calling / quick answers stay fast and
+    // don't burn the token budget on reasoning. Keep it ON only for the deep MoE
+    // (26B-A4B) — depth is the whole point of that tier. Gemma 4 honors the same
+    // enable_thinking chat-template kwarg as Qwen3.
+    let m = model.to_lowercase();
+    let is_deep = m.contains("a4b") || m.contains("a3b") || m.contains("moe");
+    if m.contains("gemma") && !is_deep {
         body["chat_template_kwargs"] = json!({ "enable_thinking": false });
     }
 

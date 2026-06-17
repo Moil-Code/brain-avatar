@@ -17,7 +17,7 @@ run on the laptop; the LLM goes straight to LM Studio. See
 
 2. **LM Studio must serve on the tailnet, not just localhost.** In LM Studio →
    Developer/Server settings, enable "Serve on Local Network" (binds `0.0.0.0:1234`) so
-   the MacBook can reach it over Tailscale. Keep `qwen3-8b` loaded for a snappy avatar.
+   the MacBook can reach it over Tailscale. Keep `gemma-4-e4b` loaded for a snappy avatar.
 
 3. **Set up + build the daemon, generate the token:**
    ```bash
