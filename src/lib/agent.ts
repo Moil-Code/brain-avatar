@@ -910,10 +910,21 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       `facts from memory. For anything time-sensitive or recent, call web_search (then fetch_url) and answer ONLY ` +
       `from the live results — if a tool returns nothing, say so plainly rather than guessing from training data.`,
   };
+  // Recency-window the history. Re-sending the ENTIRE conversation every turn lets a
+  // long thread accumulate narration/refusal turns that few-shot-teach the small tool
+  // model (qwen3-8b) to stop calling tools and just narrate — the spiral behind the
+  // "it won't actually do anything" reports. The brain holds long-term memory, so the
+  // model only needs the recent exchanges. Keep the last N messages, starting on a user
+  // turn so role alternation stays clean.
+  const MAX_HISTORY_MSGS = 12;
+  let recentHistory = history.slice(-MAX_HISTORY_MSGS);
+  if (recentHistory.length && recentHistory[0].role === "assistant") {
+    recentHistory = recentHistory.slice(1);
+  }
   const messages: ChatMessage[] = [
     { role: "system", content: settings.system_prompt },
     dateMsg,
-    ...history,
+    ...recentHistory,
     ...planMsg,
     { role: "user", content: userContent as string },
   ];
