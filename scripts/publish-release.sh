@@ -1,7 +1,9 @@
 #!/bin/bash
 # One-command release publisher for Brain Avatar auto-updates.
 #
-#   scripts/publish-release.sh <new-version>      e.g.  scripts/publish-release.sh 0.1.1
+#   scripts/publish-release.sh                 auto-bump patch (0.1.6 -> 0.1.7)
+#   scripts/publish-release.sh patch|minor|major   bump that component
+#   scripts/publish-release.sh 0.2.0           explicit version
 #
 # Bumps the version, builds the signed app + updater artifacts, creates the GitHub
 # Release, and uploads latest.json so the endpoint the app polls
@@ -14,10 +16,23 @@
 # keychain, gh authed with push access to Moil-Code/brain-avatar.
 set -euo pipefail
 
-VER="${1:?usage: scripts/publish-release.sh <version>   e.g. 0.1.1}"
 REPO="Moil-Code/brain-avatar"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+
+# Version: explicit arg wins (e.g. 0.2.0); major/minor/patch bump that component;
+# no arg auto-bumps the patch from tauri.conf.json's version (== last published).
+CUR="$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
+case "${1:-patch}" in
+  major) VER="$(python3 -c "v='$CUR'.split('.');print(f'{int(v[0])+1}.0.0')")" ;;
+  minor) VER="$(python3 -c "v='$CUR'.split('.');print(f'{v[0]}.{int(v[1])+1}.0')")" ;;
+  patch) VER="$(python3 -c "v='$CUR'.split('.');print(f'{v[0]}.{v[1]}.{int(v[2])+1}')")" ;;
+  *)     VER="$1" ;;
+esac
+echo "==> Releasing $CUR → v$VER"
+if gh release view "v$VER" --repo "$REPO" >/dev/null 2>&1; then
+  echo "Release v$VER already exists — pass an explicit higher version." >&2; exit 1
+fi
 
 KEY="$HOME/.tauri/brain-avatar-updater.key"
 [[ -f "$KEY" ]] || { echo "Missing updater key at $KEY" >&2; exit 1; }

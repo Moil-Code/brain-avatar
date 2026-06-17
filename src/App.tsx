@@ -222,7 +222,15 @@ export default function App() {
         console.error("bootstrap failed", e);
       }
     })();
+    // Check on launch, then re-check periodically and on window focus so an
+    // always-on avatar that never relaunches still surfaces the update banner.
+    // The periodic/focus refresh only sets a found update (never clears) so it
+    // can't wipe a banner the user is mid-install on.
     checkForUpdate().then(setUpdate);
+    const refreshUpdate = () => checkForUpdate().then((u) => u && setUpdate(u));
+    const UPDATE_POLL_MS = 3 * 60 * 60 * 1000; // 3h
+    const updateTimer = window.setInterval(refreshUpdate, UPDATE_POLL_MS);
+    window.addEventListener("focus", refreshUpdate);
     const unlistenSettings = listen("open-settings", () => setShowSettings(true));
     const unlistenVoice = listen("toggle-voice", () => toggleMicRef.current());
     const unlistenImage = listen<{ dataUrl: string }>("image-generated", (e) => {
@@ -234,6 +242,8 @@ export default function App() {
       );
     });
     return () => {
+      window.clearInterval(updateTimer);
+      window.removeEventListener("focus", refreshUpdate);
       unlistenSettings.then((f) => f());
       unlistenVoice.then((f) => f());
       unlistenImage.then((f) => f());
