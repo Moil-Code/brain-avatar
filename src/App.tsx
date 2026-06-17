@@ -29,6 +29,7 @@ import {
   saveAutomations,
 } from "./lib/automations";
 import { probeModels } from "./lib/llm";
+import { useConnection } from "./lib/connection";
 import {
   isMuted,
   listenOnce,
@@ -147,6 +148,12 @@ export default function App() {
   const [expanded, setExpanded] = useState(false);
   const [models, setModels] = useState<string[]>([]);
   const [modelOverride, setModelOverride] = useState<string | null>(null);
+  // Actively watch the 24GB Mac. On recovery after a drop (sleep/reboot/LM
+  // Studio restart) refresh the model picker so the avatar is usable again
+  // without the user reopening Settings.
+  const connState = useConnection(settings, () => {
+    if (settings) probeModels(settings).then(setModels).catch(() => {});
+  });
   const [showChats, setShowChats] = useState(false);
   const [showAutomations, setShowAutomations] = useState(false);
   const [conversations, setConversations] = useState<ConvSummary[]>([]);
@@ -215,7 +222,15 @@ export default function App() {
         console.error("bootstrap failed", e);
       }
     })();
+    // Check on launch, then re-check periodically and on window focus so an
+    // always-on avatar that never relaunches still surfaces the update banner.
+    // The periodic/focus refresh only sets a found update (never clears) so it
+    // can't wipe a banner the user is mid-install on.
     checkForUpdate().then(setUpdate);
+    const refreshUpdate = () => checkForUpdate().then((u) => u && setUpdate(u));
+    const UPDATE_POLL_MS = 3 * 60 * 60 * 1000; // 3h
+    const updateTimer = window.setInterval(refreshUpdate, UPDATE_POLL_MS);
+    window.addEventListener("focus", refreshUpdate);
     const unlistenSettings = listen("open-settings", () => setShowSettings(true));
     const unlistenVoice = listen("toggle-voice", () => toggleMicRef.current());
     const unlistenImage = listen<{ dataUrl: string }>("image-generated", (e) => {
@@ -227,6 +242,8 @@ export default function App() {
       );
     });
     return () => {
+      window.clearInterval(updateTimer);
+      window.removeEventListener("focus", refreshUpdate);
       unlistenSettings.then((f) => f());
       unlistenVoice.then((f) => f());
       unlistenImage.then((f) => f());
@@ -678,6 +695,12 @@ export default function App() {
           >
             {updating ? "Updating…" : "Update"}
           </button>
+        </div>
+      )}
+      {connState === "offline" && (
+        <div className="conn-banner">
+          <span className="conn-dot" />
+          <span>Can’t reach the 24GB Mac — reconnecting…</span>
         </div>
       )}
       <Avatar state={avatarState} onClick={() => !busy && !recording && handleToggleMic()} />

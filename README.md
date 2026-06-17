@@ -234,6 +234,9 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
 - **Answers are slow** — `gemma-4-26b-a4b-it-qat` is a big reasoning model; keep `qwen3-8b-mlx`
   loaded on the 24GB Mac for near-instant tool/quick responses (the app auto-detects the loaded
   model and routes quick/tool tasks to it).
+- **Long silence after a reboot/shutdown** — set up auto-restart so the whole chain comes
+  back by itself. See **[docs/RESILIENCE.md](docs/RESILIENCE.md)** (macOS auto-login + the
+  `lmstudio-keeper` agent + the app's built-in reconnect watcher).
 
 ---
 

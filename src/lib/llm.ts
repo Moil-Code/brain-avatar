@@ -1,6 +1,14 @@
 import { llmProbe } from "./tauri";
 import type { ChatMessage, LlmEndpoint, Settings, ToolCall } from "./types";
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** When no endpoint resolves on the first pass, retry a couple of times with a
+ *  short backoff before giving up. This self-heals the common case where the
+ *  24GB Mac is mid-wake / LM Studio is reloading a model when the user hits send
+ *  — instead of failing instantly, we ride out a few-second blip. Each entry is
+ *  the delay BEFORE that attempt; the first attempt is immediate. */
+const RECONNECT_BACKOFF_MS = [0, 1500, 3000];
+
 /**
  * Pick a healthy LM Studio endpoint. Inference runs on the remote 24GB Mac
  * (Mac-mini.local), so it is always tried FIRST. (A local endpoint is only used
@@ -40,9 +48,13 @@ export async function resolveEndpoint(
   };
 
   // Always prefer the remote 24GB Mac; local is only a safety net if one is up.
-  for (const attempt of [tryRemote, tryLocal]) {
-    const ep = await attempt();
-    if (ep) return ep;
+  // Retry across a short backoff so a brief blip (wake / model reload) self-heals.
+  for (const delay of RECONNECT_BACKOFF_MS) {
+    if (delay) await sleep(delay);
+    for (const attempt of [tryRemote, tryLocal]) {
+      const ep = await attempt();
+      if (ep) return ep;
+    }
   }
 
   throw new Error(
@@ -61,21 +73,32 @@ export interface BaseEndpoint {
 
 /** Resolve a reachable endpoint and return the models LOADED there (for the router). */
 export async function resolveBaseEndpoint(settings: Settings): Promise<BaseEndpoint> {
-  if (settings.lm_studio_remote_url) {
-    const p = await llmProbe(settings.lm_studio_remote_url, settings.lm_studio_remote_token).catch(
-      () => null
-    );
-    if (p?.ok) {
-      return {
-        baseUrl: settings.lm_studio_remote_url,
-        token: settings.lm_studio_remote_token,
-        models: p.models,
-      };
+  const tryOnce = async (): Promise<BaseEndpoint | null> => {
+    if (settings.lm_studio_remote_url) {
+      const p = await llmProbe(
+        settings.lm_studio_remote_url,
+        settings.lm_studio_remote_token
+      ).catch(() => null);
+      if (p?.ok) {
+        return {
+          baseUrl: settings.lm_studio_remote_url,
+          token: settings.lm_studio_remote_token,
+          models: p.models,
+        };
+      }
     }
-  }
-  if (settings.lm_studio_local_url) {
-    const p = await llmProbe(settings.lm_studio_local_url).catch(() => null);
-    if (p?.ok) return { baseUrl: settings.lm_studio_local_url, models: p.models };
+    if (settings.lm_studio_local_url) {
+      const p = await llmProbe(settings.lm_studio_local_url).catch(() => null);
+      if (p?.ok) return { baseUrl: settings.lm_studio_local_url, models: p.models };
+    }
+    return null;
+  };
+
+  // Same self-healing backoff as resolveEndpoint: ride out a brief wake / reload.
+  for (const delay of RECONNECT_BACKOFF_MS) {
+    if (delay) await sleep(delay);
+    const ep = await tryOnce();
+    if (ep) return ep;
   }
   throw new Error(
     "Can't reach the 24GB Mac. 1) Make sure it's awake and LM Studio is serving. " +
