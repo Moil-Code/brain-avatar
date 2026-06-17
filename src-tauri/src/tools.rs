@@ -38,15 +38,7 @@ async fn run_cli(program: &str, args: &[String]) -> Result<String, String> {
 /// only signal — the root cause of "it breaks and we can't tell why".
 fn tool_log(tool: &str, op: &str, target: &str, status: &str, ms: u128, err: Option<&str>) {
     use std::io::Write;
-    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "'").replace('\n', " ");
-    let err_field = err
-        .map(|e| format!(",\"err\":\"{}\"", esc(&e.chars().take(300).collect::<String>())))
-        .unwrap_or_default();
-    let line = format!(
-        "{{\"ts\":\"{}\",\"tool\":\"{}\",\"op\":\"{}\",\"target\":\"{}\",\"status\":\"{}\",\"ms\":{},\"ok\":{}{}}}\n",
-        Local::now().to_rfc3339(),
-        esc(tool), esc(op), esc(target), esc(status), ms, err.is_none(), err_field,
-    );
+    let line = tool_log_line(&Local::now().to_rfc3339(), tool, op, target, status, ms, err);
     if let Ok(home) = std::env::var("HOME") {
         let path = format!("{home}/Library/Logs/brain-avatar-tools.log");
         let _ = std::fs::OpenOptions::new()
@@ -55,6 +47,27 @@ fn tool_log(tool: &str, op: &str, target: &str, status: &str, ms: u128, err: Opt
             .open(&path)
             .and_then(|mut f| f.write_all(line.as_bytes()));
     }
+}
+
+/// Pure formatter for one log line (split out so it's unit-testable without I/O).
+/// Always valid JSON: control chars escaped, fields bounded.
+fn tool_log_line(
+    ts: &str,
+    tool: &str,
+    op: &str,
+    target: &str,
+    status: &str,
+    ms: u128,
+    err: Option<&str>,
+) -> String {
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "'").replace('\n', " ");
+    let err_field = err
+        .map(|e| format!(",\"err\":\"{}\"", esc(&e.chars().take(300).collect::<String>())))
+        .unwrap_or_default();
+    format!(
+        "{{\"ts\":\"{}\",\"tool\":\"{}\",\"op\":\"{}\",\"target\":\"{}\",\"status\":\"{}\",\"ms\":{},\"ok\":{}{}}}\n",
+        esc(ts), esc(tool), esc(op), esc(target), esc(status), ms, err.is_none(), err_field,
+    )
 }
 
 /// Pull a readable (op, target) label out of m365 CLI args for the log line —
@@ -490,6 +503,9 @@ async fn graph_write(
 /// Create a calendar event — optionally a Teams meeting, optionally with attendees
 /// (who are emailed an invite). Times are ISO-8601 local datetimes (no Z), e.g.
 /// "2026-06-17T10:00:00". Needs the Calendars.ReadWrite permission.
+///
+/// NON-IDEMPOTENT: each call creates a new event, so a retry duplicates it. Do not
+/// wrap this in automatic retries (same for send_email / send_teams_message).
 #[tauri::command]
 pub async fn calendar_create(
     subject: String,
@@ -1786,4 +1802,60 @@ fn html_to_text(html: &str) -> String {
         .replace("&#39;", "'")
         .replace("&nbsp;", " ");
     decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// ---------------------------------------------------------------------------
+// Tests — PHASE 5 validation: force the error/edge cases and assert graceful,
+// accurate output (no panics, valid log JSON, correct remediation per cause).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_hint_403_names_the_real_scope_not_a_guess() {
+        let h = permission_hint("StatusCode(403): {\"error\":{\"code\":\"ErrorAccessDenied\"}}");
+        assert!(h.contains("Calendars.ReadWrite"), "should name the missing scope");
+        assert!(h.contains("m365 logout"), "should give the re-consent fix");
+        assert!(h.contains("raw:"), "should include the raw error, not just a guess");
+        // The old misleading remediation must be gone.
+        assert!(!h.contains("README"));
+    }
+
+    #[test]
+    fn permission_hint_not_signed_in_says_login() {
+        let h = permission_hint("Error: Not connected to Microsoft 365. Please run login");
+        assert!(h.contains("m365 login"));
+    }
+
+    #[test]
+    fn permission_hint_other_errors_surface_raw_not_a_canned_cause() {
+        let h = permission_hint("StatusCode(400): bad request body");
+        assert!(h.contains("bad request body"), "must surface the real error");
+        assert!(!h.contains("Calendars.ReadWrite"), "must not falsely blame a scope");
+    }
+
+    #[test]
+    fn tool_log_line_is_valid_json_and_marks_ok() {
+        let ok = tool_log_line("2026-06-17T00:00:00Z", "m365", "get", "me/events", "ok", 42, None);
+        let v: Value = serde_json::from_str(ok.trim()).expect("ok line must be valid JSON");
+        assert_eq!(v["ok"], serde_json::json!(true));
+        assert_eq!(v["status"], "ok");
+        assert!(v.get("err").is_none());
+
+        let bad = tool_log_line(
+            "2026-06-17T00:00:00Z",
+            "m365",
+            "post",
+            "me/events",
+            "exit_1",
+            1200,
+            Some("403 \"Forbidden\"\nmulti-line"),
+        );
+        let v: Value = serde_json::from_str(bad.trim()).expect("err line must stay valid JSON");
+        assert_eq!(v["ok"], serde_json::json!(false));
+        assert!(v["err"].as_str().unwrap().contains("403"));
+        // newline + embedded quotes must not break the JSON
+        assert!(!bad.trim_end().contains('\n'));
+    }
 }
