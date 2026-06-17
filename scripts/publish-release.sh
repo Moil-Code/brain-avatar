@@ -78,7 +78,7 @@ cat > /tmp/latest.json <<EOF
 EOF
 
 echo "==> Publishing GitHub Release v$VER"
-git add src-tauri/tauri.conf.json src-tauri/Cargo.toml package.json
+git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock package.json
 git commit -q -m "chore: release v$VER" || true
 timeout 30 git push origin main || echo "(push failed/skipped — release still publishes; push when ready)"
 gh release create "v$VER" --repo "$REPO" --title "Brain Avatar v$VER" --notes "Update $VER" "/tmp/Brain.Avatar.app.tar.gz"
