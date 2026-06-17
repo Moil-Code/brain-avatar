@@ -1249,6 +1249,26 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       return { content: answer, tools: toolsUsed, route };
     }
 
+    // Board-first enforcement. On a multi-task request the model MUST lay out the
+    // board before executing domain tools. tool_choice "required" forces *a* tool
+    // but LM Studio can't force manage_tasks specifically, so the model often dives
+    // straight into brain_page/calendar/etc. and the board never appears. If it
+    // tried to run other tools before any board exists, DROP this round's calls
+    // (don't push them — that would orphan tool_calls) and require the board first.
+    // Bounded so a stubborn model degrades to just-do-the-work rather than looping.
+    const hasBoardCall = toolCalls.some((tc) => tc.function.name === "manage_tasks");
+    if (mustDecompose && (!board || board.tasks.length === 0) && !hasBoardCall && decomposeRetries < 3) {
+      decomposeRetries++;
+      messages.push({
+        role: "system",
+        content:
+          "STOP — do not run any other tool yet. This request has multiple steps, so your FIRST " +
+          "call must be manage_tasks with the full board (one card per task, the first set to " +
+          "in_progress). Lay out the board now, then work the cards one at a time.",
+      });
+      continue;
+    }
+
     // Record the assistant's tool-call message, then run each tool.
     // IMPORTANT: re-feed ONLY the tool_calls, never the model's reasoning content.
     // Reasoning models (e.g. gemma-4-26b-a4b) emit harmony tokens like
