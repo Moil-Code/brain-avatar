@@ -20,6 +20,7 @@ import {
   openApp,
   openFileCmd,
   readEmails,
+  readTeams,
   readFile,
   runAppleScript,
   systemControl,
@@ -62,6 +63,8 @@ function toolStepLabel(name: string, a: any): string {
   switch (name) {
     case "read_emails":
       return "Reading your inbox";
+    case "read_teams":
+      return "Checking your Teams chats";
     case "email_details":
       return a.query ? `Opening the “${a.query}” email` : "Opening the email";
     case "brain_page":
@@ -590,6 +593,22 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "read_teams",
+      description:
+        "Check Andres' UNREAD Microsoft Teams chat messages (chat/topic, sender, preview, time). Use " +
+        "for 'any unread messages in my team chats', 'do I have new Teams messages', 'what's unread on " +
+        "Teams', 'check my team chats'. Returns only unread chats, newest first.",
+      parameters: {
+        type: "object",
+        properties: {
+          count: { type: "integer", description: "How many recent chats to scan (default 20, max 50)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "email_details",
       description:
         "Find and open ONE specific email — its FULL body and the links inside it. ALWAYS use this " +
@@ -784,6 +803,8 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
         );
       case "read_emails":
         return await readEmails(args.count);
+      case "read_teams":
+        return await readTeams(args.count);
       case "email_details":
         return await emailDetails(String(args.query ?? ""));
       case "send_email":

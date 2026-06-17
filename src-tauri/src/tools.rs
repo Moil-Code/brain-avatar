@@ -984,6 +984,95 @@ pub async fn read_emails(
     read_emails_core(&s, count).await
 }
 
+/// Read UNREAD Microsoft Teams chat messages (topic, sender, preview, time).
+#[tauri::command]
+pub async fn read_teams(
+    count: Option<u32>,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/teams/unread", json!({ "count": count })).await;
+    }
+    read_teams_core(&s, count).await
+}
+
+pub async fn read_teams_core(
+    settings: &Settings,
+    count: Option<u32>,
+) -> Result<String, String> {
+    let m365 = settings.m365_path.clone();
+    let n = count.unwrap_or(20).clamp(1, 50);
+    // Recent chats + last-message preview + the read viewpoint. A chat is UNREAD when
+    // its last message is strictly newer than viewpoint.lastMessageReadDateTime.
+    let url = format!(
+        "https://graph.microsoft.com/v1.0/me/chats?$expand=lastMessagePreview&$top={n}"
+    );
+    let stdout = match graph_get(&m365, &url).await {
+        Ok(s) => s,
+        Err(e) => return Ok(permission_hint(&e)),
+    };
+    let v: Value = serde_json::from_str(&stdout).unwrap_or(Value::Null);
+    let chats = v.get("value").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+    let mut unread: Vec<(String, String, String, String)> = Vec::new();
+    for c in &chats {
+        let lmp = c.get("lastMessagePreview");
+        let last_dt = lmp
+            .and_then(|p| p.get("createdDateTime"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let read_dt = c
+            .get("viewpoint")
+            .and_then(|vp| vp.get("lastMessageReadDateTime"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if last_dt.is_empty() || read_dt.is_empty() || last_dt <= read_dt {
+            continue;
+        }
+        let body_raw = lmp
+            .and_then(|p| p.get("body"))
+            .and_then(|b| b.get("content"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        // Skip Teams system events (joined/left/renamed) — not real messages.
+        if body_raw.contains("<systemEventMessage") {
+            continue;
+        }
+        let from = lmp
+            .and_then(|p| p.get("from"))
+            .and_then(|f| f.get("user"))
+            .and_then(|u| u.get("displayName"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown");
+        let topic = c
+            .get("topic")
+            .and_then(|v| v.as_str())
+            .filter(|t| !t.is_empty())
+            .unwrap_or("direct/group chat");
+        let text = html_to_text(body_raw);
+        let text = if text.trim().is_empty() {
+            "(attachment or non-text content)".to_string()
+        } else {
+            text
+        };
+        unread.push((topic.to_string(), from.to_string(), text, last_dt.to_string()));
+    }
+    if unread.is_empty() {
+        return Ok("No unread Teams chat messages.".into());
+    }
+    unread.sort_by(|a, b| b.3.cmp(&a.3)); // newest first
+    let mut out = format!("You have {} unread Teams chat(s) (newest first):\n\n", unread.len());
+    for (topic, from, text, dt) in &unread {
+        let preview: String = text.chars().take(220).collect();
+        let when = dt.get(..16).unwrap_or(dt.as_str());
+        out.push_str(&format!(
+            "• [{topic}] {from} ({when}):\n  {}\n\n",
+            preview.replace('\n', " ")
+        ));
+    }
+    Ok(out)
+}
+
 pub async fn read_emails_core(
     settings: &Settings,
     count: Option<u32>,

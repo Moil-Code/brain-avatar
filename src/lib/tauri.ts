@@ -118,6 +118,7 @@ export const webTask = (intent: string) => invoke<string>("web_task", { intent }
 export const sendEmail = (to: string[], subject: string, body: string, cc?: string[]) =>
   invoke<string>("send_email", { to, subject, body, cc });
 export const readEmails = (count?: number) => invoke<string>("read_emails", { count });
+export const readTeams = (count?: number) => invoke<string>("read_teams", { count });
 export const emailDetails = (query: string) => invoke<string>("email_details", { query });
 export const xBookmarks = (count?: number) => invoke<string>("x_bookmarks", { count });
 export const generateImage = (prompt: string, size?: string, steps?: number) =>

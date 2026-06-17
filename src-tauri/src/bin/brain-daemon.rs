@@ -82,6 +82,7 @@ async fn main() {
         .route("/calendar/teams-meeting", post(teams_meeting))
         .route("/mail/send", post(mail_send))
         .route("/mail/read", post(mail_read))
+        .route("/teams/unread", post(teams_unread))
         .route("/mail/details", post(mail_details))
         .route("/reminder/create", post(reminder_create))
         .route("/teams/message", post(teams_message))
@@ -296,6 +297,12 @@ struct MailRead {
 }
 async fn mail_read(State(st): State<Arc<AppState>>, Json(p): Json<MailRead>) -> ToolResult {
     tools::read_emails_core(&st.settings, p.count)
+        .await
+        .map_err(err)
+}
+
+async fn teams_unread(State(st): State<Arc<AppState>>, Json(p): Json<MailRead>) -> ToolResult {
+    tools::read_teams_core(&st.settings, p.count)
         .await
         .map_err(err)
 }

@@ -158,6 +158,7 @@ pub fn run() {
             tools::web_task,
             tools::send_email,
             tools::read_emails,
+            tools::read_teams,
             tools::email_details,
             tools::x_bookmarks,
             tools::generate_image,
