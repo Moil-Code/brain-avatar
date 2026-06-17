@@ -15,12 +15,32 @@ func sortedVoices() -> [AVSpeechSynthesisVoice] {
     AVSpeechSynthesisVoice.speechVoices().sorted { $0.quality.rawValue > $1.quality.rawValue }
 }
 
+// Strip any trailing " (Premium)"/" (Enhanced)" labels (one or more) from a voice name.
+func stripQuality(_ s: String) -> String {
+    var n = s
+    while true {
+        var changed = false
+        for suf in [" (Premium)", " (Enhanced)"] where n.hasSuffix(suf) {
+            n = String(n.dropLast(suf.count))
+            changed = true
+        }
+        if !changed { break }
+    }
+    return n
+}
+
 if args.count > 1 && args[1] == "--list" {
     var seen = Set<String>()
     for v in sortedVoices() where v.language.hasPrefix("en") {
-        if !seen.insert(v.name).inserted { continue }
+        // AVSpeechSynthesisVoice.name for Enhanced/Premium voices ALREADY includes the
+        // tier (e.g. "Zoe (Premium)"). Strip it before re-appending exactly one, so the
+        // label isn't doubled ("Zoe (Premium) (Premium)") — the bug that made the picker
+        // save unresolvable names and fall back to the robotic default voice.
+        let base = stripQuality(v.name)
         let q = v.quality == .premium ? " (Premium)" : (v.quality == .enhanced ? " (Enhanced)" : "")
-        print("\(v.name)\(q)")
+        let label = "\(base)\(q)"
+        if !seen.insert(label).inserted { continue }
+        print(label)
     }
     exit(0)
 }
@@ -33,15 +53,17 @@ if text.isEmpty { exit(0) }
 let synth = AVSpeechSynthesizer()
 let utterance = AVSpeechUtterance(string: text)
 
-// Strip any " (Premium)"/" (Enhanced)" label the picker added, then match by name
-// or identifier — sortedVoices() ensures the highest-quality match wins.
-var name = voiceArg
-for suffix in [" (Premium)", " (Enhanced)"] where name.hasSuffix(suffix) {
-    name = String(name.dropLast(suffix.count)); break
-}
-if !name.isEmpty,
-   let v = sortedVoices().first(where: { $0.name == name || $0.identifier == name }) {
-    utterance.voice = v
+// Resolve the requested voice. Try an exact name/identifier match first (clean names
+// like "Zoe (Premium)"), then fall back to a base-name match with all quality suffixes
+// stripped — so legacy doubled names ("Zoe (Premium) (Premium)") still resolve.
+// sortedVoices() is quality-descending, so the best variant wins on a base match.
+if !voiceArg.isEmpty {
+    let voices = sortedVoices()
+    let target = stripQuality(voiceArg)
+    if let v = voices.first(where: { $0.name == voiceArg || $0.identifier == voiceArg })
+        ?? voices.first(where: { stripQuality($0.name) == target }) {
+        utterance.voice = v
+    }
 }
 
 final class Done: NSObject, AVSpeechSynthesizerDelegate {
