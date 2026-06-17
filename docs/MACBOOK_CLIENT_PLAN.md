@@ -159,7 +159,7 @@ A new binary target in `src-tauri/` (or a sibling crate) using **Axum**:
 | PGLite single-writer lock vs Claude Code sessions | Reuse existing retry logic; daemon inherits "brain is busy" backoff |
 | Phase 1 refactor regresses the working app | Pure refactor; build + smoke-test the Mac Mini app before Phase 2 |
 | Token leak | Tailnet-only binding means a leaked token is useless without tailnet access; rotate via settings |
-| Latency on heavy (Gemma 26B) answers | Router already prefers fast `gemma-4-e4b`; unchanged, and now measured over the tunnel |
+| Latency on heavy (Gemma 26B) answers | Router already prefers fast `qwen3-8b-mlx`; unchanged, and now measured over the tunnel |
 | Two app instances writing history | Conversation IDs already namespace turns; verify in Phase 5 |
 
 ## 6. Effort estimate

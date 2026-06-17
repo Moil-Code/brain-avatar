@@ -12,6 +12,35 @@ memory on the 24GB Mac Mini, and what the best-possible local setup looks like._
 > MLX runtime, KV-cache quant) are robust regardless of which exact 2026 point
 > release you pick.
 
+## 0. Executed outcome (2026-06-17) — read this first
+
+The migration is done, and the "all-MLX" instinct turned out to be **wrong for this
+hardware** (proven with LM Studio's memory estimator): Gemma 4's **MLX 4-bit** builds
+are *heavier* in RAM than its **QAT GGUF** builds, so going all-MLX would have made the
+24GB squeeze worse. Final state is a **hybrid**:
+
+| Tier | Final model | Format | Size |
+|------|-------------|--------|------|
+| Tool / JSON (fast) | `qwen3-8b-mlx` | **MLX** | 4.62 GB |
+| Heavy / workhorse | `google/gemma-4-12b-qat` | GGUF QAT | 7.15 GB |
+| Deep / reasoning | `gemma-4-26b-a4b-it-qat` | GGUF QAT | 14.25 GB |
+| Embeddings | `nomic` (→ `bge-m3` staged) | GGUF | 84 MB |
+| Challenger (benched) | `gemma-4-e4b` | — | — |
+
+- **Qwen3-8B (MLX) is the validated tool tier** — clean structured tool calls + coherent
+  multi-turn. The Gemma 4 E-series is kept only as a documented challenger to benchmark later.
+- **Balancing rule:** default resident set = 12B + qwen3-8b + embeddings ≈ **11.9 GB** (~12 GB
+  headroom), covers ~95% of traffic with no swapping. The **12B and 26B never co-reside**
+  (26+12+tool ≈ 26 GB > 24); the deep tier loads on demand, unloading the 12B first.
+- **Safety net:** LM Studio's RAM guardrail refuses to co-load two big models (verified — it
+  blocked a manual 26B load), and the avatar only ever requests already-loaded models, so it
+  can't trigger a bad co-load.
+- Deleted ~26 GB of superseded MLX downloads (a 26B MLX that wouldn't load, a bloated 12B MLX,
+  a redundant MLX bge-m3) → 116 GB free.
+
+The sections below are the original analysis that led here; the recommendation to "go MLX
+across the board" is **superseded** by the hybrid above for the Gemma tiers.
+
 ## 1. Current setup (what we audited)
 
 - **Host:** Mac Mini, **24GB unified memory** (Apple Silicon). Unified memory is

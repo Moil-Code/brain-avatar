@@ -23,14 +23,14 @@ function pickPrimary(models: string[]): string {
   );
 }
 
-/** FAST model: the small Gemma 4 E-series (e.g. gemma-4-e4b). The day-to-day
- *  workhorse — tiny (~3GB) so it stays resident, and with thinking disabled it
- *  decides "which tool?" and emits tool_calls quickly instead of burning 60–120s
- *  like the 26B. Used for tool/action tasks (email, calendar, files, web, apps,
- *  quick answers). Falls back to the dense 12B, then any small/vision model, then
- *  the primary. */
+/** FAST model: the tool/JSON tier — qwen3-8b (MLX). Validated for clean structured
+ *  tool calls and coherent multi-turn round-trips, and with thinking disabled it
+ *  routes tools quickly instead of burning 60–120s like the 26B. Used for tool/action
+ *  tasks (email, calendar, files, web, apps, quick answers). The Gemma 4 E-series
+ *  (e4b) is kept as a benched challenger; the dense 12B is the heavier fallback. */
 function pickFast(models: string[]): string {
   return (
+    models.find((m) => /qwen/.test(lc(m))) ??
     models.find((m) => /gemma/.test(lc(m)) && /e[0-9]+b/.test(lc(m))) ??
     models.find((m) => /gemma/.test(lc(m)) && /1[0-9]b/.test(lc(m))) ??
     models.find((m) => /vl|vision/.test(lc(m))) ??
@@ -52,7 +52,7 @@ function pickVision(models: string[]): string {
 }
 
 /** Signals that a request wants the slower-but-deeper 26B: multi-source synthesis,
- *  long-form writing, or code. Everything else stays on the fast E-series model.
+ *  long-form writing, or code. Everything else stays on the fast tool tier (qwen3-8b).
  *
  *  Why a heuristic and not an LLM classifier: the deep model burns ~300 tokens
  *  "thinking" before it answers, so even a one-word classification call costs
@@ -71,8 +71,8 @@ function isDeep(text: string): boolean {
 
 /**
  * The routing layer: pick the best LOADED model for the request. No network call —
- * routing is a local heuristic (default → fast E-series; deep work → 26B; image →
- * 12B vision), so it adds zero latency. The chosen model then runs the whole tool loop.
+ * routing is a local heuristic (default → fast tool tier qwen3-8b; deep work → 26B;
+ * image → 12B vision), so it adds zero latency. The chosen model then runs the tool loop.
  */
 export async function routeTask(opts: {
   userText: string;

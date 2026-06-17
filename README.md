@@ -187,12 +187,16 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
   to send). No always-on mic.
 - **LLM** — OpenAI-compatible LM Studio. The **remote 24GB Mac (`Mac-mini.local:1234`)**
   is the **primary** endpoint (with bearer token); the app auto-uses whichever model is
-  loaded. For a **snappy** avatar, keep **`gemma-4-e4b`** loaded (small, fast + reliable
-  tool calls — thinking is auto-disabled for it); the deep **`gemma-4-26b-a4b`** works for
-  synthesis/long-form but each answer can take 30–110s.
-  - **Best on the 24GB Mac:** load MLX builds, enable Flash Attention + KV-cache quant
-    (Q8_0), cap the context to ~32K, and use LM Studio's JIT load with an idle TTL so only
-    the active model stays resident. See [`docs/MODEL_PERFORMANCE_AUDIT.md`](docs/MODEL_PERFORMANCE_AUDIT.md).
+  loaded. For a **snappy** avatar, keep **`qwen3-8b-mlx`** loaded as the tool/JSON tier
+  (fast + reliable tool calls — thinking auto-disabled); the dense **`gemma-4-12b-qat`** is
+  the workhorse and the deep **`gemma-4-26b-a4b-it-qat`** handles synthesis/long-form (each
+  answer can take 30–110s). `gemma-4-e4b` is kept as a benched challenger to Qwen.
+  - **Best on the 24GB Mac (this hardware → hybrid, not all-MLX):** Gemma 4's MLX 4-bit builds
+    are *heavier* than its QAT GGUF builds, so the deep/workhorse Gemma tiers run **GGUF QAT**
+    and only the small tool tier runs **MLX** (qwen3-8b-mlx). Default resident set is 12B +
+    qwen3-8b + embeddings (~12 GB, ~12 GB headroom); the 12B and 26B never co-reside (LM Studio's
+    RAM guardrail enforces this). Enable Flash Attention + KV-cache Q8 and cap context ~32K.
+    See [`docs/MODEL_PERFORMANCE_AUDIT.md`](docs/MODEL_PERFORMANCE_AUDIT.md).
   - **Gemma 4 in LM Studio:** if `<think>` markup leaks into answers, point the reasoning
     parser at Gemma 4's tokens (`<|channel>thought` … `<channel|>`); the daemon also strips
     common reasoning markup as a backstop.
@@ -227,9 +231,9 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
   Access** in System Settings → Privacy & Security, then relaunch.
 - **Can't control an app** — approve the macOS "Brain Avatar wants to control X" prompt, or
   enable it under System Settings → Privacy & Security → Automation.
-- **Answers are slow** — `gemma-4-26b-a4b` is a big reasoning model; load `gemma-4-e4b` on
-  the 24GB Mac for near-instant responses (the app auto-detects the loaded model and routes
-  quick/tool tasks to it).
+- **Answers are slow** — `gemma-4-26b-a4b-it-qat` is a big reasoning model; keep `qwen3-8b-mlx`
+  loaded on the 24GB Mac for near-instant tool/quick responses (the app auto-detects the loaded
+  model and routes quick/tool tasks to it).
 
 ---
 

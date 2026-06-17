@@ -17,7 +17,7 @@ export async function resolveEndpoint(
     if (opts.preferDeep) {
       return find(/a4b|a3b|moe/) ?? find(/2[4-9]b|3[0-9]b/) ?? find(/gemma/) ?? models[0] ?? settings.model ?? "";
     }
-    return find(/gemma.*e[0-9]+b/) ?? find(/(8b|7b|4b|3b|2b|mini)/) ?? models[0] ?? settings.model ?? "";
+    return find(/qwen/) ?? find(/gemma.*e[0-9]+b/) ?? find(/(8b|7b|4b|3b|2b|mini)/) ?? models[0] ?? settings.model ?? "";
   };
 
   const tryLocal = async (): Promise<LlmEndpoint | null> => {
