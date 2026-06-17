@@ -153,6 +153,20 @@ npm run tauri build
 Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio,
 `gbrain` CLI, `m365` CLI authenticated as you.
 
+## Run it from your iPhone 📱
+
+The same app runs on iOS as a **remote client** — your phone talks to the Mac
+Mini's `brain-daemon` over Tailscale, so the brain, calendar, mail, web, and the
+LLM all work from anywhere. The build config is already wired up:
+
+```bash
+npm run ios:init     # one-time: generate the Xcode project
+npm run ios:dev      # build + run on your connected iPhone
+```
+
+Full one-time setup (Apple signing, Tailscale, in-app daemon settings) is in
+**[docs/IPHONE.md](docs/IPHONE.md)**.
+
 ---
 
 ## How it works

@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "ios:init": "tauri ios init --config src-tauri/tauri.ios.conf.json",
+    "ios:dev": "tauri ios dev --config src-tauri/tauri.ios.conf.json",
+    "ios:build": "tauri ios build --config src-tauri/tauri.ios.conf.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

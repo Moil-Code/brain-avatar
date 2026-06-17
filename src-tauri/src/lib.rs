@@ -10,18 +10,23 @@ pub mod voice;
 
 use config::{Settings, SettingsState};
 use std::sync::Mutex;
+use tauri::Manager;
+#[cfg(desktop)]
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, WebviewWindow,
+    AppHandle, Emitter, WebviewWindow,
 };
+#[cfg(desktop)]
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
+#[cfg(desktop)]
 fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("main")
 }
 
 /// Show+focus the avatar if hidden/unfocused, otherwise hide it.
+#[cfg(desktop)]
 fn toggle_window(app: &AppHandle) {
     if let Some(win) = main_window(app) {
         let visible = win.is_visible().unwrap_or(false);
@@ -35,6 +40,7 @@ fn toggle_window(app: &AppHandle) {
     }
 }
 
+#[cfg(desktop)]
 fn show_window(app: &AppHandle) {
     if let Some(win) = main_window(app) {
         let _ = win.show();
@@ -43,18 +49,32 @@ fn show_window(app: &AppHandle) {
 }
 
 /// Global cursor position (physical px, same space as window position) — drives the
-/// top-edge peek reveal/hide without relying on flaky webview hover events.
+/// top-edge peek reveal/hide without relying on flaky webview hover events. On mobile
+/// there is no cursor / no peek, so it's a harmless stub kept for one command surface.
 #[tauri::command]
-fn cursor_position(app: AppHandle) -> (f64, f64) {
-    app.cursor_position().map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
+fn cursor_position(_app: tauri::AppHandle) -> (f64, f64) {
+    #[cfg(desktop)]
+    {
+        _app.cursor_position().map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
+    }
+    #[cfg(not(desktop))]
+    {
+        (0.0, 0.0)
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+
+    // Desktop-only plugins: the in-app auto-updater and relaunch (iOS updates come
+    // from the App Store / Xcode, and there is no process to relaunch).
+    #[cfg(desktop)]
+    let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_process::init());
+
+    builder
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -64,77 +84,92 @@ pub fn run() {
             app.manage(tts::TtsState(Mutex::new(None)));
             app.manage(llm::CancelState::default());
 
-            // --- Global hotkeys: Cmd+Shift+Space = summon/hide, Cmd+Shift+V = talk ---
-            let toggle_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Space);
-            let voice_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
-            handle.plugin(
-                tauri_plugin_global_shortcut::Builder::new()
-                    .with_handler(move |app, shortcut, event| {
-                        if event.state() != ShortcutState::Pressed {
-                            return;
-                        }
-                        if shortcut == &toggle_shortcut {
-                            toggle_window(app);
-                        } else if shortcut == &voice_shortcut {
+            // Everything below — global hotkeys, the system tray, and the
+            // bottom-right window placement — is desktop-only chrome. On iOS the app
+            // is a single full-screen webview, so it's compiled out entirely.
+            #[cfg(desktop)]
+            {
+                // --- Global hotkeys: Cmd+Shift+Space = summon/hide, Cmd+Shift+V = talk ---
+                let toggle_shortcut =
+                    Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Space);
+                let voice_shortcut =
+                    Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
+                handle.plugin(
+                    tauri_plugin_global_shortcut::Builder::new()
+                        .with_handler(move |app, shortcut, event| {
+                            if event.state() != ShortcutState::Pressed {
+                                return;
+                            }
+                            if shortcut == &toggle_shortcut {
+                                toggle_window(app);
+                            } else if shortcut == &voice_shortcut {
+                                show_window(app);
+                                let _ = app.emit("toggle-voice", ());
+                            }
+                        })
+                        .build(),
+                )?;
+                for sc in [toggle_shortcut, voice_shortcut] {
+                    if let Err(e) = app.global_shortcut().register(sc) {
+                        eprintln!("Could not register global shortcut: {e}");
+                    }
+                }
+
+                // --- System tray ---
+                let show_item = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)?;
+                let settings_item =
+                    MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+                let quit_item =
+                    MenuItem::with_id(app, "quit", "Quit Brain Avatar", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show_item, &settings_item, &quit_item])?;
+
+                let icon = app
+                    .default_window_icon()
+                    .cloned()
+                    .expect("default window icon present");
+                TrayIconBuilder::with_id("brain-tray")
+                    .icon(icon)
+                    .tooltip("Brain Avatar")
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => toggle_window(app),
+                        "settings" => {
                             show_window(app);
-                            let _ = app.emit("toggle-voice", ());
+                            let _ = app.emit("open-settings", ());
+                        }
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            toggle_window(tray.app_handle());
                         }
                     })
-                    .build(),
-            )?;
-            for sc in [toggle_shortcut, voice_shortcut] {
-                if let Err(e) = app.global_shortcut().register(sc) {
-                    eprintln!("Could not register global shortcut: {e}");
-                }
-            }
+                    .build(app)?;
 
-            // --- System tray ---
-            let show_item = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)?;
-            let settings_item =
-                MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit Brain Avatar", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &settings_item, &quit_item])?;
-
-            let icon = app
-                .default_window_icon()
-                .cloned()
-                .expect("default window icon present");
-            TrayIconBuilder::with_id("brain-tray")
-                .icon(icon)
-                .tooltip("Brain Avatar")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => toggle_window(app),
-                    "settings" => {
-                        show_window(app);
-                        let _ = app.emit("open-settings", ());
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
+                // Position the avatar near the bottom-right of the primary screen.
+                if let Some(win) = main_window(&handle) {
+                    if let (Ok(Some(monitor)), Ok(size)) =
+                        (win.primary_monitor(), win.outer_size())
                     {
-                        toggle_window(tray.app_handle());
+                        let screen = monitor.size();
+                        let margin = 24u32;
+                        let x = screen.width.saturating_sub(size.width + margin);
+                        let y = screen.height.saturating_sub(size.height + margin + 40);
+                        let _ = win
+                            .set_position(tauri::PhysicalPosition { x: x as i32, y: y as i32 });
                     }
-                })
-                .build(app)?;
-
-            // Position the avatar near the bottom-right of the primary screen.
-            if let Some(win) = main_window(&handle) {
-                if let (Ok(Some(monitor)), Ok(size)) = (win.primary_monitor(), win.outer_size()) {
-                    let screen = monitor.size();
-                    let margin = 24u32;
-                    let x = screen.width.saturating_sub(size.width + margin);
-                    let y = screen.height.saturating_sub(size.height + margin + 40);
-                    let _ = win.set_position(tauri::PhysicalPosition { x: x as i32, y: y as i32 });
                 }
             }
+            // `handle` is only read by the desktop block above.
+            #[cfg(not(desktop))]
+            let _ = &handle;
 
             Ok(())
         })

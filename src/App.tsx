@@ -39,6 +39,7 @@ import {
 } from "./lib/voice";
 import { checkForUpdate, installUpdate, type Update } from "./lib/updater";
 import { collapsePeek, enterPeek, exitPeek, expandPeek } from "./lib/peek";
+import { isMobile } from "./lib/platform";
 import type {
   Attachment,
   AvatarState,
@@ -531,9 +532,11 @@ export default function App() {
     }
   }, [peeked, expanded]);
 
+  const rootClass = isMobile ? "app glass mobile" : "app glass";
+
   if (!settings) {
     return (
-      <div className="app glass">
+      <div className={rootClass}>
         <div className="boot">Starting Brain…</div>
       </div>
     );
@@ -556,7 +559,7 @@ export default function App() {
   }
 
   return (
-    <div className="app glass" onMouseLeave={onPeekLeave}>
+    <div className={rootClass} onMouseLeave={onPeekLeave}>
       <TitleBar
         onOpenSettings={() => setShowSettings(true)}
         onOpenChats={openChats}
@@ -568,6 +571,7 @@ export default function App() {
         models={models}
         modelOverride={modelOverride}
         onSelectModel={setModelOverride}
+        mobile={isMobile}
       />
       {update && (
         <div className="update-banner">

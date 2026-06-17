@@ -16,11 +16,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+# Cross-platform base (desktop + iOS/Android). `macos-private-api` stays here
+# because tauri-build's allowlist ties it to `macOSPrivateApi: true` in the config
+# (it's a no-op on iOS). The desktop-only `tray-icon` feature and the desktop-only
+# plugins (global-shortcut, updater, process) live under the target gate below so
+# the iOS build doesn't try to compile them.
+tauri = { version = "2", features = ["macos-private-api", "image-png"] }
 tauri-plugin-opener = "2"
-tauri-plugin-global-shortcut = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls"], default-features = false }
@@ -31,6 +33,16 @@ anyhow = "1"
 
 # Headless brain-daemon: exposes the brain-owner tools over HTTP for the MacBook client.
 axum = "0.7"
+
+# Desktop-only (macOS/Windows/Linux): the floating-window chrome — system tray,
+# the global summon hotkey, the in-app auto-updater, and relaunch. None of these
+# apply on iOS (single full-screen webview, no tray/hotkeys, App Store updates),
+# so they're gated out of the mobile build entirely.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 # The Tauri app (default) and the headless daemon are two binaries over one lib.
 [[bin]]

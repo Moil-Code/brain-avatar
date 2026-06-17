@@ -9,6 +9,8 @@ interface Props {
   models: string[];
   modelOverride: string | null;
   onSelectModel: (model: string | null) => void;
+  /** iPhone: hide the peek/minimize affordance (there's no floating window). */
+  mobile?: boolean;
 }
 
 export default function TitleBar({
@@ -22,6 +24,7 @@ export default function TitleBar({
   models,
   modelOverride,
   onSelectModel,
+  mobile,
 }: Props) {
   return (
     <div className="titlebar" data-tauri-drag-region>
@@ -61,13 +64,15 @@ export default function TitleBar({
         <button className="tb-btn" title="Settings" onClick={onOpenSettings}>
           ⚙
         </button>
-        <button
-          className="tb-btn"
-          title="Peek to the top edge — slides down when you move near it. ⌘⇧Space to summon."
-          onClick={onMinimize}
-        >
-          —
-        </button>
+        {!mobile && (
+          <button
+            className="tb-btn"
+            title="Peek to the top edge — slides down when you move near it. ⌘⇧Space to summon."
+            onClick={onMinimize}
+          >
+            —
+          </button>
+        )}
       </div>
     </div>
   );
