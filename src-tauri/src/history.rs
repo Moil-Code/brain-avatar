@@ -29,6 +29,8 @@ pub async fn save_message(
     conversation_id: String,
     role: String,
     content: String,
+    // Stable per-message id (the UI message id) so the backend dedups retries.
+    message_id: String,
     state: State<'_, SettingsState>,
 ) -> Result<(), String> {
     let Some((url, token)) = sync_config(&state) else {
@@ -42,6 +44,7 @@ pub async fn save_message(
             "conversationId": conversation_id,
             "role": role,
             "content": content,
+            "messageId": message_id,
         }))
         .timeout(Duration::from_secs(15))
         .send()

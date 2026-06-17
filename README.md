@@ -50,6 +50,8 @@ and cloud history.
 ### 2. Create the Supabase database
 1. Create a project at <https://supabase.com>.
 2. Open the **SQL Editor** and run [`backend/supabase/schema.sql`](backend/supabase/schema.sql).
+   The script is idempotent — **re-run it after updating the app** to apply migrations
+   (e.g. the `message_id` dedup key that stops retried turns from being written twice).
 3. Copy your **Project URL** and **service-role key** (Settings → API).
 
 ### 3. Deploy the backend to Vercel

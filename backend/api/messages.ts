@@ -17,15 +17,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const db = supabase();
 
     if (req.method === "POST") {
-      const { conversationId, role, content } = req.body ?? {};
+      const { conversationId, role, content, messageId } = req.body ?? {};
       if (!conversationId || !role || typeof content !== "string") {
         return res.status(400).json({ error: "conversationId, role, content required" });
       }
-      const { error } = await db.from("messages").insert({
+      if (!["user", "assistant", "system", "tool"].includes(String(role))) {
+        return res.status(400).json({ error: "role must be user|assistant|system|tool" });
+      }
+      const row: Record<string, unknown> = {
         conversation_id: String(conversationId),
         role: String(role),
         content,
-      });
+      };
+      // When the client supplies a stable id, upsert-ignore on it so a retried or
+      // re-synced turn is written exactly once. Older clients omit it → plain insert.
+      const write = messageId
+        ? db
+            .from("messages")
+            .upsert({ ...row, message_id: String(messageId) }, {
+              onConflict: "message_id",
+              ignoreDuplicates: true,
+            })
+        : db.from("messages").insert(row);
+      const { error } = await write;
       if (error) return res.status(500).json({ error: error.message });
       return res.status(201).json({ ok: true });
     }

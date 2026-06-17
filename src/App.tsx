@@ -245,8 +245,8 @@ export default function App() {
 
         appendTurn(activeConv, "assistant", answer).catch(() => {});
         pushChat(activeConv, "", "assistant", answer).catch(() => {});
-        saveMessage(activeConv, "user", text).catch(() => {});
-        saveMessage(activeConv, "assistant", answer).catch(() => {});
+        saveMessage(activeConv, "user", text, userMsg.id).catch(() => {});
+        saveMessage(activeConv, "assistant", answer, botId).catch(() => {});
 
         speak(answer, {
           onStart: () => setAvatarState("speaking"),

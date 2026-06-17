@@ -152,8 +152,12 @@ export const listApps = () => invoke<string>("list_apps");
 export const runAppleScript = (script: string) => invoke<string>("run_applescript", { script });
 
 // --- History sync (optional Supabase mirror) ---
-export const saveMessage = (conversationId: string, role: string, content: string) =>
-  invoke<void>("save_message", { conversationId, role, content });
+export const saveMessage = (
+  conversationId: string,
+  role: string,
+  content: string,
+  messageId: string
+) => invoke<void>("save_message", { conversationId, role, content, messageId });
 export const fetchMessages = (conversationId: string, limit?: number) =>
   invoke<{ role: string; content: string; created_at?: string }[]>(
     "fetch_messages",
