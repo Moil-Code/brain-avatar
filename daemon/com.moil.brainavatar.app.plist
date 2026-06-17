@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Auto-launch the Brain Avatar GUI app at login on a "main device" (the Mac Mini
+  and/or the MacBook) so the avatar comes back by itself after a reboot — no human
+  needed to reopen it. This is the GUI counterpart to the daemon/proxy/keeper
+  agents; together they make the whole stack survive an unattended restart.
+
+  Install (after the app is built / installed to /Applications):
+    cp daemon/com.moil.brainavatar.app.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.moil.brainavatar.app.plist
+
+  Equivalent to adding "Brain Avatar" under System Settings → General → Login
+  Items; use whichever you prefer (don't enable both, or it may launch twice).
+
+  No KeepAlive: `open -a` exits as soon as the app is launched, and the user may
+  legitimately quit the avatar — we only want it started at login, not forced to
+  stay open. (To resurrect it on crash too, rely on the app updater/relaunch or a
+  Login Item; KeepAlive here would relaunch on every intentional quit.)
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.moil.brainavatar.app</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/open</string>
+        <string>-a</string>
+        <string>Brain Avatar</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/brain-avatar-app-launch.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/brain-avatar-app-launch.log</string>
+</dict>
+</plist>

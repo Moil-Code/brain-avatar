@@ -131,6 +131,33 @@ body,
 }
 .update-banner button:disabled { opacity: 0.6; cursor: default; }
 
+/* Connection watcher: shown only while the 24GB Mac is unreachable; the watcher
+   keeps polling and the banner clears itself the moment it recovers. */
+.conn-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 4px;
+  padding: 6px 12px;
+  background: linear-gradient(90deg, rgba(255, 176, 32, 0.22), rgba(255, 99, 71, 0.16));
+  border: 1px solid rgba(255, 176, 32, 0.4);
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--fg);
+}
+.conn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ffb020;
+  box-shadow: 0 0 6px rgba(255, 176, 32, 0.9);
+  animation: conn-pulse 1.2s ease-in-out infinite;
+}
+@keyframes conn-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
 /* ---------- Avatar orb ---------- */
 .avatar-wrap {
   display: flex;

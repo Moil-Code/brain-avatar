@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  lmstudio-keeper — runs ON the 24GB Mac (the LM Studio host / brain owner).
+  Supervises the whole local chain so a reboot/sleep never leaves the avatar
+  silent: it ensures LM Studio is up with a model loaded, and kicks the
+  lm-queue-proxy + brain-daemon if their endpoints stop answering.
+
+  Install (edit USERNAME + the script path below to where you copied the repo):
+    cp gateway/com.moil.lmstudio-keeper.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.moil.lmstudio-keeper.plist
+
+  Set LMS_DEFAULT_MODEL to the model key you want preloaded (run `lms ls` to see
+  keys), and DAEMON_HEALTH_URL to your tailnet daemon /health if the daemon runs
+  on this same box. KeepAlive restarts the keeper loop itself if it ever dies.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.moil.lmstudio-keeper</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/USERNAME/brain-avatar/gateway/run-lmstudio-keeper.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- LM Studio (native API) on this box. -->
+        <key>LMS_UPSTREAM</key>
+        <string>http://127.0.0.1:1234</string>
+        <!-- The model to keep loaded. Empty = ensure server only, don't force-load.
+             Find the key with `lms ls`, e.g. qwen3-8b. -->
+        <key>LMS_DEFAULT_MODEL</key>
+        <string></string>
+        <key>LMS_GPU</key>
+        <string>max</string>
+        <key>KEEPER_INTERVAL</key>
+        <string>20</string>
+        <!-- lm-queue-proxy health (kicked via launchctl if unreachable). -->
+        <key>PROXY_URL</key>
+        <string>http://127.0.0.1:1235</string>
+        <!-- brain-daemon /health. Leave empty unless the daemon runs on THIS box;
+             set to its tailnet URL, e.g. http://100.x.y.z:8787/health -->
+        <key>DAEMON_HEALTH_URL</key>
+        <string></string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/lmstudio-keeper.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/lmstudio-keeper.log</string>
+</dict>
+</plist>
