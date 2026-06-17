@@ -815,8 +815,27 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     route.enhanced && route.enhanced.trim() !== userText.trim()
       ? [{ role: "system", content: `Execution plan for this request (follow it): ${route.enhanced}` }]
       : [];
+  // Date grounding: the model's training data is older than today, so without an
+  // explicit "now" anchor it answers time-sensitive questions (dates, events, prices,
+  // news) from stale memory. Inject the real current date EVERY turn (computed fresh,
+  // so it's always accurate) and steer it to live tools for anything current.
+  const today = new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const dateMsg: ChatMessage = {
+    role: "system",
+    content:
+      `Today's date is ${today}. Treat this as the present moment. Your training data ends well before today, ` +
+      `so it is OUT OF DATE: never state dates, schedules, events, prices, headlines, or "latest/current/upcoming" ` +
+      `facts from memory. For anything time-sensitive or recent, call web_search (then fetch_url) and answer ONLY ` +
+      `from the live results — if a tool returns nothing, say so plainly rather than guessing from training data.`,
+  };
   const messages: ChatMessage[] = [
     { role: "system", content: settings.system_prompt },
+    dateMsg,
     ...history,
     ...planMsg,
     { role: "user", content: userContent as string },
