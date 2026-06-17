@@ -835,6 +835,9 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       settings.max_tokens
     );
     onStep?.({ id: thinkId, label: thinkLabel, done: true });
+    // The LLM call above can run 60–120s; honor a Stop pressed during it before
+    // we commit to running this round's (possibly side-effecting) tools.
+    if (signal?.aborted) throw new Error("aborted");
     const content = res.content ?? "";
     const toolCalls = Array.isArray(res.tool_calls) ? res.tool_calls : [];
 
@@ -853,6 +856,9 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     // carry everything the next round needs.
     messages.push({ role: "assistant", content: "", tool_calls: toolCalls });
     for (const tc of toolCalls) {
+      // Stop must prevent the next tool from firing — especially side-effecting
+      // ones (send_email, calendar_create, post_to_facebook).
+      if (signal?.aborted) throw new Error("aborted");
       let aobj: any = {};
       try {
         aobj = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
@@ -887,5 +893,5 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   );
   const answer = (final.content ?? "").trim();
   onToken?.(answer);
-  return { content: answer, tools: toolsUsed };
+  return { content: answer, tools: toolsUsed, route };
 }

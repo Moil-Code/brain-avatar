@@ -35,8 +35,17 @@ function pickFast(models: string[]): string {
     pickPrimary(models)
   );
 }
-/** Vision requests use the same dense 12B. */
-const pickVision = pickFast;
+/** Vision requests: prefer an explicit vision/VL model if one is loaded, otherwise
+ *  the dense 12B (Gemma 3 is multimodal), otherwise the fast fallback. Checking the
+ *  explicit vision model FIRST means a request with an image never lands on a
+ *  text-only 12B when a real vision model is available. */
+function pickVision(models: string[]): string {
+  return (
+    models.find((m) => /vl|vision/.test(lc(m))) ??
+    models.find((m) => /gemma/.test(lc(m)) && /1[0-9]b/.test(lc(m))) ??
+    pickFast(models)
+  );
+}
 
 /** Signals that a request wants the slower-but-deeper 26B: multi-source synthesis,
  *  long-form writing, or code. Everything else stays on the fast 12B.

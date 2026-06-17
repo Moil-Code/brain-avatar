@@ -26,13 +26,13 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   read -r -p "Continue anyway? [y/N] " ok; [[ "$ok" == "y" ]] || exit 1
 fi
 
-echo "==> Bumping version to $VER (tauri.conf.json + Cargo.toml)"
+echo "==> Bumping version to $VER (tauri.conf.json + Cargo.toml + package.json)"
 python3 - "$VER" <<'PY'
 import json, sys
 v = sys.argv[1]
-p = "src-tauri/tauri.conf.json"
-d = json.load(open(p)); d["version"] = v
-json.dump(d, open(p, "w"), indent=2); open(p, "a").write("\n")
+for p in ("src-tauri/tauri.conf.json", "package.json"):
+    d = json.load(open(p)); d["version"] = v
+    json.dump(d, open(p, "w"), indent=2); open(p, "a").write("\n")
 PY
 sed -i '' "s/^version = \".*\"/version = \"$VER\"/" src-tauri/Cargo.toml
 
@@ -63,7 +63,7 @@ cat > /tmp/latest.json <<EOF
 EOF
 
 echo "==> Publishing GitHub Release v$VER"
-git add src-tauri/tauri.conf.json src-tauri/Cargo.toml
+git add src-tauri/tauri.conf.json src-tauri/Cargo.toml package.json
 git commit -q -m "chore: release v$VER" || true
 timeout 30 git push origin main || echo "(push failed/skipped — release still publishes; push when ready)"
 gh release create "v$VER" --repo "$REPO" --title "Brain Avatar v$VER" --notes "Update $VER" "/tmp/Brain.Avatar.app.tar.gz"

@@ -114,6 +114,19 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+/// Constant-time byte compare so the bearer check can't leak the token via
+/// early-exit timing. Token length isn't secret, so a length mismatch returns early.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// Bearer-token gate + access log for every protected route.
 async fn auth(
     State(st): State<Arc<AppState>>,
@@ -125,7 +138,7 @@ async fn auth(
         .get("authorization")
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "))
-        .map(|t| t == st.token)
+        .map(|t| ct_eq(t.as_bytes(), st.token.as_bytes()))
         .unwrap_or(false);
     eprintln!(
         "[brain-daemon] {} {} -> {}",

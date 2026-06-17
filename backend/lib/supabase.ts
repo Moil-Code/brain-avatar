@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 let client: SupabaseClient | null = null;
@@ -14,11 +15,18 @@ export function supabase(): SupabaseClient {
   return client;
 }
 
-/** Constant-time-ish bearer check against SYNC_TOKEN. */
+/** Constant-time bearer check against SYNC_TOKEN. This endpoint is public on the
+ *  internet, so the compare must not leak the token via early-exit timing. */
 export function authorized(authHeader: string | undefined): boolean {
   const expected = process.env.SYNC_TOKEN;
   if (!expected) return false;
   if (!authHeader?.startsWith("Bearer ")) return false;
   const token = authHeader.slice("Bearer ".length).trim();
-  return token.length > 0 && token === expected;
+  if (token.length === 0) return false;
+  const enc = new TextEncoder();
+  const a = enc.encode(token);
+  const b = enc.encode(expected);
+  // timingSafeEqual requires equal-length buffers; a length mismatch is already a
+  // non-match (token length isn't the secret), so short-circuit before comparing.
+  return a.length === b.length && timingSafeEqual(a, b);
 }
