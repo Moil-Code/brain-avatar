@@ -29,6 +29,7 @@ import {
   saveAutomations,
 } from "./lib/automations";
 import { probeModels } from "./lib/llm";
+import { useConnection } from "./lib/connection";
 import {
   isMuted,
   listenOnce,
@@ -147,6 +148,12 @@ export default function App() {
   const [expanded, setExpanded] = useState(false);
   const [models, setModels] = useState<string[]>([]);
   const [modelOverride, setModelOverride] = useState<string | null>(null);
+  // Actively watch the 24GB Mac. On recovery after a drop (sleep/reboot/LM
+  // Studio restart) refresh the model picker so the avatar is usable again
+  // without the user reopening Settings.
+  const connState = useConnection(settings, () => {
+    if (settings) probeModels(settings).then(setModels).catch(() => {});
+  });
   const [showChats, setShowChats] = useState(false);
   const [showAutomations, setShowAutomations] = useState(false);
   const [conversations, setConversations] = useState<ConvSummary[]>([]);
@@ -678,6 +685,12 @@ export default function App() {
           >
             {updating ? "Updating…" : "Update"}
           </button>
+        </div>
+      )}
+      {connState === "offline" && (
+        <div className="conn-banner">
+          <span className="conn-dot" />
+          <span>Can’t reach the 24GB Mac — reconnecting…</span>
         </div>
       )}
       <Avatar state={avatarState} onClick={() => !busy && !recording && handleToggleMic()} />

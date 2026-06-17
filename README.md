@@ -222,6 +222,9 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
   enable it under System Settings → Privacy & Security → Automation.
 - **Answers are slow** — Gemma 26B is a big reasoning model; load `qwen3-8b` on the 24GB
   Mac for near-instant responses (the app auto-detects the loaded model).
+- **Long silence after a reboot/shutdown** — set up auto-restart so the whole chain comes
+  back by itself. See **[docs/RESILIENCE.md](docs/RESILIENCE.md)** (macOS auto-login + the
+  `lmstudio-keeper` agent + the app's built-in reconnect watcher).
 
 ---
 
