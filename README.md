@@ -197,6 +197,14 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
     qwen3-8b + embeddings (~12 GB, ~12 GB headroom); the 12B and 26B never co-reside (LM Studio's
     RAM guardrail enforces this). Enable Flash Attention + KV-cache Q8 and cap context ~32K.
     See [`docs/MODEL_PERFORMANCE_AUDIT.md`](docs/MODEL_PERFORMANCE_AUDIT.md).
+  - **Deep-work mode (26B).** The 26B isn't resident by default, and the avatar's picker only
+    lists *loaded* models — so to use it: in LM Studio unload the 12B (and Qwen — the 26B needs
+    ~14 GB), load `gemma-4-26b-a4b-it-qat`; it then appears in the avatar's title-bar picker —
+    select it. While it's loaded it handles every turn until you switch back. Turn on LM Studio
+    **JIT loading + Auto-Unload (idle TTL)** so the swap is hands-off. Reach for it for synthesis,
+    long-form writing, deep analysis, and serious code review — where a 30–110s wait buys real
+    quality. Avoid it for quick tool actions / lookups / voice and multi-tool loops (its reasoning
+    markup is fragile in the tool loop).
   - **Gemma 4 in LM Studio:** if `<think>` markup leaks into answers, point the reasoning
     parser at Gemma 4's tokens (`<|channel>thought` … `<channel|>`); the daemon also strips
     common reasoning markup as a backstop.
