@@ -1572,13 +1572,31 @@ pub async fn push_chat(
 /// "navigate X and read it" — anything fetch_url can't do because it needs a
 /// real, authenticated browser session.
 #[tauri::command]
-pub async fn web_task(intent: String) -> Result<String, String> {
+pub async fn web_task(
+    intent: String,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        // The browser agent (+ Andres' logins) lives on the Mac Mini, so a remote
+        // client proxies web tasks to the daemon instead of its own localhost:3939.
+        return proxy(&s, "/web/task", json!({ "intent": intent })).await;
+    }
+    web_task_core(intent).await
+}
+
+pub async fn web_task_core(intent: String) -> Result<String, String> {
     let base = std::env::var("BROWSER_AGENT_URL")
         .unwrap_or_else(|_| "http://localhost:3939".into());
+    // Browser tasks (Playwright + the 24GB vision model) genuinely take 100–300s —
+    // a logged-in Facebook/moilapp navigation is slow. The old 180s ceiling cut the
+    // browser agent off mid-run, so the model reported a "connection interrupted"
+    // error that wasn't real. Wait past the agent's own ~300s cap so we get its
+    // actual result (success OR a clean failure) instead of a client-side timeout.
     let resp = reqwest::Client::new()
         .post(format!("{base}/api/solve"))
         .json(&json!({ "intent": intent }))
-        .timeout(StdDuration::from_secs(180))
+        .timeout(StdDuration::from_secs(330))
         .send()
         .await
         .map_err(|e| {

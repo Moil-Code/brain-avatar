@@ -84,6 +84,7 @@ async fn main() {
         .route("/facebook/insights", post(facebook_insights))
         .route("/web/search", post(web_search))
         .route("/web/fetch", post(web_fetch))
+        .route("/web/task", post(web_task))
         .route("/llm/complete", post(llm_complete))
         .route("/llm/probe", post(llm_probe))
         .route("/stt/transcribe", post(stt_transcribe))
@@ -363,6 +364,16 @@ struct WebFetch {
 }
 async fn web_fetch(State(_st): State<Arc<AppState>>, Json(p): Json<WebFetch>) -> ToolResult {
     tools::fetch_url(p.url).await.map_err(err)
+}
+
+#[derive(Deserialize)]
+struct WebTask {
+    intent: String,
+}
+async fn web_task(State(_st): State<Arc<AppState>>, Json(p): Json<WebTask>) -> ToolResult {
+    // Runs the browser agent (localhost:3939) here on the Mac Mini, where Andres'
+    // logged-in browser sessions live.
+    tools::web_task_core(p.intent).await.map_err(err)
 }
 
 // ----------------------------------------------------------------------------- llm
