@@ -187,8 +187,19 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
   to send). No always-on mic.
 - **LLM** — OpenAI-compatible LM Studio. The **remote 24GB Mac (`Mac-mini.local:1234`)**
   is the **primary** endpoint (with bearer token); the app auto-uses whichever model is
-  loaded. For a **snappy** avatar, keep **`qwen3-8b`** loaded (fast + reliable tool calls);
-  Gemma 26B works but each answer can take 30–110s.
+  loaded. For a **snappy** avatar, keep **`qwen3-8b-mlx`** loaded as the tool/JSON tier
+  (fast + reliable tool calls — thinking auto-disabled); the dense **`gemma-4-12b-qat`** is
+  the workhorse and the deep **`gemma-4-26b-a4b-it-qat`** handles synthesis/long-form (each
+  answer can take 30–110s). `gemma-4-e4b` is kept as a benched challenger to Qwen.
+  - **Best on the 24GB Mac (this hardware → hybrid, not all-MLX):** Gemma 4's MLX 4-bit builds
+    are *heavier* than its QAT GGUF builds, so the deep/workhorse Gemma tiers run **GGUF QAT**
+    and only the small tool tier runs **MLX** (qwen3-8b-mlx). Default resident set is 12B +
+    qwen3-8b + embeddings (~12 GB, ~12 GB headroom); the 12B and 26B never co-reside (LM Studio's
+    RAM guardrail enforces this). Enable Flash Attention + KV-cache Q8 and cap context ~32K.
+    See [`docs/MODEL_PERFORMANCE_AUDIT.md`](docs/MODEL_PERFORMANCE_AUDIT.md).
+  - **Gemma 4 in LM Studio:** if `<think>` markup leaks into answers, point the reasoning
+    parser at Gemma 4's tokens (`<|channel>thought` … `<channel|>`); the daemon also strips
+    common reasoning markup as a backstop.
   - **On a MacBook that isn't on the Mac Mini's LAN** (i.e. remote/travelling), `Mac-mini.local`
     mDNS won't resolve. Use **remote mode**: point the app at the **brain-daemon** over Tailscale
     (`http://<mac-mini-tailscale-ip>:8787`, printed by `daemon/setup-daemon.sh`) — the daemon
@@ -220,8 +231,9 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
   Access** in System Settings → Privacy & Security, then relaunch.
 - **Can't control an app** — approve the macOS "Brain Avatar wants to control X" prompt, or
   enable it under System Settings → Privacy & Security → Automation.
-- **Answers are slow** — Gemma 26B is a big reasoning model; load `qwen3-8b` on the 24GB
-  Mac for near-instant responses (the app auto-detects the loaded model).
+- **Answers are slow** — `gemma-4-26b-a4b-it-qat` is a big reasoning model; keep `qwen3-8b-mlx`
+  loaded on the 24GB Mac for near-instant tool/quick responses (the app auto-detects the loaded
+  model and routes quick/tool tasks to it).
 - **Long silence after a reboot/shutdown** — set up auto-restart so the whole chain comes
   back by itself. See **[docs/RESILIENCE.md](docs/RESILIENCE.md)** (macOS auto-login + the
   `lmstudio-keeper` agent + the app's built-in reconnect watcher).

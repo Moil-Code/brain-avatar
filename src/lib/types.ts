@@ -29,7 +29,7 @@ export interface UiMessage {
   pending?: boolean;
   /** Names of tools invoked while producing this answer (for the UI badge). */
   tools?: string[];
-  /** Router decision label, e.g. "email → qwen3-8b". */
+  /** Router decision label, e.g. "email → qwen3-8b-mlx". */
   routeLabel?: string;
   /** Live step feed shown while pending (routing, each tool, composing). */
   steps?: UiStep[];

@@ -23,22 +23,26 @@ function pickPrimary(models: string[]): string {
   );
 }
 
-/** FAST model: the dense 12B (Gemma). The day-to-day workhorse — it reasons only
- *  briefly, so it decides "which tool?" and emits tool_calls in ~9s vs the 26B's
- *  60–120s. Used for tool/action tasks (email, calendar, files, web, apps, quick
- *  answers) and for vision. Falls back to any small dense model, then the primary. */
+/** FAST model: the tool/JSON tier — qwen3-8b (MLX). Validated for clean structured
+ *  tool calls and coherent multi-turn round-trips, and with thinking disabled it
+ *  routes tools quickly instead of burning 60–120s like the 26B. Used for tool/action
+ *  tasks (email, calendar, files, web, apps, quick answers). The Gemma 4 E-series
+ *  (e4b) is kept as a benched challenger; the dense 12B is the heavier fallback. */
 function pickFast(models: string[]): string {
   return (
+    models.find((m) => /qwen/.test(lc(m))) ??
+    models.find((m) => /gemma/.test(lc(m)) && /e[0-9]+b/.test(lc(m))) ??
     models.find((m) => /gemma/.test(lc(m)) && /1[0-9]b/.test(lc(m))) ??
     models.find((m) => /vl|vision/.test(lc(m))) ??
-    models.find((m) => /qwen|(7b|8b|4b|3b|2b|mini)/.test(lc(m))) ??
+    models.find((m) => /(7b|8b|4b|3b|2b|mini)/.test(lc(m))) ??
     pickPrimary(models)
   );
 }
 /** Vision requests: prefer an explicit vision/VL model if one is loaded, otherwise
- *  the dense 12B (Gemma 3 is multimodal), otherwise the fast fallback. Checking the
+ *  the dense 12B (Gemma 4 is natively multimodal and the strongest vision tier we
+ *  load), otherwise the fast fallback (the E-series is multimodal too). Checking the
  *  explicit vision model FIRST means a request with an image never lands on a
- *  text-only 12B when a real vision model is available. */
+ *  weaker model when a real vision model is available. */
 function pickVision(models: string[]): string {
   return (
     models.find((m) => /vl|vision/.test(lc(m))) ??
@@ -48,13 +52,13 @@ function pickVision(models: string[]): string {
 }
 
 /** Signals that a request wants the slower-but-deeper 26B: multi-source synthesis,
- *  long-form writing, or code. Everything else stays on the fast 12B.
+ *  long-form writing, or code. Everything else stays on the fast tool tier (qwen3-8b).
  *
- *  Why a heuristic and not an LLM classifier: BOTH loaded models are reasoning
- *  models that burn ~300 tokens "thinking" before they answer, so even a one-word
- *  classification call costs ~35s — it would *add* latency, not save it. A local
- *  regex is instant. It's deliberately conservative: when unsure we keep the fast
- *  model, and the title-bar model picker can always force a choice. */
+ *  Why a heuristic and not an LLM classifier: the deep model burns ~300 tokens
+ *  "thinking" before it answers, so even a one-word classification call costs
+ *  ~35s — it would *add* latency, not save it. A local regex is instant. It's
+ *  deliberately conservative: when unsure we keep the fast model, and the
+ *  title-bar model picker can always force a choice. */
 const DEEP_RE =
   /\b(analy[sz]e|analysis|summari[sz]e|summary|compare|contrast|critique|strateg|brainstorm|pros and cons|trade[- ]?offs?|deep[- ]?dive|in[- ]depth|thorough|rationale|essay|article|blog\s*post|white\s*paper|report|proposal|memo|outline|refactor|debug|\bcode\b|codebase|function|algorithm|poem|story|script)\b/i;
 const WRITE_RE =
@@ -67,8 +71,8 @@ function isDeep(text: string): boolean {
 
 /**
  * The routing layer: pick the best LOADED model for the request. No network call —
- * routing is a local heuristic (default → fast 12B; deep work → 26B; image → 12B
- * vision), so it adds zero latency. The chosen model then runs the whole tool loop.
+ * routing is a local heuristic (default → fast tool tier qwen3-8b; deep work → 26B;
+ * image → 12B vision), so it adds zero latency. The chosen model then runs the tool loop.
  */
 export async function routeTask(opts: {
   userText: string;

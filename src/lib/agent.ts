@@ -385,8 +385,10 @@ export const TOOL_DEFS = [
     function: {
       name: "web_search",
       description:
-        "Search the public web for general or current information NOT specific to Moil or " +
-        "Andres' personal data. Only use when the brain is unlikely to have the answer.",
+        "Search the public web (Brave) for general or current information NOT specific to Moil or " +
+        "Andres' personal data. This is the PRIMARY web-lookup tool — use it FIRST for anything you'd " +
+        "'look something up online' for, then fetch_url to read a specific result. Only skip it when " +
+        "the brain clearly already has the answer.",
       parameters: {
         type: "object",
         properties: { query: { type: "string", description: "Web search query" } },
@@ -400,10 +402,11 @@ export const TOOL_DEFS = [
       name: "web_task",
       description:
         "Drive a REAL logged-in browser to do a web task: log into a site, navigate it, " +
-        "read an authenticated page, fill a form, click through a flow. Use this (not fetch_url) " +
-        "for anything that needs a real session — especially 'log into moilapp.com', 'open my Moil " +
-        "dashboard', 'go to X and tell me what's there'. fetch_url only gets public page text and " +
-        "can't log in. Pass a clear, specific natural-language instruction including the site/URL. " +
+        "read an authenticated page, fill a form, click through a flow. Use this for anything that " +
+        "needs a real session — especially 'log into moilapp.com', 'open my Moil dashboard' — OR as a " +
+        "FALLBACK when web_search is unavailable or didn't find it. For plain public lookups prefer " +
+        "web_search + fetch_url (faster and lighter). fetch_url only gets public page text and can't " +
+        "log in. Pass a clear, specific natural-language instruction including the site/URL. " +
         "Sites Andres logged into once stay logged in. If the result mentions a login wall, tell him " +
         "to run the one-time login. For any task that POSTS/SUBMITS/sends, confirm with Andres first.",
       parameters: {

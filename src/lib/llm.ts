@@ -23,9 +23,9 @@ export async function resolveEndpoint(
     if (settings.model && models.length === 0) return settings.model;
     const find = (re: RegExp) => models.find((m) => re.test(m.toLowerCase()));
     if (opts.preferDeep) {
-      return find(/gemma|2[4-9]b|3[0-9]b/) ?? models[0] ?? settings.model ?? "";
+      return find(/a4b|a3b|moe/) ?? find(/2[4-9]b|3[0-9]b/) ?? find(/gemma/) ?? models[0] ?? settings.model ?? "";
     }
-    return find(/qwen/) ?? find(/(8b|7b|4b|3b|2b|mini)/) ?? models[0] ?? settings.model ?? "";
+    return find(/qwen/) ?? find(/gemma.*e[0-9]+b/) ?? find(/(8b|7b|4b|3b|2b|mini)/) ?? models[0] ?? settings.model ?? "";
   };
 
   const tryLocal = async (): Promise<LlmEndpoint | null> => {
