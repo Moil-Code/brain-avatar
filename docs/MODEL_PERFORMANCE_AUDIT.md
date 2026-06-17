@@ -41,6 +41,26 @@ are *heavier* in RAM than its **QAT GGUF** builds, so going all-MLX would have m
 The sections below are the original analysis that led here; the recommendation to "go MLX
 across the board" is **superseded** by the hybrid above for the Gemma tiers.
 
+### Deep-work mode (26B) — how to actually use it
+
+The 26B (`gemma-4-26b-a4b-it-qat`) is **not resident by default**, and the router/picker only
+ever choose among **loaded** models — so deep tasks normally fall through to the 12B and the 26B
+sits idle unless you deliberately switch to it. To use it:
+
+1. In **LM Studio**, unload the 12B (and Qwen — the 26B needs ~14 GB and the RAM guardrail blocks
+   co-loading), then load `gemma-4-26b-a4b-it-qat`.
+2. It now appears in the avatar's **title-bar model picker** — select it. The picker override
+   skips routing, so every turn runs on the 26B until you switch back.
+3. When done, unload the 26B and reload 12B + Qwen.
+
+Enable **JIT loading + Auto-Unload (idle TTL)** in LM Studio to make the eviction/reload hands-off.
+
+**Use the 26B for:** multi-source synthesis, long-form writing (essays/reports/proposals/memos),
+nuanced analysis / strategy / critique, and serious code review/refactor — anywhere a 30–110s wait
+buys real quality. **Avoid it for:** quick tool actions (calendar/email/files), fast lookups, voice
+back-and-forth, and multi-tool loops — its think-phase latency hurts there and its reasoning markup
+is fragile inside the tool loop. Those stay on Qwen (tool tier) and the 12B.
+
 ## 1. Current setup (what we audited)
 
 - **Host:** Mac Mini, **24GB unified memory** (Apple Silicon). Unified memory is
