@@ -20,6 +20,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::sync::Semaphore;
 
 use brain_avatar_lib::config::{self, Settings};
 use brain_avatar_lib::{llm, tools, voice};
@@ -27,6 +28,13 @@ use brain_avatar_lib::{llm, tools, voice};
 struct AppState {
     settings: Settings,
     token: String,
+    /// Single-flight gate for LLM generation. The 24GB Mac (LM Studio) runs every
+    /// concurrent request in PARALLEL — it never queues — and two heavy generations
+    /// (e.g. the local avatar + the MacBook, or the 26B + 12B at once) overwhelm its
+    /// memory and stall the whole box. With every client pointed at this daemon, this
+    /// 1-permit semaphore serializes generation: the second request WAITS instead of
+    /// piling on. Probes (/models) are intentionally NOT gated — they don't generate.
+    gen_lock: Arc<Semaphore>,
 }
 
 /// Tool handlers return the tool's text output, or a 500 with the error message.
@@ -48,7 +56,11 @@ async fn main() {
         std::process::exit(1);
     }
     let bind = std::env::var("BRAIN_DAEMON_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
-    let state = Arc::new(AppState { settings, token });
+    let state = Arc::new(AppState {
+        settings,
+        token,
+        gen_lock: Arc::new(Semaphore::new(1)),
+    });
 
     let protected = Router::new()
         .route("/brain/search", post(brain_search))
@@ -335,9 +347,21 @@ async fn web_fetch(State(_st): State<Arc<AppState>>, Json(p): Json<WebFetch>) ->
 }
 
 // ----------------------------------------------------------------------------- llm
-/// Resolve the LM Studio endpoint from the Mac Mini's settings (remote 24GB Mac is
-/// primary; falls back to the local host). The client never sees these.
+/// Resolve the REAL LM Studio endpoint (the 24GB Mac). The client never sees this.
+///
+/// Env override (`BRAIN_DAEMON_LLM_URL` / `BRAIN_DAEMON_LLM_TOKEN`) wins over
+/// settings. This is REQUIRED on the Mac Mini, where the local avatar and this
+/// daemon share one settings.json: once the avatar points `lm_studio_remote_url`
+/// at the daemon (to be serialized), the daemon must NOT read that same field for
+/// its own upstream — that would relay to itself in a loop. The env pins the true
+/// LM Studio address independently of what the avatar writes into settings.
 fn resolve_llm(s: &Settings) -> (String, Option<String>) {
+    if let Ok(url) = std::env::var("BRAIN_DAEMON_LLM_URL") {
+        if !url.trim().is_empty() {
+            let tok = std::env::var("BRAIN_DAEMON_LLM_TOKEN").ok().filter(|t| !t.trim().is_empty());
+            return (url, tok);
+        }
+    }
     if !s.lm_studio_remote_url.trim().is_empty() {
         (
             s.lm_studio_remote_url.clone(),
@@ -359,11 +383,30 @@ async fn llm_complete(
     State(st): State<Arc<AppState>>,
     Json(p): Json<LlmComplete>,
 ) -> Result<Json<llm::LlmResult>, (StatusCode, String)> {
+    let _permit = acquire_gen(&st, "/llm/complete").await;
     let (url, token) = resolve_llm(&st.settings);
-    let r = llm::llm_complete(url, token, p.model, p.messages, p.tools, p.max_tokens)
+    let r = llm::llm_complete_core(url, token, p.model, p.messages, p.tools, p.max_tokens, None)
         .await
         .map_err(err)?;
     Ok(Json(r))
+}
+
+/// Acquire the single-flight generation permit, logging if the caller has to wait
+/// (i.e. another generation is already running). The returned guard releases the
+/// permit on drop — including if the client disconnects mid-request (Stop), which
+/// cancels this handler's future and frees the box for the next request.
+async fn acquire_gen(st: &Arc<AppState>, route: &str) -> tokio::sync::OwnedSemaphorePermit {
+    match st.gen_lock.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("[brain-daemon] {route} queued — another generation in flight");
+            st.gen_lock
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("gen_lock never closed")
+        }
+    }
 }
 
 async fn llm_probe(State(st): State<Arc<AppState>>) -> Json<llm::ProbeResult> {
@@ -420,6 +463,10 @@ async fn lm_v1_chat(
     State(st): State<Arc<AppState>>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    // Serialize generation: this is the path every client uses when pointed at the
+    // daemon, so the permit here is what actually prevents concurrent generations
+    // from overwhelming the 24GB Mac.
+    let _permit = acquire_gen(&st, "/v1/chat/completions").await;
     let (_url, token) = resolve_llm(&st.settings);
     let full = format!("{}/v1/chat/completions", lm_native_base(&st.settings));
     let client = reqwest::Client::new();

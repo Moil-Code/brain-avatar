@@ -7,6 +7,7 @@ import TitleBar from "./components/TitleBar";
 import { runAgent } from "./lib/agent";
 import {
   appendTurn,
+  cancelGeneration,
   deleteConversation,
   featureFlags,
   getConversation,
@@ -244,7 +245,7 @@ export default function App() {
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        if (msg.toLowerCase().includes("abort")) {
+        if (msg.toLowerCase().includes("abort") || msg.toLowerCase().includes("cancel")) {
           patchMessage(botId, { content: streamed || "(stopped)", pending: false });
         } else {
           patchMessage(botId, { content: `⚠️ ${msg}`, pending: false });
@@ -382,6 +383,7 @@ export default function App() {
   const handleStop = useCallback(() => {
     queueRef.current = [];
     syncQueue();
+    cancelGeneration(); // kill any in-flight model generation on the server immediately
     abortRef.current?.abort();
     listenAbortRef.current?.abort();
     listenAbortRef.current = null;

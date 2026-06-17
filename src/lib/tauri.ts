@@ -70,6 +70,9 @@ export const llmComplete = (
 export const extractDocText = (name: string, base64: string) =>
   invoke<string>("extract_doc_text", { name, base64 });
 
+/** Stop all in-flight model generations now (drops the request → LM Studio stops). */
+export const cancelGeneration = () => invoke<void>("cancel_generation").catch(() => {});
+
 // --- Tools (executed in Rust, results fed back to the model) ---
 export const brainSearch = (query: string, limit?: number) =>
   invoke<string>("brain_search", { query, limit });
