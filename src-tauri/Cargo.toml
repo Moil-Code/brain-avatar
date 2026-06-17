@@ -1,6 +1,6 @@
 [package]
 name = "brain-avatar"
-version = "0.1.9"
+version = "0.1.10"
 description = "Floating local-AI brain avatar for Moil"
 authors = ["Andres Urrego"]
 edition = "2021"
