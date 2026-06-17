@@ -433,6 +433,8 @@ struct LlmComplete {
     messages: Value,
     tools: Option<Value>,
     max_tokens: Option<u32>,
+    #[serde(default)]
+    tool_choice: Option<Value>,
 }
 async fn llm_complete(
     State(st): State<Arc<AppState>>,
@@ -449,6 +451,7 @@ async fn llm_complete(
         p.messages,
         p.tools,
         p.max_tokens,
+        p.tool_choice,
         Some(st.cancel.subscribe()),
     )
     .await

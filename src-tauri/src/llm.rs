@@ -63,6 +63,10 @@ pub async fn llm_complete(
     messages: Value,
     tools: Option<Value>,
     max_tokens: Option<u32>,
+    // Optional override for OpenAI `tool_choice` (default "auto"). The agent loop
+    // sets this to force the first decompose call on multi-task requests, e.g.
+    // {"type":"function","function":{"name":"manage_tasks"}}.
+    tool_choice: Option<Value>,
     cancel: State<'_, CancelState>,
 ) -> Result<LlmResult, String> {
     llm_complete_core(
@@ -72,6 +76,7 @@ pub async fn llm_complete(
         messages,
         tools,
         max_tokens,
+        tool_choice,
         Some(cancel.0.subscribe()),
     )
     .await
@@ -103,6 +108,7 @@ pub async fn llm_complete_core(
     messages: Value,
     tools: Option<Value>,
     max_tokens: Option<u32>,
+    tool_choice: Option<Value>,
     cancel: Option<tokio::sync::watch::Receiver<u64>>,
 ) -> Result<LlmResult, String> {
     // Tool-calling should be near-deterministic: at higher temperatures small models
@@ -120,7 +126,12 @@ pub async fn llm_complete_core(
     if let Some(t) = tools {
         if !t.is_null() {
             body["tools"] = t;
-            body["tool_choice"] = json!("auto");
+            // Default to "auto"; the agent loop can force a specific tool (e.g.
+            // manage_tasks) on round 0 of a multi-task request via tool_choice.
+            body["tool_choice"] = match tool_choice {
+                Some(tc) if !tc.is_null() => tc,
+                _ => json!("auto"),
+            };
         }
     }
     // Qwen3 and Gemma 4 are reasoning models with a <think> phase. Disable it for the

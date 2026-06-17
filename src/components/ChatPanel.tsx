@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { extractDocText } from "../lib/tauri";
 import { renderMarkdown } from "../lib/markdown";
 import { ErrorBoundary } from "./ErrorBoundary";
-import type { Attachment, UiMessage } from "../lib/types";
+import TaskBoard from "./TaskBoard";
+import type { Attachment, TaskBoard as Board, UiMessage } from "../lib/types";
 
 interface Props {
   messages: UiMessage[];
@@ -18,6 +19,10 @@ interface Props {
   onSend: (text: string, attachments: Attachment[]) => void;
   onToggleMic: () => void;
   onStop: () => void;
+  /** Live kanban board for this conversation (null when none). */
+  board?: Board | null;
+  boardExpanded?: boolean;
+  onToggleBoard?: () => void;
 }
 
 function aid() {
@@ -90,6 +95,9 @@ export default function ChatPanel({
   onSend,
   onToggleMic,
   onStop,
+  board,
+  boardExpanded,
+  onToggleBoard,
 }: Props) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -191,6 +199,12 @@ export default function ChatPanel({
           </div>
         ))}
       </div>
+
+      <TaskBoard
+        board={board ?? null}
+        expanded={boardExpanded ?? false}
+        onToggle={onToggleBoard ?? (() => {})}
+      />
 
       {queue.length > 0 && (
         <div className="queue-strip">

@@ -4,6 +4,7 @@ pub mod config;
 mod files;
 mod history;
 pub mod llm;
+mod task_board;
 pub mod tools;
 mod tts;
 pub mod voice;
@@ -180,6 +181,10 @@ pub fn run() {
             history::append_turn,
             history::replace_conversation,
             history::delete_conversation,
+            task_board::get_task_board,
+            task_board::set_task_board,
+            task_board::list_task_boards,
+            task_board::clear_task_board,
             tts::tts_speak,
             tts::tts_stop,
             tts::list_voices,

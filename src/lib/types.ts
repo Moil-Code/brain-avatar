@@ -112,6 +112,42 @@ export interface FeatureFlags {
   remoteLlm: boolean;
 }
 
+// --- Kanban task board (mirrors the Rust wire shape in task_board.rs) ---
+
+export type TaskStatus = "todo" | "in_progress" | "done" | "blocked";
+
+/** A persisted board card. Server (Rust) owns id/timestamps/attempt_count. */
+export interface TaskCard {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  /** Required when status === "done" — names the tool result that proves it. */
+  evidence?: string;
+  /** Required when status === "blocked" — what's needed to unblock. */
+  blocker?: string;
+  created_at: string;
+  updated_at: string;
+  attempt_count: number;
+}
+
+/** The full board for one conversation. `version` bumps on every successful set. */
+export interface TaskBoard {
+  conversation_id: string;
+  updated_at: string;
+  tasks: TaskCard[];
+  version: number;
+}
+
+/** The wire shape the agent sends to set_task_board. Server fills the rest. */
+export interface TaskInput {
+  /** Empty string for a NEW card; reuse the existing id to update one. */
+  id?: string;
+  title: string;
+  status: TaskStatus;
+  evidence?: string;
+  blocker?: string;
+}
+
 export interface LlmEndpoint {
   baseUrl: string;
   token?: string;
