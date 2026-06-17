@@ -27,8 +27,10 @@ import {
 } from "./lib/automations";
 import { probeModels } from "./lib/llm";
 import {
+  isMuted,
   listenOnce,
   primeVoices,
+  setMuted as setMutedFlag,
   speak,
   startRecording,
   stopSpeaking,
@@ -102,6 +104,7 @@ export default function App() {
   const [convoMode, setConvoMode] = useState<boolean>(
     () => localStorage.getItem("convoMode") === "1"
   );
+  const [muted, setMuted] = useState<boolean>(() => isMuted());
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const collapseTimer = useRef<number | null>(null);
   const queueRef = useRef<QueueItem[]>([]);
@@ -474,6 +477,18 @@ export default function App() {
     });
   }, []);
 
+  const toggleMute = useCallback(() => {
+    setMuted((on) => {
+      const next = !on;
+      setMutedFlag(next); // persists + silences any in-progress speech
+      if (next) {
+        stopSpeaking();
+        setAvatarState((s) => (s === "speaking" ? "idle" : s));
+      }
+      return next;
+    });
+  }, []);
+
   const handleStop = useCallback(() => {
     queueRef.current = [];
     syncQueue();
@@ -581,6 +596,8 @@ export default function App() {
         voiceEnabled={features.voice}
         convoMode={convoMode}
         onToggleConvo={toggleConvoMode}
+        muted={muted}
+        onToggleMute={toggleMute}
         queue={queue}
         onDequeue={dequeue}
         onSend={handleSend}

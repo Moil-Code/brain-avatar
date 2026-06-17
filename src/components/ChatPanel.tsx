@@ -9,6 +9,8 @@ interface Props {
   voiceEnabled: boolean;
   convoMode: boolean;
   onToggleConvo: () => void;
+  muted: boolean;
+  onToggleMute: () => void;
   queue: { id: string; text: string }[];
   onDequeue: (id: string) => void;
   onSend: (text: string, attachments: Attachment[]) => void;
@@ -78,6 +80,8 @@ export default function ChatPanel({
   voiceEnabled,
   convoMode,
   onToggleConvo,
+  muted,
+  onToggleMute,
   queue,
   onDequeue,
   onSend,
@@ -235,6 +239,17 @@ export default function ChatPanel({
             }
           }}
         />
+        <button
+          className={`icon-btn mute ${muted ? "on" : ""}`}
+          title={
+            muted
+              ? "Muted — the avatar runs but stays silent (click to unmute)"
+              : "Mute the avatar's voice — it keeps running, just no sound"
+          }
+          onClick={onToggleMute}
+        >
+          {muted ? "🔇" : "🔊"}
+        </button>
         {voiceEnabled && (
           <button
             className={`icon-btn convo ${convoMode ? "on" : ""}`}

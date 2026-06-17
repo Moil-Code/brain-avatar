@@ -642,6 +642,12 @@ body,
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
+.icon-btn.mute { opacity: 0.5; font-size: 14px; transition: opacity 0.15s ease; }
+.icon-btn.mute:hover { opacity: 0.8; }
+.icon-btn.mute.on {
+  opacity: 1;
+  background: rgba(255, 90, 90, 0.18);
+}
 
 /* --- Request queue strip --- */
 .queue-strip {
