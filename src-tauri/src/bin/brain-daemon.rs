@@ -20,7 +20,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 
 use brain_avatar_lib::config::{self, Settings};
 use brain_avatar_lib::{llm, tools, voice};
@@ -35,6 +35,10 @@ struct AppState {
     /// 1-permit semaphore serializes generation: the second request WAITS instead of
     /// piling on. Probes (/models) are intentionally NOT gated — they don't generate.
     gen_lock: Arc<Semaphore>,
+    /// Fired by POST /llm/cancel (client hit Stop). The in-flight relay races its
+    /// LM Studio request against this and drops it, so generation halts server-side
+    /// instead of running to completion after the client hung up.
+    cancel: Arc<Notify>,
 }
 
 /// Tool handlers return the tool's text output, or a 500 with the error message.
@@ -60,6 +64,7 @@ async fn main() {
         settings,
         token,
         gen_lock: Arc::new(Semaphore::new(1)),
+        cancel: Arc::new(Notify::new()),
     });
 
     let protected = Router::new()
@@ -87,6 +92,7 @@ async fn main() {
         .route("/api/v0/models", get(lm_api_v0_models))
         .route("/v1/models", get(lm_v1_models))
         .route("/v1/chat/completions", post(lm_v1_chat))
+        .route("/llm/cancel", post(llm_cancel))
         .route("/auth/check", get(auth_check))
         .layer(middleware::from_fn_with_state(state.clone(), auth));
 
@@ -476,15 +482,32 @@ async fn lm_v1_chat(
             req = req.header("Authorization", format!("Bearer {t}"));
         }
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("LM Studio unreachable: {e}")))?;
-    let status = resp.status();
-    let v: Value = resp
-        .json()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    // Race generation against a client Stop (POST /llm/cancel). On cancel, `gen`
+    // drops → its reqwest closes the LM Studio connection → generation halts
+    // server-side instead of running to completion.
+    let gen = async {
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("LM Studio unreachable: {e}")))?;
+        let status = resp.status();
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+        Ok::<(StatusCode, Value), (StatusCode, String)>((status, v))
+    };
+    let notified = st.cancel.notified();
+    tokio::pin!(gen, notified);
+    let (status, v) = tokio::select! {
+        r = &mut gen => r?,
+        _ = &mut notified => {
+            return Err((
+                StatusCode::from_u16(499).unwrap_or(StatusCode::REQUEST_TIMEOUT),
+                "cancelled".into(),
+            ));
+        }
+    };
     if status.is_success() {
         Ok(Json(v))
     } else {
@@ -493,6 +516,12 @@ async fn lm_v1_chat(
             v.to_string(),
         ))
     }
+}
+
+/// Client pressed Stop → wake the in-flight relay so it drops its LM Studio request.
+async fn llm_cancel(State(st): State<Arc<AppState>>) -> &'static str {
+    st.cancel.notify_waiters();
+    "ok"
 }
 
 // ----------------------------------------------------------------------------- stt

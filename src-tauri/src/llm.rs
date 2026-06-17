@@ -1,3 +1,4 @@
+use crate::config::SettingsState;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -22,11 +23,33 @@ impl Default for CancelState {
     }
 }
 
-/// Stop all in-flight generations (called when the user presses Stop).
+/// Stop all in-flight generations (called when the user presses Stop). Bumps the
+/// local epoch (drops any direct LM Studio request) AND, in remote mode, POSTs to
+/// the daemon's /llm/cancel — otherwise LM Studio *behind* the daemon keeps
+/// generating after the MacBook hangs up (the daemon's blocking relay never noticed).
 #[tauri::command]
-pub fn cancel_generation(state: State<'_, CancelState>) {
+pub fn cancel_generation(state: State<'_, CancelState>, settings: State<'_, SettingsState>) {
     let next = state.0.borrow().wrapping_add(1);
     let _ = state.0.send(next);
+
+    let (url, token) = {
+        let s = settings.0.lock().unwrap();
+        (
+            s.brain_daemon_url.trim().trim_end_matches('/').to_string(),
+            s.brain_daemon_token.clone(),
+        )
+    };
+    if !url.is_empty() {
+        let endpoint = format!("{url}/llm/cancel");
+        tokio::spawn(async move {
+            let _ = reqwest::Client::new()
+                .post(&endpoint)
+                .header("Authorization", format!("Bearer {token}"))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await;
+        });
+    }
 }
 
 /// Run one chat completion against an OpenAI-compatible endpoint (LM Studio),
