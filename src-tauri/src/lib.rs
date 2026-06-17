@@ -1,3 +1,4 @@
+mod automations;
 mod commands;
 pub mod config;
 mod files;
@@ -141,6 +142,9 @@ pub fn run() {
             commands::get_settings,
             commands::set_settings,
             commands::feature_flags,
+            commands::notify,
+            automations::get_automations,
+            automations::set_automations,
             tools::brain_search,
             tools::brain_page,
             tools::calendar_events,
@@ -157,6 +161,7 @@ pub fn run() {
             tools::x_bookmarks,
             tools::generate_image,
             tools::post_to_facebook,
+            tools::facebook_insights,
             tools::push_chat,
             tools::create_reminder,
             tools::send_teams_message,

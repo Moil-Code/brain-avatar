@@ -111,6 +111,33 @@ built-in app doesn't request. One-time setup (you're the Moil admin):
 After that, "schedule a Teams meeting with X tomorrow at 10am and invite them" works
 end to end — real event on your calendar, Teams link, invite emailed.
 
+## Automations (the proactive layer) ⏰
+
+Brain can now run tasks **on its own schedule** and deliver the results — the first step
+toward a real Jarvis instead of a purely reactive assistant. Open the **⏰ Automations** tab
+(title bar) or just ask by voice: *"every Monday at 9, email me my Facebook metrics."*
+
+- **Schedules**: daily, weekly, hourly, or every-N-minutes. If the app was closed at the
+  scheduled minute, the run still fires when you reopen it (within a 6-hour catch-up window).
+- **Delivery** (any combination): **speak** it aloud, a macOS **notification**, **email** it
+  to you, and/or write it to your **brain**.
+- **One-click presets**: a daily **Morning briefing** (calendar + overnight email + top
+  commitments), **Weekly Facebook metrics**, and an **End-of-day capture** into the brain.
+- The model can create them itself with `create_automation` and tell you what's running with
+  `list_automations`. Each run executes the full tool-calling loop, so an automation can do
+  anything you can ask for live.
+
+Automations run **while the avatar app is open** (its normal always-on state). They're stored
+in `automations.json` next to `settings.json`.
+
+### Facebook metrics (read-only)
+
+`facebook_insights` reads a Page's follower count, 28-day reach, impressions, post engagement,
+and recent-post performance — *"how's the moil page doing this week?"* It reuses the same Page
+tokens as posting (`~/.openclaw/secrets/facebook.env`). Reach/engagement numbers require the
+Page token to carry the **`read_insights`** permission; if it doesn't, Brain still reports the
+follower count and tells you what to re-grant.
+
 ## Run it
 
 ```bash

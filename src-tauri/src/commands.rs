@@ -19,6 +19,28 @@ pub fn set_settings(
     Ok(())
 }
 
+/// Post a native macOS Notification Center banner. Used by automations to surface
+/// their results proactively (e.g. the morning briefing) without the model having a
+/// tool for it. Fire-and-forget via osascript so no extra crates are pulled in.
+#[tauri::command]
+pub fn notify(title: String, body: String) -> Result<(), String> {
+    // AppleScript string literals: escape backslashes first, then double quotes.
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    // Notification Center truncates long bodies anyway; keep it to one glanceable line.
+    let body: String = body.chars().take(220).collect();
+    let script = format!(
+        "display notification \"{}\" with title \"{}\"",
+        esc(&body),
+        esc(&title)
+    );
+    std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .spawn()
+        .map_err(|e| format!("notification failed: {e}"))?;
+    Ok(())
+}
+
 /// Whether the optional integrations are configured (drives UI affordances).
 #[tauri::command]
 pub fn feature_flags(state: State<'_, SettingsState>) -> serde_json::Value {

@@ -460,6 +460,15 @@ body,
   user-select: text;
 }
 .field select { appearance: none; cursor: pointer; }
+.auto-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--fg);
+  cursor: pointer;
+}
+.auto-check input { width: auto; }
 .field input:focus,
 .field textarea:focus,
 .field select:focus { border-color: rgba(124, 123, 255, 0.5); }

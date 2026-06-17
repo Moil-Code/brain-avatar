@@ -1324,6 +1324,169 @@ pub async fn post_to_facebook(
     ))
 }
 
+/// Load a Facebook Page's (token, page_id, page_key) from ~/.openclaw/secrets/facebook.env.
+/// `page` = "moil" (default) or "jarvis_tx". Returns a human message on the Err side
+/// so the model can relay it.
+fn fb_page_creds(page: Option<String>) -> Result<(String, String, String), String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/jarvisurrego".into());
+    let env_path = format!("{home}/.openclaw/secrets/facebook.env");
+    let raw = std::fs::read_to_string(&env_path)
+        .map_err(|_| "Facebook isn't configured (facebook.env not found).".to_string())?;
+    let mut vars = std::collections::HashMap::new();
+    for line in raw.lines() {
+        let l = line.trim().trim_start_matches("export ").trim();
+        if l.starts_with('#') || !l.contains('=') {
+            continue;
+        }
+        if let Some((k, v)) = l.split_once('=') {
+            vars.insert(
+                k.trim().to_string(),
+                v.trim().trim_matches('"').trim_matches('\'').to_string(),
+            );
+        }
+    }
+    let page_key = page.unwrap_or_else(|| "moil".into()).to_lowercase();
+    let (token, page_id) = if page_key.contains("jarvis") || page_key.contains("tx") {
+        (vars.get("FB_PAGE_TOKEN_JARVIS_TX"), vars.get("FB_PAGE_ID_JARVIS_TX"))
+    } else {
+        (vars.get("FB_PAGE_TOKEN_MOIL"), vars.get("FB_PAGE_ID_MOIL"))
+    };
+    match (token, page_id) {
+        (Some(t), Some(p)) if !t.is_empty() && !p.is_empty() => {
+            Ok((t.clone(), p.clone(), page_key))
+        }
+        _ => Err(format!("No Facebook token/page id for '{page_key}' in facebook.env.")),
+    }
+}
+
+/// Avatar-side command: in remote mode the Page tokens live on the brain-owner
+/// (Mac Mini) where facebook.env is, so proxy there; otherwise read locally.
+#[tauri::command]
+pub async fn facebook_insights(
+    page: Option<String>,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/facebook/insights", json!({ "page": page })).await;
+    }
+    facebook_insights_core(page).await
+}
+
+/// Read engagement metrics for a Facebook Page (followers, reach, impressions,
+/// post engagement) over the last 28 days. Reuses the same Page tokens as
+/// post_to_facebook. Reach/engagement insights need the token to carry the
+/// `read_insights` permission; if it doesn't, we still report the follower count
+/// and explain what's missing so Andres can re-grant.
+pub async fn facebook_insights_core(page: Option<String>) -> Result<String, String> {
+    let (token, page_id, page_key) = match fb_page_creds(page) {
+        Ok(v) => v,
+        Err(msg) => return Ok(msg),
+    };
+    let client = reqwest::Client::new();
+    let mut out = format!("Facebook insights — {page_key} page:\n");
+
+    // 1) Basic page totals (name + follower/like counts).
+    let prof_url = format!(
+        "https://graph.facebook.com/v22.0/{page_id}?fields=name,fan_count,followers_count&access_token={token}"
+    );
+    if let Ok(resp) = client.get(&prof_url).timeout(StdDuration::from_secs(30)).send().await {
+        let v: Value = serde_json::from_str(&resp.text().await.unwrap_or_default()).unwrap_or(Value::Null);
+        if let Some(name) = v.get("name").and_then(|x| x.as_str()) {
+            out.push_str(&format!("• Page: {name}\n"));
+        }
+        if let Some(f) = v.get("followers_count").and_then(|x| x.as_u64()) {
+            out.push_str(&format!("• Followers: {f}\n"));
+        }
+        if let Some(f) = v.get("fan_count").and_then(|x| x.as_u64()) {
+            out.push_str(&format!("• Page likes: {f}\n"));
+        }
+    }
+
+    // 2) 28-day insights: unique reach, impressions, post engagements, page views.
+    let ins_url = format!(
+        "https://graph.facebook.com/v22.0/{page_id}/insights\
+         ?metric=page_impressions_unique,page_impressions,page_post_engagements,page_views_total\
+         &period=days_28&access_token={token}"
+    );
+    match client.get(&ins_url).timeout(StdDuration::from_secs(30)).send().await {
+        Ok(resp) => {
+            let body = resp.text().await.unwrap_or_default();
+            let v: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            if let Some(err) = v.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+                out.push_str(&format!(
+                    "• (Reach/engagement metrics unavailable: {err}. The Page token may need the \
+                     read_insights permission.)\n"
+                ));
+            } else if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
+                let label = |name: &str| -> &str {
+                    match name {
+                        "page_impressions_unique" => "Reach (people, 28d)",
+                        "page_impressions" => "Impressions (28d)",
+                        "page_post_engagements" => "Post engagements (28d)",
+                        "page_views_total" => "Page views (28d)",
+                        other => other,
+                    }
+                };
+                for m in data {
+                    let name = m.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    // The latest period entry is the most recent cumulative value.
+                    let val = m
+                        .get("values")
+                        .and_then(|vs| vs.as_array())
+                        .and_then(|vs| vs.last())
+                        .and_then(|x| x.get("value"))
+                        .and_then(|x| x.as_u64());
+                    if let Some(val) = val {
+                        out.push_str(&format!("• {}: {val}\n", label(name)));
+                    }
+                }
+            }
+        }
+        Err(e) => out.push_str(&format!("• (Insights request failed: {e})\n")),
+    }
+
+    // 3) Recent posts with reach, so "how did my last posts do" works.
+    let posts_url = format!(
+        "https://graph.facebook.com/v22.0/{page_id}/posts\
+         ?fields=message,created_time,insights.metric(post_impressions_unique).as(reach)\
+         &limit=5&access_token={token}"
+    );
+    if let Ok(resp) = client.get(&posts_url).timeout(StdDuration::from_secs(30)).send().await {
+        let v: Value = serde_json::from_str(&resp.text().await.unwrap_or_default()).unwrap_or(Value::Null);
+        if let Some(posts) = v.get("data").and_then(|d| d.as_array()) {
+            if !posts.is_empty() {
+                out.push_str("Recent posts:\n");
+                for p in posts.iter().take(5) {
+                    let when = p.get("created_time").and_then(|x| x.as_str()).unwrap_or("");
+                    let date = when.split('T').next().unwrap_or(when);
+                    let msg = p
+                        .get("message")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("(no caption)");
+                    let msg_short: String = msg.chars().take(60).collect();
+                    let reach = p
+                        .get("reach")
+                        .and_then(|r| r.get("data"))
+                        .and_then(|d| d.as_array())
+                        .and_then(|d| d.first())
+                        .and_then(|x| x.get("values"))
+                        .and_then(|vs| vs.as_array())
+                        .and_then(|vs| vs.first())
+                        .and_then(|x| x.get("value"))
+                        .and_then(|x| x.as_u64());
+                    match reach {
+                        Some(r) => out.push_str(&format!("  · {date} — \"{msg_short}\" — reach {r}\n")),
+                        None => out.push_str(&format!("  · {date} — \"{msg_short}\"\n")),
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
 /// Append one chat turn to the cross-machine inbox (~/.brain-chat-inbox/pushed.json,
 /// conversations.json-shaped). Runs ON the brain-owner (Mac Mini, via the daemon)
 /// so the nightly ingest sees MacBook chats too. Conversation ids are random, so a

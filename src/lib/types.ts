@@ -71,6 +71,40 @@ export interface Settings {
   system_prompt: string;
 }
 
+/** How often an automation fires. Kept as a small tagged union so the UI and the
+ *  model can both produce it without parsing free-form cron. */
+export type AutomationSchedule =
+  | { kind: "daily"; time: string } // "09:00"
+  | { kind: "weekly"; weekday: number; time: string } // 0=Sun .. 6=Sat
+  | { kind: "hourly"; minute: number } // run at :MM each hour
+  | { kind: "interval"; everyMinutes: number };
+
+/** Which channels an automation's result is delivered through. */
+export interface AutomationDelivery {
+  speak: boolean;
+  notify: boolean;
+  email: boolean;
+  brain: boolean;
+}
+
+/** A task the avatar runs on its own schedule (the proactive "Jarvis" layer). */
+export interface Automation {
+  id: string;
+  name: string;
+  /** The instruction handed to the agent loop, exactly like a typed request. */
+  prompt: string;
+  schedule: AutomationSchedule;
+  delivery: AutomationDelivery;
+  /** Recipient for email delivery (defaults to Andres). */
+  emailTo?: string;
+  enabled: boolean;
+  /** ISO timestamp of the last successful run (for due-checking). */
+  lastRun?: string;
+  /** Short one-line result of the last run, shown in the UI. */
+  lastResult?: string;
+  createdAt: string;
+}
+
 export interface FeatureFlags {
   voice: boolean;
   web: boolean;

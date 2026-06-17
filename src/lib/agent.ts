@@ -26,8 +26,23 @@ import {
   sendTeamsMessage,
   webSearch,
   xBookmarks,
+  facebookInsights,
 } from "./tauri";
-import type { Attachment, AvatarState, ChatMessage, Settings, UiStep } from "./types";
+import {
+  describeSchedule,
+  loadAutomations,
+  makeAutomation,
+  summarizeAutomations,
+  upsertAutomation,
+} from "./automations";
+import type {
+  Attachment,
+  AutomationSchedule,
+  AvatarState,
+  ChatMessage,
+  Settings,
+  UiStep,
+} from "./types";
 
 const MAX_ROUNDS = 5;
 
@@ -66,6 +81,12 @@ function toolStepLabel(name: string, a: any): string {
       return a.prompt ? `Painting “${a.prompt}”` : "Generating an image";
     case "post_to_facebook":
       return `Posting to Facebook (${a.page ?? "moil"})`;
+    case "facebook_insights":
+      return `Pulling Facebook metrics (${a.page ?? "moil"})`;
+    case "create_automation":
+      return a.name ? `Setting up automation: ${a.name}` : "Setting up an automation";
+    case "list_automations":
+      return "Listing your automations";
     case "x_bookmarks":
       return "Fetching your X bookmarks";
     case "web_search":
@@ -271,6 +292,74 @@ export const TOOL_DEFS = [
         },
         required: ["image_path", "caption"],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "facebook_insights",
+      description:
+        "Read engagement METRICS for one of Andres' Facebook Pages — follower count, " +
+        "28-day reach, impressions, post engagement, and how the last few posts performed. " +
+        "Use for 'how's the Facebook page doing', 'check my FB metrics', 'reach this month'. " +
+        "page = 'moil' (Moil by Jarvis) or 'jarvis_tx' (Jarvis AI TX), default moil. This is " +
+        "READ-ONLY (it does not post). Summarize the numbers conversationally.",
+      parameters: {
+        type: "object",
+        properties: {
+          page: { type: "string", description: "'moil' or 'jarvis_tx' (default moil)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_automation",
+      description:
+        "Set up a RECURRING automation — a task Brain runs ON ITS OWN on a schedule and " +
+        "delivers to Andres. Use when he says 'every Monday…', 'each morning…', 'remind me " +
+        "weekly to…', 'automatically check… and tell me'. The `prompt` is the instruction Brain " +
+        "will run each time, written as if Andres asked it live (e.g. 'Check my Facebook metrics " +
+        "for the moil page and summarize what changed this week'). Pick schedule_kind: 'daily' " +
+        "(needs time), 'weekly' (needs weekday 0=Sun..6=Sat and time), 'hourly' (needs minute), " +
+        "or 'interval' (needs every_minutes). time is 24h 'HH:MM' local. deliver is how the result " +
+        "reaches him: any of 'notify','speak','email','brain' (default notify+speak). Confirm the " +
+        "schedule and what it will do with Andres, then call this.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Short label, e.g. 'Weekly FB metrics'" },
+          prompt: {
+            type: "string",
+            description: "The instruction Brain runs each time (a full natural-language request)",
+          },
+          schedule_kind: {
+            type: "string",
+            description: "'daily' | 'weekly' | 'hourly' | 'interval'",
+          },
+          time: { type: "string", description: "Local 24h time 'HH:MM' (daily/weekly)" },
+          weekday: { type: "integer", description: "0=Sunday .. 6=Saturday (weekly)" },
+          minute: { type: "integer", description: "Minute of the hour 0-59 (hourly)" },
+          every_minutes: { type: "integer", description: "Run every N minutes (interval)" },
+          deliver: {
+            type: "array",
+            items: { type: "string" },
+            description: "Channels: 'notify','speak','email','brain' (default ['notify','speak'])",
+          },
+        },
+        required: ["name", "prompt", "schedule_kind"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_automations",
+      description:
+        "List the recurring automations Brain currently has set up (name, schedule, on/off, " +
+        "delivery). Use for 'what automations do I have', 'what are you running for me'.",
+      parameters: { type: "object", properties: {} },
     },
   },
   {
@@ -524,6 +613,17 @@ export const TOOL_DEFS = [
   },
 ];
 
+/** Map the flat create_automation args into a typed schedule. */
+function buildSchedule(args: any): AutomationSchedule {
+  const kind = String(args.schedule_kind ?? "daily");
+  if (kind === "weekly")
+    return { kind: "weekly", weekday: Number(args.weekday ?? 1), time: String(args.time ?? "09:00") };
+  if (kind === "hourly") return { kind: "hourly", minute: Number(args.minute ?? 0) };
+  if (kind === "interval")
+    return { kind: "interval", everyMinutes: Math.max(1, Number(args.every_minutes ?? 60)) };
+  return { kind: "daily", time: String(args.time ?? "09:00") };
+}
+
 async function executeTool(name: string, argsJson: string): Promise<string> {
   let args: any = {};
   try {
@@ -576,6 +676,33 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
           String(args.caption ?? ""),
           args.page ? String(args.page) : undefined
         );
+      case "facebook_insights":
+        return await facebookInsights(args.page ? String(args.page) : undefined);
+      case "create_automation": {
+        const dv: string[] = Array.isArray(args.deliver)
+          ? args.deliver.map((x: unknown) => String(x))
+          : ["notify", "speak"];
+        const automation = makeAutomation({
+          name: String(args.name ?? ""),
+          prompt: String(args.prompt ?? ""),
+          schedule: buildSchedule(args),
+          delivery: {
+            speak: dv.includes("speak"),
+            notify: dv.includes("notify"),
+            email: dv.includes("email"),
+            brain: dv.includes("brain"),
+          },
+        });
+        await upsertAutomation(automation);
+        const ch =
+          dv.filter((x) => ["notify", "speak", "email", "brain"].includes(x)).join(", ") ||
+          "notify, speak";
+        return `Automation "${automation.name}" created — runs ${describeSchedule(
+          automation.schedule
+        )}, delivered via ${ch}. It's active now.`;
+      }
+      case "list_automations":
+        return summarizeAutomations(await loadAutomations());
       case "x_bookmarks":
         return await xBookmarks(args.count);
       case "web_search":
