@@ -64,8 +64,8 @@ pub async fn llm_complete(
     tools: Option<Value>,
     max_tokens: Option<u32>,
     // Optional override for OpenAI `tool_choice` (default "auto"). The agent loop
-    // sets this to force the first decompose call on multi-task requests, e.g.
-    // {"type":"function","function":{"name":"manage_tasks"}}.
+    // sets this to "required" to force a tool call on round 0 of a multi-task
+    // request (LM Studio rejects the named-function object form).
     tool_choice: Option<Value>,
     cancel: State<'_, CancelState>,
 ) -> Result<LlmResult, String> {

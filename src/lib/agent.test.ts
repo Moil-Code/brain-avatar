@@ -187,3 +187,99 @@ describe("TEDC multi-task scenario", () => {
     expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
   });
 });
+
+// These three patterns were NOT caught by the scripted happy-path test above — they
+// only surfaced when running the loop against the real qwen3-8b model, which splits
+// work across rounds, drops cards on re-send, and ignores forced tool_choice ~1/3
+// of the time. Each is locked in here so the fix can't silently regress.
+describe("real-model failure patterns (found via live testing)", () => {
+  it("accepts a card marked done a LATER round than its tool call (work and board update split)", async () => {
+    llmScript = [
+      { content: "", tool_calls: [mt("a", [
+        { id: "", title: "Find Josh", status: "in_progress" },
+        { id: "", title: "Read TEDC", status: "todo" },
+      ])] },
+      // R1: tool ALONE, no board update this round.
+      { content: "", tool_calls: [tool("b", "brain_page", { name: "Josh" })] },
+      // R2: mark card 1 done — the tool ran a round earlier. A per-round gate would reject this.
+      { content: "", tool_calls: [mt("c", [
+        { id: "t_0", title: "Find Josh", status: "done", evidence: "brain_page returned Josh page" },
+        { id: "t_1", title: "Read TEDC", status: "in_progress" },
+      ])] },
+      { content: "", tool_calls: [tool("d", "read_file", { path: "/x" })] },
+      { content: "", tool_calls: [mt("e", [
+        { id: "t_0", title: "Find Josh", status: "done", evidence: "brain_page returned Josh page" },
+        { id: "t_1", title: "Read TEDC", status: "done", evidence: "read_file returned 42 lines" },
+      ])] },
+      { content: "both done.", tool_calls: [] },
+    ];
+    await runAgent({ userText: "find Josh and then read the TEDC doc", history: [], settings, conversationId: "rt1" } as any);
+    expect(store!.tasks).toHaveLength(2);
+    expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
+  });
+
+  it("preserves a card the model omits on re-send (no silent drop)", async () => {
+    const boards: TaskBoard[] = [];
+    llmScript = [
+      { content: "", tool_calls: [mt("a", [
+        { id: "", title: "A", status: "in_progress" },
+        { id: "", title: "B", status: "todo" },
+      ])] },
+      { content: "", tool_calls: [tool("b", "brain_page", {})] },
+      // R2: model re-sends ONLY card A (drops B). Merge must keep B.
+      { content: "", tool_calls: [mt("c", [
+        { id: "t_0", title: "A", status: "done", evidence: "brain_page returned data" },
+      ])] },
+      { content: "", tool_calls: [tool("d", "read_file", {})] },
+      { content: "", tool_calls: [mt("e", [
+        { id: "t_0", title: "A", status: "done", evidence: "brain_page returned data" },
+        { id: "t_1", title: "B", status: "done", evidence: "read_file returned 9 lines" },
+      ])] },
+      { content: "done.", tool_calls: [] },
+    ];
+    await runAgent({
+      userText: "do A and then do B",
+      history: [],
+      settings,
+      conversationId: "rt2",
+      onBoardUpdate: (b: TaskBoard) => boards.push(b),
+    } as any);
+    // After the drop round, the board still has BOTH cards (B preserved as todo).
+    const afterDrop = boards[1];
+    expect(afterDrop.tasks).toHaveLength(2);
+    expect(afterDrop.tasks.find((c) => c.title === "B")?.status).toBe("todo");
+    // And nothing was lost by the end.
+    expect(store!.tasks).toHaveLength(2);
+    expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
+  });
+
+  it("retries the decomposition when round 0 returns prose (flaky forced tool_choice)", async () => {
+    llmScript = [
+      // Forced tool_choice ignored — model returns prose the narration regex won't catch.
+      { content: "Sure, I can help with that.", tool_calls: [] },
+      { content: "", tool_calls: [mt("a", [
+        { id: "", title: "A", status: "in_progress" },
+        { id: "", title: "B", status: "todo" },
+      ])] },
+      { content: "", tool_calls: [tool("b", "brain_page", {}), mt("c", [
+        { id: "t_0", title: "A", status: "done", evidence: "brain_page returned data" },
+        { id: "t_1", title: "B", status: "in_progress" },
+      ])] },
+      { content: "", tool_calls: [tool("d", "read_file", {}), mt("e", [
+        { id: "t_0", title: "A", status: "done", evidence: "brain_page returned data" },
+        { id: "t_1", title: "B", status: "done", evidence: "read_file returned 9 lines" },
+      ])] },
+      { content: "all set.", tool_calls: [] },
+    ];
+    const res = await runAgent({
+      userText: "find Josh in the brain and then read the TEDC document",
+      history: [],
+      settings,
+      conversationId: "rt3",
+    } as any);
+    // The round-0 prose was NOT returned; the board was built and finished.
+    expect(res.content).not.toMatch(/i can help/i);
+    expect(store!.tasks).toHaveLength(2);
+    expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
+  });
+});

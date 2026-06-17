@@ -64,8 +64,8 @@ export const llmComplete = (
   tools?: unknown,
   maxTokens?: number,
   // Optional OpenAI tool_choice override (default "auto" in Rust). The agent loop
-  // forces the first decompose call on multi-task requests by passing
-  // { type: "function", function: { name: "manage_tasks" } }.
+  // forces the first decompose call on multi-task requests by passing "required"
+  // (LM Studio rejects the named-function object form).
   toolChoice?: unknown
 ) =>
   withRetry(() =>

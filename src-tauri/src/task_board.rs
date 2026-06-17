@@ -118,8 +118,8 @@ fn store_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("task_boards.json"))
 }
 
-fn load_store(app: &AppHandle) -> TaskBoardStore {
-    match store_path(app).and_then(|p| std::fs::read_to_string(p).map_err(|e| e.to_string())) {
+fn load_store_at(path: &std::path::Path) -> TaskBoardStore {
+    match std::fs::read_to_string(path) {
         Ok(raw) => migrate_if_needed(serde_json::from_str(&raw).unwrap_or_default()),
         Err(_) => TaskBoardStore::default(),
     }
@@ -128,12 +128,23 @@ fn load_store(app: &AppHandle) -> TaskBoardStore {
 /// Atomic write: serialize -> write to <path>.tmp -> rename onto target. POSIX
 /// rename is atomic on the same filesystem, so a crash never leaves a truncated
 /// task_boards.json.
-fn save_store(app: &AppHandle, store: &TaskBoardStore) -> Result<(), String> {
-    let p = store_path(app)?;
-    let tmp = p.with_extension("json.tmp");
+fn save_store_at(path: &std::path::Path, store: &TaskBoardStore) -> Result<(), String> {
+    let tmp = path.with_extension("json.tmp");
     let raw = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
     std::fs::write(&tmp, raw).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+fn load_store(app: &AppHandle) -> TaskBoardStore {
+    match store_path(app) {
+        Ok(p) => load_store_at(&p),
+        Err(_) => TaskBoardStore::default(),
+    }
+}
+
+fn save_store(app: &AppHandle, store: &TaskBoardStore) -> Result<(), String> {
+    let p = store_path(app)?;
+    save_store_at(&p, store)
 }
 
 fn migrate_if_needed(store: TaskBoardStore) -> TaskBoardStore {
@@ -416,6 +427,74 @@ mod tests {
         let s4 = reconcile_tasks(&s3, vec![input("t1", "a", TaskStatus::Todo)], "now", 0).unwrap();
         let s5 = reconcile_tasks(&s4, vec![input("t1", "a", TaskStatus::InProgress)], "now", 0).unwrap();
         assert_eq!(s5[0].attempt_count, 2);
+    }
+
+    #[test]
+    fn store_roundtrips_on_disk_with_atomic_write() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("task_boards_rt_{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let tasks = reconcile_tasks(
+            &[],
+            vec![
+                TaskInput {
+                    id: "".into(),
+                    title: "Find Josh".into(),
+                    status: TaskStatus::Done,
+                    evidence: Some("brain_page returned Josh page".into()),
+                    blocker: None,
+                },
+                TaskInput {
+                    id: "".into(),
+                    title: "Rewrite slide 27".into(),
+                    status: TaskStatus::InProgress,
+                    evidence: None,
+                    blocker: None,
+                },
+            ],
+            "t0",
+            7,
+        )
+        .unwrap();
+        let store = TaskBoardStore {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            boards: vec![Board {
+                conversation_id: "c1".into(),
+                updated_at: "t0".into(),
+                tasks,
+                version: 1,
+            }],
+        };
+
+        save_store_at(&path, &store).unwrap();
+        // Atomic write leaves no .tmp behind and a valid target file.
+        assert!(!path.with_extension("json.tmp").exists(), "tmp must be renamed away");
+        assert!(path.exists());
+
+        let back = load_store_at(&path);
+        assert_eq!(back.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(back.boards.len(), 1);
+        let b = &back.boards[0];
+        assert_eq!(b.conversation_id, "c1");
+        assert_eq!(b.tasks.len(), 2);
+        assert_eq!(b.tasks[0].title, "Find Josh");
+        assert_eq!(b.tasks[0].status, TaskStatus::Done);
+        assert_eq!(b.tasks[0].evidence.as_deref(), Some("brain_page returned Josh page"));
+        assert_eq!(b.tasks[1].status, TaskStatus::InProgress);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn corrupt_file_loads_as_default_without_panic() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("task_boards_corrupt_{}.json", std::process::id()));
+        std::fs::write(&path, b"{ not valid json ]]").unwrap();
+        let store = load_store_at(&path); // serde unwrap_or_default — must not panic
+        assert_eq!(store.boards.len(), 0);
+        assert_eq!(store.schema_version, CURRENT_SCHEMA_VERSION);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -62,7 +62,9 @@ import type {
 // Round budget scales with task count: 5 rounds only covers a ~2-task request,
 // which is what let the TEDC multi-task request run out of rounds mid-plan.
 const BASE_ROUNDS = 5;
-const MAX_ROUNDS_CAP = 16;
+// Headroom matters: a small local model burns rounds on retries, nudges, and
+// re-sends, so budget generously above the raw task count (cap keeps it bounded).
+const MAX_ROUNDS_CAP = 20;
 
 function basename(p?: string): string {
   if (!p) return "";
@@ -923,13 +925,15 @@ export interface RunAgentResult {
 
 /** Apply one manage_tasks call: sanitize, run the harness-side evidence gate,
  *  then persist. Returns the model-facing tool result text and (on success) the
- *  new board. The gate is what stops a model from claiming a card done without
- *  having actually called a tool this round — the Rust store is a second guard. */
+ *  new board. `toolsSinceUpdate` is the set of real tools run since the last
+ *  board write — a card can only go done if one of those backs its evidence,
+ *  which stops "done without doing the work" without forcing the tool call and
+ *  the board update into the same round (real models split them). */
 async function applyBoardUpdate(
   tc: ToolCall,
   conversationId: string,
   board: TaskBoard | null,
-  toolsThisRound: Set<string>
+  toolsSinceUpdate: Set<string>
 ): Promise<{ text: string; board?: TaskBoard }> {
   let args: any = {};
   try {
@@ -961,17 +965,18 @@ async function applyBoardUpdate(
   });
 
   // Evidence gate: a card NEWLY transitioning to done must be backed by a real
-  // (non-board) tool call this round whose result the evidence references.
+  // (non-board) tool run since the last board write, whose result the evidence
+  // references.
   const rejected: string[] = [];
   for (const c of sanitized) {
     if (c.status !== "done") continue;
     const prev = c.id ? board?.tasks.find((x) => x.id === c.id) : undefined;
     if (prev?.status === "done") continue; // already done — idempotent
-    if (toolsThisRound.size === 0) {
-      rejected.push(`'${c.title}' marked done but no non-board tool ran this round`);
+    if (toolsSinceUpdate.size === 0) {
+      rejected.push(`'${c.title}' marked done but no tool has run yet — call the tool first`);
       continue;
     }
-    const ev = validateEvidence(c.evidence, toolsThisRound);
+    const ev = validateEvidence(c.evidence, toolsSinceUpdate);
     if (!ev.ok) rejected.push(`'${c.title}' evidence rejected: ${ev.reason}`);
   }
   if (rejected.length > 0) {
@@ -982,9 +987,22 @@ async function applyBoardUpdate(
     };
   }
 
+  // Merge, don't blind-overwrite. Whole-board replacement is a footgun for small
+  // models: they routinely re-send the board minus a card or two, which would
+  // silently drop tracked work. Preserve any existing card the model omitted (by
+  // id) so the board only ever grows or changes status — never loses a card. To
+  // abandon a plan the model/user clears the whole board explicitly.
+  const incomingIds = new Set(sanitized.map((c) => c.id).filter(Boolean));
+  const preserved: TaskInput[] = (board?.tasks ?? [])
+    .filter((t) => !incomingIds.has(t.id))
+    .map((t) => ({ id: t.id, title: t.title, status: t.status, evidence: t.evidence, blocker: t.blocker }));
+  const merged = [...sanitized, ...preserved];
+  const dropped = preserved.length;
+
   try {
-    const updated = await setTaskBoard(conversationId, sanitized);
-    return { text: `OK (v${updated.version}):\n${renderBoardSnapshot(updated)}`, board: updated };
+    const updated = await setTaskBoard(conversationId, merged);
+    const note = dropped > 0 ? ` (kept ${dropped} card(s) you omitted — resend the FULL list next time)` : "";
+    return { text: `OK (v${updated.version})${note}:\n${renderBoardSnapshot(updated)}`, board: updated };
   } catch (e: any) {
     // Rust rejected it (e.g. done-without-evidence slipped past, or schema guard).
     return { text: `manage_tasks rejected by store: ${e?.message ?? String(e)}` };
@@ -1087,7 +1105,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   // 5 rounds only covers a ~2-task request — too few for the TEDC failure. Scale
   // with task count, and grow again if the model adds cards mid-flow (below).
   let maxRounds = mustDecompose
-    ? Math.min(MAX_ROUNDS_CAP, Math.max(BASE_ROUNDS, 2 * taskCount + 2))
+    ? Math.min(MAX_ROUNDS_CAP, Math.max(BASE_ROUNDS, 3 * taskCount + 4))
     : BASE_ROUNDS;
 
   // The board snapshot is ONE system message kept current by overwrite, so it
@@ -1124,18 +1142,30 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   // poisons history (it few-shot-teaches more narrating). On a no-tool reply that
   // reads as an unexecuted plan, nudge ONCE to force a real call (or the board).
   let nudged = false;
+  // tool_choice "required" isn't always honored by LM Studio, so bound how many
+  // times we re-prompt for the initial decomposition before giving up.
+  let decomposeRetries = 0;
+
+  // Successful (non-board) tools accumulate ACROSS rounds until a board write
+  // consumes them. Real models split the work: round N calls brain_page, round
+  // N+1 calls manage_tasks to mark that card done. A per-round set would reject
+  // that legitimate sequence and stall the model — so the evidence gate looks at
+  // every real tool run since the last successful board update.
+  const toolsSinceBoardUpdate = new Set<string>();
 
   for (let round = 0; round < maxRounds; round++) {
     if (signal?.aborted) throw new Error("aborted");
     const thinkId = `think-${round}`;
     const thinkLabel = round === 0 ? "Reading your request" : "Reviewing and composing";
     onStep?.({ id: thinkId, label: thinkLabel, done: false });
-    // Round 0 of a multi-task request: force the decompose call so the model can't
-    // open with prose. Fall back to "auto" once if the endpoint rejects the force.
+    // Round 0 of a multi-task request: force a tool call so the model can't open
+    // with prose. Use the STRING "required" (force any tool) — LM Studio/llama.cpp
+    // reject the named-function object form ("Invalid tool_choice type: 'object'").
+    // Combined with the TASK BOARD system prompt the model reliably picks
+    // manage_tasks first (verified live against qwen3-8b). Falls back to auto once
+    // if some endpoint rejects "required" too.
     const forceDecompose = round === 0 && mustDecompose && !hasOpenBoard;
-    const toolChoice = forceDecompose
-      ? { type: "function", function: { name: "manage_tasks" } }
-      : undefined;
+    const toolChoice: unknown = forceDecompose ? "required" : undefined;
     let res;
     try {
       res = await llmComplete(
@@ -1186,6 +1216,22 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
           continue;
         }
       }
+      // Decompose-retry: this is a multi-task request but the board still doesn't
+      // exist — the model failed to decompose. tool_choice "required" is NOT always
+      // honored by LM Studio/MLX (it returns prose ~1 in 3), and the narration
+      // regex won't catch every such reply. Rather than return that prose, firmly
+      // re-instruct and retry a bounded number of times so a flaky force can't sink
+      // the whole request.
+      if (mustDecompose && (!board || board.tasks.length === 0) && decomposeRetries < 2) {
+        decomposeRetries++;
+        messages.push({
+          role: "system",
+          content:
+            "You did not call manage_tasks. This request has multiple steps — call manage_tasks NOW " +
+            "with one card per task (first card in_progress). Do not reply in prose until the board exists.",
+        });
+        continue;
+      }
       // If the board still has open cards, keep working rather than replying.
       const open = openCardCount(board);
       if (open > 0) {
@@ -1211,10 +1257,9 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     // carry everything the next round needs.
     messages.push({ role: "assistant", content: "", tool_calls: toolCalls });
 
-    // Run domain tools FIRST so toolsThisRound is populated before we evaluate any
-    // manage_tasks "done" transitions against real evidence. Board calls are
-    // deferred to the second pass below.
-    const toolsThisRound = new Set<string>();
+    // Run domain tools FIRST so the evidence accumulator is populated before we
+    // evaluate any manage_tasks "done" transitions. Board calls are deferred to
+    // the second pass below.
     const pendingBoardCalls: ToolCall[] = [];
     for (const tc of toolCalls) {
       // Stop must prevent the next tool from firing — especially side-effecting
@@ -1242,7 +1287,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       // a tool that 401'd. Failed tools still appear in the UI badge (toolsUsed).
       const toolFailed =
         result.startsWith(`Tool ${tc.function.name} failed:`) || result.startsWith("Unknown tool:");
-      if (!toolFailed) toolsThisRound.add(tc.function.name);
+      if (!toolFailed) toolsSinceBoardUpdate.add(tc.function.name);
       onStep?.({ id: stepId, label, done: true });
       messages.push({
         role: "tool",
@@ -1261,12 +1306,15 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       onToolStart?.("manage_tasks");
       if (!toolsUsed.includes("manage_tasks")) toolsUsed.push("manage_tasks");
       const result: { text: string; board?: TaskBoard } = boardEnabled
-        ? await applyBoardUpdate(tc, conversationId, board, toolsThisRound)
+        ? await applyBoardUpdate(tc, conversationId, board, toolsSinceBoardUpdate)
         : { text: "manage_tasks is unavailable here (no conversation context)." };
       if (result.board) {
         board = result.board;
         opts.onBoardUpdate?.(board);
-        maxRounds = Math.min(MAX_ROUNDS_CAP, Math.max(maxRounds, BASE_ROUNDS + 2 * board.tasks.length));
+        // The tools that justified this update are now consumed; the next card's
+        // done transition must be backed by fresh tool calls.
+        toolsSinceBoardUpdate.clear();
+        maxRounds = Math.min(MAX_ROUNDS_CAP, Math.max(maxRounds, 4 + 3 * board.tasks.length));
         reinjectBoard();
       }
       onStep?.({ id: stepId, label: "Updating the task board", done: true });
