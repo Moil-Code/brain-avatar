@@ -37,16 +37,34 @@ import {
   summarizeAutomations,
   upsertAutomation,
 } from "./automations";
+import { getTaskBoard, setTaskBoard } from "./tauri";
+import {
+  detectNarration,
+  estimateTaskCount,
+  isMultiTask,
+  openCardCount,
+  renderBoardSnapshot,
+  validateEvidence,
+} from "./kanban";
 import type {
   Attachment,
   AutomationSchedule,
   AvatarState,
   ChatMessage,
   Settings,
+  TaskBoard,
+  TaskCard,
+  TaskInput,
+  ToolCall,
   UiStep,
 } from "./types";
 
-const MAX_ROUNDS = 5;
+// Round budget scales with task count: 5 rounds only covers a ~2-task request,
+// which is what let the TEDC multi-task request run out of rounds mid-plan.
+const BASE_ROUNDS = 5;
+// Headroom matters: a small local model burns rounds on retries, nudges, and
+// re-sends, so budget generously above the raw task count (cap keeps it bounded).
+const MAX_ROUNDS_CAP = 20;
 
 function basename(p?: string): string {
   if (!p) return "";
@@ -136,6 +154,8 @@ function toolStepLabel(name: string, a: any): string {
       return "Adding the reminder";
     case "send_teams_message":
       return "Preparing the Teams message";
+    case "manage_tasks":
+      return "Updating the task board";
     default:
       return name;
   }
@@ -684,6 +704,50 @@ export const TOOL_DEFS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "manage_tasks",
+      description:
+        "Maintain the persistent kanban board for THIS conversation. Call this FIRST when the " +
+        "request has 3+ steps, is numbered/bulleted, or says 'do A and then B'. Pass the COMPLETE " +
+        "current task list every time — this OVERWRITES the board. Status flows todo → in_progress " +
+        "→ done (or blocked). Exactly ONE card may be in_progress. To mark a card done you MUST set " +
+        "'evidence' referencing the non-board tool you just called THIS turn (e.g. 'send_email " +
+        "returned msg_abc123'); marking done without a real tool call this round is REJECTED. Use " +
+        "'blocked' with a 'blocker' string when you need Andres' input. Returns the persisted board.",
+      parameters: {
+        type: "object",
+        properties: {
+          cards: {
+            type: "array",
+            description: "The complete, current list of cards (overwrites the board).",
+            items: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "string",
+                  description: "Reuse an existing card's id to update it; empty string for a new card.",
+                },
+                title: { type: "string" },
+                status: { type: "string", enum: ["todo", "in_progress", "done", "blocked"] },
+                evidence: {
+                  type: "string",
+                  description: "REQUIRED for status='done'. Name the tool that ran this round and what it returned.",
+                },
+                blocker: {
+                  type: "string",
+                  description: "REQUIRED for status='blocked'. What is needed to unblock.",
+                },
+              },
+              required: ["title", "status"],
+            },
+          },
+        },
+        required: ["cards"],
+      },
+    },
+  },
 ];
 
 /** Map the flat create_automation args into a typed schedule. */
@@ -837,12 +901,19 @@ export interface RunAgentOpts {
   attachments?: Attachment[];
   /** Force a specific model and skip routing (from the model-picker menu). */
   modelOverride?: string | null;
+  /** Conversation id — enables the persistent kanban board for multi-task
+   *  requests. Omitted by background automations, which run board-less. */
+  conversationId?: string;
   onState?: (s: AvatarState) => void;
   onToken?: (delta: string) => void;
   onToolStart?: (name: string) => void;
   onRoute?: (route: Route) => void;
   /** Live progress steps (routing, each tool, composing) for perceived speed. */
   onStep?: (step: UiStep) => void;
+  /** Fired once at turn start with the conversation's existing board (or null). */
+  onBoardLoad?: (board: TaskBoard | null) => void;
+  /** Fired after every successful board write so the UI can animate the cards. */
+  onBoardUpdate?: (board: TaskBoard) => void;
   signal?: AbortSignal;
 }
 
@@ -850,6 +921,92 @@ export interface RunAgentResult {
   content: string;
   tools: string[];
   route?: Route;
+}
+
+/** Apply one manage_tasks call: sanitize, run the harness-side evidence gate,
+ *  then persist. Returns the model-facing tool result text and (on success) the
+ *  new board. `toolsSinceUpdate` is the set of real tools run since the last
+ *  board write — a card can only go done if one of those backs its evidence,
+ *  which stops "done without doing the work" without forcing the tool call and
+ *  the board update into the same round (real models split them). */
+async function applyBoardUpdate(
+  tc: ToolCall,
+  conversationId: string,
+  board: TaskBoard | null,
+  toolsSinceUpdate: Set<string>
+): Promise<{ text: string; board?: TaskBoard }> {
+  let args: any = {};
+  try {
+    args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+  } catch {
+    return { text: "manage_tasks arguments were not valid JSON. Resend the full 'cards' array." };
+  }
+  const incoming: Array<Partial<TaskCard>> = Array.isArray(args.cards) ? args.cards : [];
+  if (incoming.length === 0) {
+    return { text: "manage_tasks called with no cards. Pass the COMPLETE current 'cards' array." };
+  }
+
+  // Collapse extra in_progress → todo (first wins), mirroring the Rust guard so
+  // the model sees the same discipline before persistence.
+  let sawInProgress = false;
+  const sanitized: TaskInput[] = incoming.map((c) => {
+    let status = (c.status ?? "todo") as TaskCard["status"];
+    if (status === "in_progress") {
+      if (sawInProgress) status = "todo";
+      else sawInProgress = true;
+    }
+    return {
+      id: typeof c.id === "string" ? c.id : "",
+      title: String(c.title ?? "").trim() || "(untitled)",
+      status,
+      evidence: typeof c.evidence === "string" ? c.evidence : undefined,
+      blocker: typeof c.blocker === "string" ? c.blocker : undefined,
+    };
+  });
+
+  // Evidence gate: a card NEWLY transitioning to done must be backed by a real
+  // (non-board) tool run since the last board write, whose result the evidence
+  // references.
+  const rejected: string[] = [];
+  for (const c of sanitized) {
+    if (c.status !== "done") continue;
+    const prev = c.id ? board?.tasks.find((x) => x.id === c.id) : undefined;
+    if (prev?.status === "done") continue; // already done — idempotent
+    if (toolsSinceUpdate.size === 0) {
+      rejected.push(`'${c.title}' marked done but no tool has run yet — call the tool first`);
+      continue;
+    }
+    const ev = validateEvidence(c.evidence, toolsSinceUpdate);
+    if (!ev.ok) rejected.push(`'${c.title}' evidence rejected: ${ev.reason}`);
+  }
+  if (rejected.length > 0) {
+    return {
+      text:
+        `REJECTED — board NOT updated:\n- ${rejected.join("\n- ")}\n` +
+        `Run the missing tool now, or set that card back to in_progress and try again next round.`,
+    };
+  }
+
+  // Merge, don't blind-overwrite. Whole-board replacement is a footgun for small
+  // models: they routinely re-send the board minus a card or two, which would
+  // silently drop tracked work. Preserve any existing card the model omitted (by
+  // id) so the board only ever grows or changes status — never loses a card. To
+  // abandon a plan the model/user clears the whole board explicitly.
+  const incomingIds = new Set(sanitized.map((c) => c.id).filter(Boolean));
+  const preserved: TaskInput[] = (board?.tasks ?? [])
+    .filter((t) => !incomingIds.has(t.id))
+    .map((t) => ({ id: t.id, title: t.title, status: t.status, evidence: t.evidence, blocker: t.blocker }));
+  const merged = [...sanitized, ...preserved];
+  const dropped = preserved.length;
+
+  try {
+    const updated = await setTaskBoard(conversationId, merged);
+    const note = dropped > 0 ? ` (kept ${dropped} card(s) you omitted — resend the FULL list next time)` : "";
+    return { text: `OK (v${updated.version})${note}:\n${renderBoardSnapshot(updated)}`, board: updated };
+  } catch (e: any) {
+    // Rust rejected it (e.g. done-without-evidence slipped past, or schema guard).
+    return { text: `manage_tasks rejected by store: ${e?.message ?? String(e)}` };
+  }
 }
 
 /** Run the full tool-calling loop and return the final grounded answer. */
@@ -930,29 +1087,110 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   ];
 
   const toolsUsed: string[] = [];
-  // Spiral-breaker: small models sometimes narrate an action ("I'll search…", "I found
-  // it", "let me open it") with NO tool_call. Returning that answer both misleads the
-  // user and poisons the history (it few-shot-teaches the model to keep narrating). If a
-  // no-tool reply looks like an unfulfilled action claim, nudge ONCE to force the call.
-  // NOTE: "I'll"/"I will"/"let me" must be followed by an ACTION verb — otherwise common
-  // benign closings ("let me know if you need anything", "I'll be here") false-trigger.
-  const ACTION_CLAIM =
-    /\b(i(?:['’]?ll| will)\s+(?:search|look\s+up|find|locate|open|check|attempt|handle|retrieve|pull\s+up|fetch|get)|let me\s+(?:search|look\s+up|find|locate|open|check|retrieve|pull\s+up|fetch|get|access)|i(?:['’]?ve)\s+(?:opened|found|located|searched|scheduled|sent|retrieved)|i\s+(?:opened|found|located|searched|scheduled|sent|retrieved)\b|searching for|attempt to\s+(?:locate|find|search|open|access))/i;
-  let nudged = false;
 
-  for (let round = 0; round < MAX_ROUNDS; round++) {
+  // --- Kanban board layer ----------------------------------------------------
+  // A multi-task request is decomposed onto a persistent, per-conversation board
+  // and worked card by card, so the model can't "queue a plan" in prose and drop
+  // it. Background automations run board-less (no conversationId).
+  const conversationId = opts.conversationId;
+  const boardEnabled = typeof conversationId === "string" && conversationId.length > 0;
+  let board: TaskBoard | null = null;
+  if (boardEnabled) {
+    board = await getTaskBoard(conversationId).catch(() => null);
+    opts.onBoardLoad?.(board);
+  }
+  const taskCount = estimateTaskCount(userText);
+  const hasOpenBoard = openCardCount(board) > 0;
+  const mustDecompose = boardEnabled && (isMultiTask(userText) || hasOpenBoard);
+  // 5 rounds only covers a ~2-task request — too few for the TEDC failure. Scale
+  // with task count, and grow again if the model adds cards mid-flow (below).
+  let maxRounds = mustDecompose
+    ? Math.min(MAX_ROUNDS_CAP, Math.max(BASE_ROUNDS, 3 * taskCount + 4))
+    : BASE_ROUNDS;
+
+  // The board snapshot is ONE system message kept current by overwrite, so it
+  // never bloats the context across many rounds. boardSnapIdx is its slot.
+  let boardSnapIdx = -1;
+  const reinjectBoard = () => {
+    if (!board || board.tasks.length === 0) return;
+    const snap: ChatMessage = {
+      role: "system",
+      content:
+        `CURRENT TASK BOARD (v${board.version}):\n${renderBoardSnapshot(board)}\n` +
+        `Work the board until every card is done or blocked. Exactly ONE card in_progress at a ` +
+        `time. Mark a card done only with evidence from a tool you called THIS round.`,
+    };
+    if (boardSnapIdx >= 0) messages[boardSnapIdx] = snap;
+    else {
+      messages.push(snap);
+      boardSnapIdx = messages.length - 1;
+    }
+  };
+  if (mustDecompose && !hasOpenBoard) {
+    messages.push({
+      role: "system",
+      content:
+        `This request has about ${taskCount} distinct tasks. FIRST call manage_tasks to create one ` +
+        `card per task (set the first to in_progress); then work them one at a time with real tools. ` +
+        `Do not write the plan in prose.`,
+    });
+  }
+  reinjectBoard();
+
+  // Spiral-breaker: small models sometimes narrate work ("I'll search…", "here's
+  // the breakdown") with NO tool_call. Returning that both misleads the user and
+  // poisons history (it few-shot-teaches more narrating). On a no-tool reply that
+  // reads as an unexecuted plan, nudge ONCE to force a real call (or the board).
+  let nudged = false;
+  // tool_choice "required" isn't always honored by LM Studio, so bound how many
+  // times we re-prompt for the initial decomposition before giving up.
+  let decomposeRetries = 0;
+
+  // Successful (non-board) tools accumulate ACROSS rounds until a board write
+  // consumes them. Real models split the work: round N calls brain_page, round
+  // N+1 calls manage_tasks to mark that card done. A per-round set would reject
+  // that legitimate sequence and stall the model — so the evidence gate looks at
+  // every real tool run since the last successful board update.
+  const toolsSinceBoardUpdate = new Set<string>();
+
+  for (let round = 0; round < maxRounds; round++) {
     if (signal?.aborted) throw new Error("aborted");
     const thinkId = `think-${round}`;
     const thinkLabel = round === 0 ? "Reading your request" : "Reviewing and composing";
     onStep?.({ id: thinkId, label: thinkLabel, done: false });
-    const res = await llmComplete(
-      endpoint.baseUrl,
-      endpoint.token,
-      endpoint.model,
-      messages,
-      TOOL_DEFS,
-      settings.max_tokens
-    );
+    // Round 0 of a multi-task request: force a tool call so the model can't open
+    // with prose. Use the STRING "required" (force any tool) — LM Studio/llama.cpp
+    // reject the named-function object form ("Invalid tool_choice type: 'object'").
+    // Combined with the TASK BOARD system prompt the model reliably picks
+    // manage_tasks first (verified live against qwen3-8b). Falls back to auto once
+    // if some endpoint rejects "required" too.
+    const forceDecompose = round === 0 && mustDecompose && !hasOpenBoard;
+    const toolChoice: unknown = forceDecompose ? "required" : undefined;
+    let res;
+    try {
+      res = await llmComplete(
+        endpoint.baseUrl,
+        endpoint.token,
+        endpoint.model,
+        messages,
+        TOOL_DEFS,
+        settings.max_tokens,
+        toolChoice
+      );
+    } catch (e) {
+      if (forceDecompose) {
+        res = await llmComplete(
+          endpoint.baseUrl,
+          endpoint.token,
+          endpoint.model,
+          messages,
+          TOOL_DEFS,
+          settings.max_tokens
+        );
+      } else {
+        throw e;
+      }
+    }
     onStep?.({ id: thinkId, label: thinkLabel, done: true });
     // The LLM call above can run 60–120s; honor a Stop pressed during it before
     // we commit to running this round's (possibly side-effecting) tools.
@@ -961,15 +1199,47 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     const toolCalls = Array.isArray(res.tool_calls) ? res.tool_calls : [];
 
     if (toolCalls.length === 0) {
-      // The model answered without calling a tool. If it's narrating an action it never
-      // performed, nudge it once to actually emit the call instead of returning the
-      // hallucination (and storing it as history that reinforces the behavior).
-      if (!nudged && ACTION_CLAIM.test(content)) {
-        nudged = true;
+      // Narration guard: the model described work instead of doing it. Nudge once.
+      if (!nudged) {
+        const pattern = detectNarration(content);
+        if (pattern) {
+          nudged = true;
+          messages.push({
+            role: "system",
+            content:
+              `You did NOT call any tool (matched: ${pattern}). Describing a plan is not doing it. ` +
+              (boardEnabled
+                ? "If this needs multiple steps, call manage_tasks NOW to lay out the cards; otherwise call the real tool. "
+                : "Emit the actual tool call NOW (web_search/fetch_url, files, calendar, email, or the brain) — do not narrate or invent results. ") +
+              "If genuinely no tool is needed, answer directly.",
+          });
+          continue;
+        }
+      }
+      // Decompose-retry: this is a multi-task request but the board still doesn't
+      // exist — the model failed to decompose. tool_choice "required" is NOT always
+      // honored by LM Studio/MLX (it returns prose ~1 in 3), and the narration
+      // regex won't catch every such reply. Rather than return that prose, firmly
+      // re-instruct and retry a bounded number of times so a flaky force can't sink
+      // the whole request.
+      if (mustDecompose && (!board || board.tasks.length === 0) && decomposeRetries < 2) {
+        decomposeRetries++;
         messages.push({
           role: "system",
           content:
-            "You have NOT called any tool this turn. If the request needs the web (web_search/fetch_url), files (find_files/open_file/read_file), the calendar, email, or the brain, emit the tool call NOW — do not describe doing it or invent results. If genuinely no tool is needed, answer directly.",
+            "You did not call manage_tasks. This request has multiple steps — call manage_tasks NOW " +
+            "with one card per task (first card in_progress). Do not reply in prose until the board exists.",
+        });
+        continue;
+      }
+      // If the board still has open cards, keep working rather than replying.
+      const open = openCardCount(board);
+      if (open > 0) {
+        messages.push({
+          role: "system",
+          content:
+            `The board still has ${open} open card(s). Continue: take the in_progress card, do its ` +
+            `work with a tool, then update the board. Do not reply until every card is done or blocked.`,
         });
         continue;
       }
@@ -986,10 +1256,19 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     // Studio's template parser ("Failed to parse input at pos 0"). The tool_calls
     // carry everything the next round needs.
     messages.push({ role: "assistant", content: "", tool_calls: toolCalls });
+
+    // Run domain tools FIRST so the evidence accumulator is populated before we
+    // evaluate any manage_tasks "done" transitions. Board calls are deferred to
+    // the second pass below.
+    const pendingBoardCalls: ToolCall[] = [];
     for (const tc of toolCalls) {
       // Stop must prevent the next tool from firing — especially side-effecting
       // ones (send_email, calendar_create, post_to_facebook).
       if (signal?.aborted) throw new Error("aborted");
+      if (tc.function.name === "manage_tasks") {
+        pendingBoardCalls.push(tc);
+        continue;
+      }
       let aobj: any = {};
       try {
         aobj = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
@@ -1002,12 +1281,48 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       onToolStart?.(tc.function.name);
       if (!toolsUsed.includes(tc.function.name)) toolsUsed.push(tc.function.name);
       const result = await executeTool(tc.function.name, tc.function.arguments);
+      // Only a SUCCESSFUL tool counts toward the done-evidence gate. executeTool
+      // returns "Tool X failed: …" / "Unknown tool: X" as a non-empty string on
+      // failure — if that satisfied the gate, the model could mark a card done off
+      // a tool that 401'd. Failed tools still appear in the UI badge (toolsUsed).
+      const toolFailed =
+        result.startsWith(`Tool ${tc.function.name} failed:`) || result.startsWith("Unknown tool:");
+      if (!toolFailed) toolsSinceBoardUpdate.add(tc.function.name);
       onStep?.({ id: stepId, label, done: true });
       messages.push({
         role: "tool",
         tool_call_id: tc.id || tc.function.name,
         name: tc.function.name,
         content: result,
+      });
+    }
+
+    // Second pass: apply manage_tasks calls through the evidence gate, persist,
+    // and surface the new board to the UI + back into the model context.
+    for (const tc of pendingBoardCalls) {
+      if (signal?.aborted) throw new Error("aborted");
+      const stepId = `tool-${round}-${tc.id || "manage_tasks"}`;
+      onStep?.({ id: stepId, label: "Updating the task board", done: false });
+      onToolStart?.("manage_tasks");
+      if (!toolsUsed.includes("manage_tasks")) toolsUsed.push("manage_tasks");
+      const result: { text: string; board?: TaskBoard } = boardEnabled
+        ? await applyBoardUpdate(tc, conversationId, board, toolsSinceBoardUpdate)
+        : { text: "manage_tasks is unavailable here (no conversation context)." };
+      if (result.board) {
+        board = result.board;
+        opts.onBoardUpdate?.(board);
+        // The tools that justified this update are now consumed; the next card's
+        // done transition must be backed by fresh tool calls.
+        toolsSinceBoardUpdate.clear();
+        maxRounds = Math.min(MAX_ROUNDS_CAP, Math.max(maxRounds, 4 + 3 * board.tasks.length));
+        reinjectBoard();
+      }
+      onStep?.({ id: stepId, label: "Updating the task board", done: true });
+      messages.push({
+        role: "tool",
+        tool_call_id: tc.id || "manage_tasks",
+        name: "manage_tasks",
+        content: result.text,
       });
     }
     onState?.("thinking");

@@ -14,6 +14,7 @@ import {
   fetchMessages,
   getConversation,
   getSettings,
+  getTaskBoard,
   listConversations,
   pushChat,
   replaceConversation,
@@ -50,6 +51,7 @@ import type {
   FeatureFlags,
   Automation,
   Settings,
+  TaskBoard,
   UiMessage,
   UiStep,
 } from "./lib/types";
@@ -163,6 +165,13 @@ export default function App() {
   );
   const [muted, setMuted] = useState<boolean>(() => isMuted());
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  // Kanban board for the active conversation (null until the agent creates one).
+  const [board, setBoard] = useState<TaskBoard | null>(null);
+  const [boardExpanded, setBoardExpanded] = useState(false);
+  const activeConvRef = useRef<string>(activeConv);
+  useEffect(() => {
+    activeConvRef.current = activeConv;
+  }, [activeConv]);
   const collapseTimer = useRef<number | null>(null);
   const queueRef = useRef<QueueItem[]>([]);
   const runningRef = useRef(false);
@@ -193,6 +202,18 @@ export default function App() {
     setMessages(
       turns.map((m) => ({ id: uid(), role: m.role as "user" | "assistant", content: m.content }))
     );
+    // Restore this conversation's kanban board (so an unfinished plan from a prior
+    // session reappears), collapsed by default. Guard against a fast A→B→C switch:
+    // a slow board load for a conversation the user already left must not apply.
+    getTaskBoard(id)
+      .then((b) => {
+        if (id !== activeConvRef.current) return;
+        setBoard(b);
+        setBoardExpanded(false);
+      })
+      .catch(() => {
+        if (id === activeConvRef.current) setBoard(null);
+      });
     modelHistory.current = turns.map((m) => ({
       role: m.role as "user" | "assistant",
       content: m.content,
@@ -282,6 +303,7 @@ export default function App() {
       const priorHistory = [...modelHistory.current];
 
       let streamed = "";
+      let boardShownThisTurn = false;
       try {
         const result = await runAgent({
           userText: text,
@@ -289,7 +311,20 @@ export default function App() {
           settings,
           attachments,
           modelOverride,
+          conversationId: activeConv,
           signal: ac.signal,
+          onBoardLoad: (b) => {
+            if (b === null || b.conversation_id === activeConvRef.current) setBoard(b);
+          },
+          onBoardUpdate: (b) => {
+            // Ignore late updates from a run whose conversation the user left.
+            if (b.conversation_id !== activeConvRef.current) return;
+            setBoard(b);
+            if (!boardShownThisTurn) {
+              boardShownThisTurn = true;
+              setBoardExpanded(true); // surface the board the first time it appears
+            }
+          },
           onState: (s) => setAvatarState(s),
           onToken: (delta) => {
             streamed += delta;
@@ -496,6 +531,8 @@ export default function App() {
     setActiveConvId(uid());
     setMessages([]);
     modelHistory.current = [];
+    setBoard(null);
+    setBoardExpanded(false);
     setShowChats(false);
   }, []);
   const switchChat = useCallback(
@@ -718,6 +755,9 @@ export default function App() {
         onSend={handleSend}
         onToggleMic={handleToggleMic}
         onStop={handleStop}
+        board={board}
+        boardExpanded={boardExpanded}
+        onToggleBoard={() => setBoardExpanded((v) => !v)}
       />
       {showAutomations && (
         <AutomationsView

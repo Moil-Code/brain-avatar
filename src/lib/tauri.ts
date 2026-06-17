@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Automation, FeatureFlags, Settings } from "./types";
+import type { Automation, FeatureFlags, Settings, TaskBoard, TaskInput } from "./types";
 
 // --- Proactive automations (scheduler store + native notifications) ---
 export const getAutomations = () => invoke<Automation[]>("get_automations");
@@ -62,7 +62,11 @@ export const llmComplete = (
   model: string,
   messages: unknown,
   tools?: unknown,
-  maxTokens?: number
+  maxTokens?: number,
+  // Optional OpenAI tool_choice override (default "auto" in Rust). The agent loop
+  // forces the first decompose call on multi-task requests by passing "required"
+  // (LM Studio rejects the named-function object form).
+  toolChoice?: unknown
 ) =>
   withRetry(() =>
     invoke<{ content: string; tool_calls: ToolCall[] | null }>("llm_complete", {
@@ -72,6 +76,7 @@ export const llmComplete = (
       messages,
       tools,
       maxTokens,
+      toolChoice,
     })
   );
 
@@ -196,3 +201,25 @@ export const pushChat = (conversationId: string, title: string, role: string, co
   invoke<void>("push_chat", { conversationId, title, role, content });
 export const deleteConversation = (conversationId: string) =>
   invoke<void>("delete_conversation", { conversationId });
+
+// --- Kanban task board (per-conversation, persisted in task_boards.json) ---
+/** Load a conversation's board, or null if it has never had one. */
+export const getTaskBoard = (conversationId: string) =>
+  invoke<TaskBoard | null>("get_task_board", { conversationId });
+/** Overwrite a conversation's board with the full task list. Rejects (throws)
+ *  when a card is done without evidence or blocked without a blocker. */
+export const setTaskBoard = (conversationId: string, tasks: TaskInput[]) =>
+  invoke<TaskBoard>("set_task_board", { conversationId, tasks });
+/** Remove a conversation's board entirely (user abandoned the plan). */
+export const clearTaskBoard = (conversationId: string) =>
+  invoke<void>("clear_task_board", { conversationId });
+export interface BoardSummary {
+  conversation_id: string;
+  updated_at: string;
+  total: number;
+  todo: number;
+  in_progress: number;
+  done: number;
+  blocked: number;
+}
+export const listTaskBoards = () => invoke<BoardSummary[]>("list_task_boards");
