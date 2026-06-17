@@ -163,6 +163,10 @@ export const fetchMessages = (conversationId: string, limit?: number) =>
     "fetch_messages",
     { conversationId, limit }
   );
+/** Conversations created on ANY device (cloud history). Merge with listConversations()
+ *  by id for a unified, cross-device recent-chats list. [] when sync isn't configured. */
+export const fetchConversations = (limit?: number) =>
+  invoke<ConvSummary[]>("fetch_conversations", { limit });
 
 // --- Local conversation store (durable "recent chats") ---
 export interface ConvSummary {
@@ -176,6 +180,13 @@ export const getConversation = (conversationId: string) =>
   invoke<{ role: string; content: string; ts: string }[]>("get_conversation", { conversationId });
 export const appendTurn = (conversationId: string, role: string, content: string) =>
   invoke<void>("append_turn", { conversationId, role, content });
+/** Cache a (cloud+local) merged conversation into the local store so it survives
+ *  offline and appears in recent chats. Replaces the conversation's messages. */
+export const replaceConversation = (
+  conversationId: string,
+  title: string,
+  messages: { role: string; content: string; ts: string }[]
+) => invoke<void>("replace_conversation", { conversationId, title, messages });
 // Cross-machine: pushes the turn to the brain-daemon (no-op when no daemon configured).
 export const pushChat = (conversationId: string, title: string, role: string, content: string) =>
   invoke<void>("push_chat", { conversationId, title, role, content });

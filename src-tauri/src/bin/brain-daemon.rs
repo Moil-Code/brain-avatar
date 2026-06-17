@@ -11,13 +11,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
+    body::Body,
     extract::{Request, State},
     http::StatusCode,
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{watch, Semaphore};
@@ -518,11 +520,12 @@ async fn lm_v1_models(State(st): State<Arc<AppState>>) -> Result<Json<Value>, (S
 async fn lm_v1_chat(
     State(st): State<Arc<AppState>>,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     // Serialize generation: this is the path every client uses when pointed at the
     // daemon, so the permit here is what actually prevents concurrent generations
-    // from overwhelming the 24GB Mac.
-    let _permit = acquire_gen(&st, "/v1/chat/completions").await;
+    // from overwhelming the 24GB Mac. For a streaming response the permit is moved
+    // into the relayed stream so it stays held until the stream ends.
+    let permit = acquire_gen(&st, "/v1/chat/completions").await;
     // Subscribe to the cancel epoch BEFORE sending, capturing the baseline now: a
     // Stop bump that lands any time after this point is caught by `changed()` below
     // (this is what closes the lost-wakeup window the old Notify path had).
@@ -530,31 +533,31 @@ async fn lm_v1_chat(
     let start_epoch = *rx.borrow();
     let (_url, token) = resolve_llm(&st.settings);
     let full = format!("{}/v1/chat/completions", lm_native_base(&st.settings));
+    // Honor OpenAI streaming: relay the SSE byte stream straight through instead of
+    // buffering with .json() (which would defeat stream:true). The buffered path
+    // keeps its 300s cap; a streaming generation has no fixed cap (it can stream
+    // over minutes), and is cancelled by the client disconnecting (see below).
+    let streaming = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
     let client = reqwest::Client::new();
-    let mut req = client.post(&full).json(&body).timeout(Duration::from_secs(300));
+    let mut req = client.post(&full).json(&body);
+    if !streaming {
+        req = req.timeout(Duration::from_secs(300));
+    }
     if let Some(t) = &token {
         if !t.trim().is_empty() {
             req = req.header("Authorization", format!("Bearer {t}"));
         }
     }
-    // Race generation against a client Stop (POST /llm/cancel). On cancel, `gen`
-    // drops → its reqwest closes the LM Studio connection → generation halts
-    // server-side instead of running to completion.
-    let gen = async {
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("LM Studio unreachable: {e}")))?;
-        let status = resp.status();
-        let v: Value = resp
-            .json()
-            .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
-        Ok::<(StatusCode, Value), (StatusCode, String)>((status, v))
-    };
-    tokio::pin!(gen);
-    let (status, v) = tokio::select! {
-        r = &mut gen => r?,
+
+    // Race the INITIAL send/headers against a client Stop (POST /llm/cancel). On
+    // cancel before the response arrives, the request future drops → reqwest closes
+    // the LM Studio connection → generation halts server-side.
+    let send_fut = req.send();
+    tokio::pin!(send_fut);
+    let resp = tokio::select! {
+        r = &mut send_fut => {
+            r.map_err(|e| (StatusCode::BAD_GATEWAY, format!("LM Studio unreachable: {e}")))?
+        }
         _ = async {
             while rx.changed().await.is_ok() {
                 if *rx.borrow() != start_epoch { return; }
@@ -567,8 +570,40 @@ async fn lm_v1_chat(
             ));
         }
     };
+    let status = resp.status();
+
+    if streaming {
+        // Pass the upstream content-type (text/event-stream) through unchanged.
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("text/event-stream")
+            .to_string();
+        // Move the gen permit into the stream's closure so the single-flight gate
+        // stays held for the whole stream; when the client disconnects (Stop), axum
+        // drops this body → the reqwest stream drops → the upstream connection closes
+        // → generation halts. (No /llm/cancel race needed once streaming: the body is
+        // tied to the client connection, so a hang-up propagates on its own.)
+        let stream = resp.bytes_stream().map(move |chunk| {
+            let _hold = &permit;
+            chunk
+        });
+        let body = Body::from_stream(stream);
+        return Response::builder()
+            .status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK))
+            .header(axum::http::header::CONTENT_TYPE, content_type)
+            .body(body)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+    }
+
+    // Buffered (non-streaming) path: read the full JSON and return it.
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
     if status.is_success() {
-        Ok(Json(v))
+        Ok(Json(v).into_response())
     } else {
         Err((
             StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),

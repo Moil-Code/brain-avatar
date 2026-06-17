@@ -10,10 +10,13 @@ import {
   cancelGeneration,
   deleteConversation,
   featureFlags,
+  fetchConversations,
+  fetchMessages,
   getConversation,
   getSettings,
   listConversations,
   pushChat,
+  replaceConversation,
   saveMessage,
   type ConvSummary,
 } from "./lib/tauri";
@@ -67,6 +70,53 @@ function upsertStep(steps: UiStep[] = [], s: UiStep): UiStep[] {
   const copy = steps.slice();
   copy[i] = { ...copy[i], ...s };
   return copy;
+}
+
+interface StoredTurn {
+  role: string;
+  content: string;
+  ts: string;
+}
+
+/** Merge local + cloud message lists into one time-ordered, de-duplicated list.
+ *  The cloud copy is the de-duped union across devices (every turn is saved with a
+ *  stable message id), so this yields the full cross-device transcript; local-only
+ *  turns not yet synced are preserved. Dedup key is role+content. */
+function mergeTurns(
+  local: { role: string; content: string; ts: string }[],
+  remote: { role: string; content: string; created_at?: string }[]
+): StoredTurn[] {
+  const all: StoredTurn[] = [
+    ...remote.map((m) => ({ role: m.role, content: m.content, ts: m.created_at ?? "" })),
+    ...local.map((m) => ({ role: m.role, content: m.content, ts: m.ts })),
+  ];
+  all.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+  const seen = new Set<string>();
+  const out: StoredTurn[] = [];
+  for (const m of all) {
+    const key = `${m.role}\u001f${m.content}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(m);
+  }
+  return out;
+}
+
+/** Union of local + cloud conversation summaries by id (newest first). For a shared
+ *  id, prefer whichever has more messages / a newer timestamp; keep any real title. */
+function mergeSummaries(local: ConvSummary[], remote: ConvSummary[]): ConvSummary[] {
+  const byId = new Map<string, ConvSummary>();
+  for (const c of local) byId.set(c.id, c);
+  for (const c of remote) {
+    const ex = byId.get(c.id);
+    const title = ex?.title?.trim() ? ex.title : c.title;
+    if (!ex || c.message_count > ex.message_count || c.updated_at > ex.updated_at) {
+      byId.set(c.id, { ...ex, ...c, title });
+    } else {
+      byId.set(c.id, { ...ex, title });
+    }
+  }
+  return [...byId.values()].sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
 }
 
 function getConversationId(): string {
@@ -125,8 +175,14 @@ export default function App() {
   };
 
   const loadConversation = useCallback(async (id: string) => {
-    const msgs = await getConversation(id).catch(() => []);
-    const turns = msgs.filter((m) => m.role === "user" || m.role === "assistant");
+    // Pull both the local cache and the cloud copy (which may carry turns made on
+    // another device), then merge into one transcript.
+    const [local, remote] = await Promise.all([
+      getConversation(id).catch(() => []),
+      fetchMessages(id).catch(() => []),
+    ]);
+    const merged = mergeTurns(local, remote);
+    const turns = merged.filter((m) => m.role === "user" || m.role === "assistant");
     setMessages(
       turns.map((m) => ({ id: uid(), role: m.role as "user" | "assistant", content: m.content }))
     );
@@ -134,6 +190,14 @@ export default function App() {
       role: m.role as "user" | "assistant",
       content: m.content,
     }));
+    // Cache the merged view locally (only when the cloud actually returned turns, so
+    // we never overwrite local-only data while offline). Keeps offline access + the
+    // recent-chats list warm for conversations first opened from another device.
+    if (remote.length) {
+      const title =
+        turns.find((m) => m.role === "user")?.content.slice(0, 60).replace(/\n/g, " ") ?? "";
+      replaceConversation(id, title, merged).catch(() => {});
+    }
   }, []);
 
   // --- bootstrap ---
@@ -403,7 +467,11 @@ export default function App() {
 
   // --- recent chats ---
   const openChats = useCallback(async () => {
-    setConversations(await listConversations().catch(() => []));
+    const [local, remote] = await Promise.all([
+      listConversations().catch(() => []),
+      fetchConversations().catch(() => []),
+    ]);
+    setConversations(mergeSummaries(local, remote));
     setShowChats(true);
   }, []);
   const newChat = useCallback(() => {
@@ -425,7 +493,13 @@ export default function App() {
   const removeChat = useCallback(
     async (id: string) => {
       await deleteConversation(id).catch(() => {});
-      setConversations(await listConversations().catch(() => []));
+      const [local, remote] = await Promise.all([
+        listConversations().catch(() => []),
+        fetchConversations().catch(() => []),
+      ]);
+      // Filter the just-deleted id: the cloud delete is async/best-effort, so it may
+      // still be in the remote list for a moment — don't let it flash back.
+      setConversations(mergeSummaries(local, remote).filter((c) => c.id !== id));
       if (id === activeConv) newChat();
     },
     [activeConv, newChat]

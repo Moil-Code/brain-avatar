@@ -3,8 +3,9 @@ import { authorized, supabase } from "../lib/supabase.js";
 
 /**
  * /api/messages
- *   POST  { conversationId, role, content }   -> persist a turn
- *   GET   ?conversationId=..&limit=..         -> recent turns (ascending)
+ *   POST    { conversationId, role, content }   -> persist a turn
+ *   GET     ?conversationId=..&limit=..         -> recent turns (ascending)
+ *   DELETE  ?conversationId=..                  -> delete a whole conversation
  *
  * Auth: Authorization: Bearer <SYNC_TOKEN>
  */
@@ -60,7 +61,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json(data ?? []);
     }
 
-    res.setHeader("Allow", "GET, POST");
+    if (req.method === "DELETE") {
+      const conversationId = String(req.query.conversationId ?? "");
+      if (!conversationId) {
+        return res.status(400).json({ error: "conversationId required" });
+      }
+      const { error } = await db.from("messages").delete().eq("conversation_id", conversationId);
+      if (error) return res.status(500).json({ error: error.message });
+      return res.status(200).json({ ok: true });
+    }
+
+    res.setHeader("Allow", "GET, POST, DELETE");
     return res.status(405).json({ error: "method not allowed" });
   } catch (e) {
     return res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
