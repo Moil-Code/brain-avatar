@@ -245,8 +245,8 @@ export default function App() {
 
         appendTurn(activeConv, "assistant", answer).catch(() => {});
         pushChat(activeConv, "", "assistant", answer).catch(() => {});
-        saveMessage(activeConv, "user", text).catch(() => {});
-        saveMessage(activeConv, "assistant", answer).catch(() => {});
+        saveMessage(activeConv, "user", text, userMsg.id).catch(() => {});
+        saveMessage(activeConv, "assistant", answer, botId).catch(() => {});
 
         speak(answer, {
           onStart: () => setAvatarState("speaking"),
@@ -275,55 +275,73 @@ export default function App() {
   // --- proactive automations: run scheduled tasks on their own and deliver ---
   // Refs let the interval read live state without re-subscribing every render.
   const autoBusyRef = useRef(false);
+  const autoInFlight = useRef<Set<string>>(new Set());
   const settingsRef = useRef<Settings | null>(null);
   const busyRef = useRef(false);
   settingsRef.current = settings;
   busyRef.current = busy;
 
-  const runAutomation = useCallback(async (a: Automation) => {
-    const s = settingsRef.current;
-    if (!s) return;
-    try {
-      // Each automation starts a fresh context — it's a standalone task, not a
-      // continuation of the current chat.
-      const result = await runAgent({ userText: a.prompt, history: [], settings: s });
-      const content = (result.content || "").trim();
-      if (!content) return;
-
-      // Leave a record in the active chat so it's there when the avatar is opened.
-      setMessages((ms) => [
-        ...ms,
-        {
-          id: uid(),
-          role: "assistant",
-          content: `⏰ ${a.name}\n\n${content}`,
-          tools: result.tools,
-        },
-      ]);
-
-      // Stamp lastRun/lastResult so it isn't re-fired and the UI shows freshness.
+  // Merge a patch into one automation by id, re-reading the latest list from disk
+  // first so we don't clobber a concurrent enable/disable/edit from the panel.
+  const stampAutomation = useCallback(
+    async (id: string, patch: Partial<Automation>) => {
       const list = await loadAutomations().catch(() => [] as Automation[]);
-      const idx = list.findIndex((x) => x.id === a.id);
-      if (idx >= 0) {
-        list[idx] = {
-          ...list[idx],
-          lastRun: new Date().toISOString(),
-          lastResult: content.slice(0, 140),
-        };
-        await saveAutomations(list).catch(() => {});
-      }
+      const idx = list.findIndex((x) => x.id === id);
+      if (idx < 0) return;
+      list[idx] = { ...list[idx], ...patch };
+      await saveAutomations(list).catch(() => {});
+    },
+    []
+  );
 
-      await deliverAutomation(a, content);
-      if (a.delivery.speak) {
-        speak(content, {
-          onStart: () => setAvatarState("speaking"),
-          onEnd: () => setAvatarState("idle"),
-        });
+  const runAutomation = useCallback(
+    async (a: Automation) => {
+      const s = settingsRef.current;
+      if (!s) return;
+      // Per-automation guard: the 60s scheduler tick and the "Run now" button can
+      // both reach here for the same automation. Only one run at a time.
+      if (autoInFlight.current.has(a.id)) return;
+      autoInFlight.current.add(a.id);
+      // Stamp lastRun UP FRONT (not after the slow run). This both (a) prevents a
+      // concurrent tick from re-firing the same slot mid-run, and (b) stops a
+      // failing run from retrying every 60s forever — a failed run consumes its
+      // slot just like a successful one. lastResult is filled in on success.
+      await stampAutomation(a.id, { lastRun: new Date().toISOString() });
+      try {
+        // Each automation starts a fresh context — it's a standalone task, not a
+        // continuation of the current chat.
+        const result = await runAgent({ userText: a.prompt, history: [], settings: s });
+        const content = (result.content || "").trim();
+        if (!content) return;
+
+        // Leave a record in the active chat so it's there when the avatar is opened.
+        setMessages((ms) => [
+          ...ms,
+          {
+            id: uid(),
+            role: "assistant",
+            content: `⏰ ${a.name}\n\n${content}`,
+            tools: result.tools,
+          },
+        ]);
+
+        await stampAutomation(a.id, { lastResult: content.slice(0, 140) });
+
+        await deliverAutomation(a, content);
+        if (a.delivery.speak) {
+          speak(content, {
+            onStart: () => setAvatarState("speaking"),
+            onEnd: () => setAvatarState("idle"),
+          });
+        }
+      } catch (e) {
+        console.error("automation failed", a.name, e);
+      } finally {
+        autoInFlight.current.delete(a.id);
       }
-    } catch (e) {
-      console.error("automation failed", a.name, e);
-    }
-  }, []);
+    },
+    [stampAutomation]
+  );
   const runAutomationRef = useRef(runAutomation);
   runAutomationRef.current = runAutomation;
 

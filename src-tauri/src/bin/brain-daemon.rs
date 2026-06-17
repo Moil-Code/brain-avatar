@@ -20,7 +20,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{watch, Semaphore};
 
 use brain_avatar_lib::config::{self, Settings};
 use brain_avatar_lib::{llm, tools, voice};
@@ -35,10 +35,13 @@ struct AppState {
     /// 1-permit semaphore serializes generation: the second request WAITS instead of
     /// piling on. Probes (/models) are intentionally NOT gated — they don't generate.
     gen_lock: Arc<Semaphore>,
-    /// Fired by POST /llm/cancel (client hit Stop). The in-flight relay races its
-    /// LM Studio request against this and drops it, so generation halts server-side
-    /// instead of running to completion after the client hung up.
-    cancel: Arc<Notify>,
+    /// Monotonic "cancel epoch", bumped by POST /llm/cancel (client hit Stop). Both
+    /// LLM paths subscribe BEFORE sending and race their LM Studio request against a
+    /// change, dropping it so generation halts server-side instead of running to
+    /// completion after the client hung up. A watch (not a Notify) is used so a Stop
+    /// that races the relay start isn't lost: `changed()` fires for any bump after
+    /// subscribe, whereas `Notify::notify_waiters()` only wakes already-parked tasks.
+    cancel: watch::Sender<u64>,
 }
 
 /// Tool handlers return the tool's text output, or a 500 with the error message.
@@ -64,7 +67,7 @@ async fn main() {
         settings,
         token,
         gen_lock: Arc::new(Semaphore::new(1)),
-        cancel: Arc::new(Notify::new()),
+        cancel: watch::channel(0u64).0,
     });
 
     let protected = Router::new()
@@ -114,6 +117,19 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+/// Constant-time byte compare so the bearer check can't leak the token via
+/// early-exit timing. Token length isn't secret, so a length mismatch returns early.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// Bearer-token gate + access log for every protected route.
 async fn auth(
     State(st): State<Arc<AppState>>,
@@ -125,7 +141,7 @@ async fn auth(
         .get("authorization")
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "))
-        .map(|t| t == st.token)
+        .map(|t| ct_eq(t.as_bytes(), st.token.as_bytes()))
         .unwrap_or(false);
     eprintln!(
         "[brain-daemon] {} {} -> {}",
@@ -415,9 +431,19 @@ async fn llm_complete(
 ) -> Result<Json<llm::LlmResult>, (StatusCode, String)> {
     let _permit = acquire_gen(&st, "/llm/complete").await;
     let (url, token) = resolve_llm(&st.settings);
-    let r = llm::llm_complete_core(url, token, p.model, p.messages, p.tools, p.max_tokens, None)
-        .await
-        .map_err(err)?;
+    // Subscribe to the cancel epoch so a client Stop drops this generation too
+    // (previously this path passed None and ignored Stop entirely).
+    let r = llm::llm_complete_core(
+        url,
+        token,
+        p.model,
+        p.messages,
+        p.tools,
+        p.max_tokens,
+        Some(st.cancel.subscribe()),
+    )
+    .await
+    .map_err(err)?;
     Ok(Json(r))
 }
 
@@ -497,6 +523,11 @@ async fn lm_v1_chat(
     // daemon, so the permit here is what actually prevents concurrent generations
     // from overwhelming the 24GB Mac.
     let _permit = acquire_gen(&st, "/v1/chat/completions").await;
+    // Subscribe to the cancel epoch BEFORE sending, capturing the baseline now: a
+    // Stop bump that lands any time after this point is caught by `changed()` below
+    // (this is what closes the lost-wakeup window the old Notify path had).
+    let mut rx = st.cancel.subscribe();
+    let start_epoch = *rx.borrow();
     let (_url, token) = resolve_llm(&st.settings);
     let full = format!("{}/v1/chat/completions", lm_native_base(&st.settings));
     let client = reqwest::Client::new();
@@ -521,11 +552,15 @@ async fn lm_v1_chat(
             .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
         Ok::<(StatusCode, Value), (StatusCode, String)>((status, v))
     };
-    let notified = st.cancel.notified();
-    tokio::pin!(gen, notified);
+    tokio::pin!(gen);
     let (status, v) = tokio::select! {
         r = &mut gen => r?,
-        _ = &mut notified => {
+        _ = async {
+            while rx.changed().await.is_ok() {
+                if *rx.borrow() != start_epoch { return; }
+            }
+            std::future::pending::<()>().await;
+        } => {
             return Err((
                 StatusCode::from_u16(499).unwrap_or(StatusCode::REQUEST_TIMEOUT),
                 "cancelled".into(),
@@ -542,9 +577,11 @@ async fn lm_v1_chat(
     }
 }
 
-/// Client pressed Stop → wake the in-flight relay so it drops its LM Studio request.
+/// Client pressed Stop → bump the cancel epoch so the in-flight relay (on either
+/// LLM path) drops its LM Studio request.
 async fn llm_cancel(State(st): State<Arc<AppState>>) -> &'static str {
-    st.cancel.notify_waiters();
+    let next = st.cancel.borrow().wrapping_add(1);
+    let _ = st.cancel.send(next);
     "ok"
 }
 

@@ -50,6 +50,8 @@ and cloud history.
 ### 2. Create the Supabase database
 1. Create a project at <https://supabase.com>.
 2. Open the **SQL Editor** and run [`backend/supabase/schema.sql`](backend/supabase/schema.sql).
+   The script is idempotent — **re-run it after updating the app** to apply migrations
+   (e.g. the `message_id` dedup key that stops retried turns from being written twice).
 3. Copy your **Project URL** and **service-role key** (Settings → API).
 
 ### 3. Deploy the backend to Vercel
@@ -75,17 +77,22 @@ If your repo isn't `Moil-Code/brain-avatar`, update the updater endpoint owner/r
 The app is signed with a **stable self-signed identity** ("Brain Avatar Code Signing"), so
 updates no longer reset your macOS permissions. On launch it checks GitHub Releases; when a
 newer version is published, an **Update** banner appears — one click downloads, installs, and
-relaunches. To publish an update:
+relaunches. To publish an update, run the one-command publisher on the Mac Mini:
 
 ```bash
-# bump "version" in src-tauri/tauri.conf.json, then:
-export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/brain-avatar-updater.key)"
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
-npm run tauri build            # produces the signed .app, .dmg, .app.tar.gz + .app.tar.gz.sig
+scripts/publish-release.sh 0.1.7     # the new version number
 ```
-Create a GitHub Release for the new version and upload `Brain Avatar.app.tar.gz`, its `.sig`,
-and a `latest.json` manifest (Tauri prints the values; the public key is already baked into the
-app). Keep `~/.tauri/brain-avatar-updater.key` secret — it signs every update.
+It bumps the version (`tauri.conf.json` + `Cargo.toml` + `package.json`), builds the signed
+app + updater artifacts, creates the GitHub Release, and uploads a `latest.json` manifest with
+the signature embedded inline — so the `releases/latest/download/latest.json` endpoint the app
+polls serves the new version and every Brain Avatar (Mac Mini + MacBook) auto-installs it on
+next launch. The public key is already baked into the app; keep
+`~/.tauri/brain-avatar-updater.key` secret — it signs every update.
+
+> The script commits the version bump and tries to `git push origin main`, but **still
+> publishes the release even if the push fails** (so you can ship offline and push later). If
+> you ship without pushing, push the `chore: release vX` commit before the next release so the
+> repo and the published artifact don't drift.
 
 ---
 
@@ -182,6 +189,11 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
   is the **primary** endpoint (with bearer token); the app auto-uses whichever model is
   loaded. For a **snappy** avatar, keep **`qwen3-8b`** loaded (fast + reliable tool calls);
   Gemma 26B works but each answer can take 30–110s.
+  - **On a MacBook that isn't on the Mac Mini's LAN** (i.e. remote/travelling), `Mac-mini.local`
+    mDNS won't resolve. Use **remote mode**: point the app at the **brain-daemon** over Tailscale
+    (`http://<mac-mini-tailscale-ip>:8787`, printed by `daemon/setup-daemon.sh`) — the daemon
+    holds the secrets and proxies the tools/LLM. The `.local` hostname only works for an
+    interactive app sharing the Mac Mini's local network (with Local Network permission granted).
 - **History** — each turn is POSTed to the Vercel API → Supabase. Skipped silently if not
   configured, so the app is fully usable offline.
 

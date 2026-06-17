@@ -78,7 +78,9 @@ fn m365_label(args: &[String]) -> (String, String) {
         .iter()
         .position(|a| a == "--url")
         .and_then(|i| args.get(i + 1))
-        .map(|s| s.rsplit("/v1.0/").last().unwrap_or(s).to_string())
+        // rsplit yields right-to-left, so .next() is the piece AFTER "/v1.0/"
+        // (e.g. "me/events") — the endpoint we want to log, not the host prefix.
+        .map(|s| s.rsplit("/v1.0/").next().unwrap_or(s).to_string())
         .unwrap_or_default();
     let method = args
         .iter()

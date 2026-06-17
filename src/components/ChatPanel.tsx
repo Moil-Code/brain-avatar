@@ -104,10 +104,16 @@ export default function ChatPanel({
     if (!files.length) return;
     setAttaching(true);
     try {
-      const added = await Promise.all(files.map(fileToAttachment));
-      setAttachments((a) => [...a, ...added]);
-    } catch (err) {
-      console.error("attach failed", err);
+      // Attach every file that reads cleanly; one bad file (e.g. a doc whose text
+      // extraction fails) must not drop the whole batch — keep the rest.
+      const results = await Promise.allSettled(files.map(fileToAttachment));
+      const added = results
+        .filter((r): r is PromiseFulfilledResult<Attachment> => r.status === "fulfilled")
+        .map((r) => r.value);
+      results
+        .filter((r) => r.status === "rejected")
+        .forEach((r) => console.error("attach failed", (r as PromiseRejectedResult).reason));
+      if (added.length) setAttachments((a) => [...a, ...added]);
     } finally {
       setAttaching(false);
     }
