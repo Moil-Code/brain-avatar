@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  lm-queue-proxy — runs ON the 24GB Mac (the LM Studio host).
+  Andres loads this manually:   launchctl load ~/Library/LaunchAgents/com.moil.lm-queue-proxy.plist
+  (Adjust the script path below to wherever you copied gateway/lm-queue-proxy.py.)
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.moil.lm-queue-proxy</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>/Users/USERNAME/lm-queue-proxy/lm-queue-proxy.py</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Listen on all interfaces so the tailnet (avatar, MacBook, daemon, batch
+             jobs) can reach it; forward to LM Studio on localhost. -->
+        <key>LMQ_BIND</key>
+        <string>0.0.0.0:1235</string>
+        <key>LMQ_UPSTREAM</key>
+        <string>http://127.0.0.1:1234</string>
+        <key>LMQ_TIMEOUT</key>
+        <string>600</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/lm-queue-proxy.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/lm-queue-proxy.log</string>
+</dict>
+</plist>

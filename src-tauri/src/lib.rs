@@ -61,6 +61,7 @@ pub fn run() {
             let settings: Settings = config::load(&handle);
             app.manage(SettingsState(Mutex::new(settings)));
             app.manage(tts::TtsState(Mutex::new(None)));
+            app.manage(llm::CancelState::default());
 
             // --- Global hotkeys: Cmd+Shift+Space = summon/hide, Cmd+Shift+V = talk ---
             let toggle_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Space);
@@ -164,6 +165,7 @@ pub fn run() {
             voice::transcribe_audio,
             llm::llm_probe,
             llm::llm_complete,
+            llm::cancel_generation,
             history::save_message,
             history::fetch_messages,
             history::list_conversations,

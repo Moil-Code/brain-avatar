@@ -1,12 +1,32 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::Duration;
+use tauri::State;
 
 #[derive(Serialize)]
 pub struct LlmResult {
     pub content: String,
     /// Raw OpenAI tool_calls array (or null) for the frontend agent loop.
     pub tool_calls: Value,
+}
+
+/// A monotonically-increasing "cancel epoch". When the user hits Stop, the epoch
+/// is bumped; every in-flight llm_complete races its request against this and aborts
+/// the moment it changes — which drops the HTTP connection so LM Studio (llama.cpp)
+/// stops generating server-side instead of running to completion.
+pub struct CancelState(pub tokio::sync::watch::Sender<u64>);
+
+impl Default for CancelState {
+    fn default() -> Self {
+        CancelState(tokio::sync::watch::channel(0u64).0)
+    }
+}
+
+/// Stop all in-flight generations (called when the user presses Stop).
+#[tauri::command]
+pub fn cancel_generation(state: State<'_, CancelState>) {
+    let next = state.0.borrow().wrapping_add(1);
+    let _ = state.0.send(next);
 }
 
 /// Run one chat completion against an OpenAI-compatible endpoint (LM Studio),
@@ -20,6 +40,47 @@ pub async fn llm_complete(
     messages: Value,
     tools: Option<Value>,
     max_tokens: Option<u32>,
+    cancel: State<'_, CancelState>,
+) -> Result<LlmResult, String> {
+    llm_complete_core(
+        base_url,
+        token,
+        model,
+        messages,
+        tools,
+        max_tokens,
+        Some(cancel.0.subscribe()),
+    )
+    .await
+}
+
+fn decode_send_err(e: reqwest::Error) -> String {
+    use std::error::Error as _;
+    let mut msg = if e.is_timeout() {
+        "the model took too long (timed out)".to_string()
+    } else if e.is_connect() {
+        "couldn't connect to the model server".to_string()
+    } else {
+        format!("{e}")
+    };
+    let mut src = e.source();
+    while let Some(s) = src {
+        msg.push_str(&format!(" — {s}"));
+        src = s.source();
+    }
+    format!("LLM request failed: {msg}")
+}
+
+/// Core completion logic. `cancel` = an optional epoch receiver; when its value
+/// changes, the in-flight request is dropped (Stop). The daemon passes None.
+pub async fn llm_complete_core(
+    base_url: String,
+    token: Option<String>,
+    model: String,
+    messages: Value,
+    tools: Option<Value>,
+    max_tokens: Option<u32>,
+    cancel: Option<tokio::sync::watch::Receiver<u64>>,
 ) -> Result<LlmResult, String> {
     let mut body = json!({
         "model": model,
@@ -51,22 +112,27 @@ pub async fn llm_complete(
         }
     }
 
-    let resp = req.send().await.map_err(|e| {
-        use std::error::Error as _;
-        let mut msg = if e.is_timeout() {
-            "the model took too long (timed out)".to_string()
-        } else if e.is_connect() {
-            "couldn't connect to the model server".to_string()
-        } else {
-            format!("{e}")
-        };
-        let mut src = e.source();
-        while let Some(s) = src {
-            msg.push_str(&format!(" — {s}"));
-            src = s.source();
+    // Race the request against the cancel signal (if any). On Stop, drop the
+    // request future → reqwest closes the connection → LM Studio stops generating.
+    let send_fut = req.send();
+    let resp = match cancel {
+        Some(mut rx) => {
+            let start_epoch = *rx.borrow();
+            tokio::pin!(send_fut);
+            tokio::select! {
+                r = &mut send_fut => r.map_err(decode_send_err)?,
+                _ = async {
+                    while rx.changed().await.is_ok() {
+                        if *rx.borrow() != start_epoch { return; }
+                    }
+                    std::future::pending::<()>().await;
+                } => {
+                    return Err("cancelled".to_string());
+                }
+            }
         }
-        format!("LLM request failed: {msg}")
-    })?;
+        None => send_fut.await.map_err(decode_send_err)?,
+    };
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();

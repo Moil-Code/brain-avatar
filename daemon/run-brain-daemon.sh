@@ -28,5 +28,22 @@ fi
 
 export BRAIN_DAEMON_TOKEN="$(cat "$TOKEN_FILE")"
 export BRAIN_DAEMON_BIND="$TS_IP:$PORT"
-echo "Starting brain-daemon on $BRAIN_DAEMON_BIND (tailnet-only)"
+
+# Pin the REAL LM Studio upstream (24GB Mac) here, independent of settings.json.
+# The local avatar now points its `lm_studio_remote_url` at THIS daemon so its
+# generations get serialized; if the daemon also read that field for its own
+# upstream it would relay to itself. The real address + token live in the 0600
+# secret (never in this public repo). MUST be the Tailscale IP, not Mac-mini.local
+# — under launchd the .local/LAN path is blocked by Local Network privacy, but the
+# tailnet (utun) is allowed. Once the lm-queue-proxy (gateway/) is deployed on the
+# 24GB Mac, point LMSTUDIO_REMOTE_TAILNET_BASE at its :1235 instead of :1234.
+LLM_SECRET="$HOME/.openclaw/secrets/lmstudio-remote.env"
+if [[ -f "$LLM_SECRET" ]]; then
+  # shellcheck disable=SC1090
+  source "$LLM_SECRET"
+  export BRAIN_DAEMON_LLM_TOKEN="${LMSTUDIO_REMOTE_TOKEN:-}"
+fi
+export BRAIN_DAEMON_LLM_URL="${BRAIN_DAEMON_LLM_URL:-${LMSTUDIO_REMOTE_TAILNET_BASE:-http://100.x.y.z:1234/v1}}"
+
+echo "Starting brain-daemon on $BRAIN_DAEMON_BIND (tailnet-only); LLM upstream $BRAIN_DAEMON_LLM_URL"
 exec "$BIN"
