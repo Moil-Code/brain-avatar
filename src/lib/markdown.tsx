@@ -33,8 +33,12 @@ function inline(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
-  INLINE_RE.lastIndex = 0;
-  while ((m = INLINE_RE.exec(text)) !== null) {
+  // inline() RECURSES (bold/italic/strike/link inner text). INLINE_RE is a module-level
+  // /g regex, so a shared lastIndex would be clobbered by nested calls — when the outer
+  // loop resumed, exec() restarted from 0 and re-matched the same token forever, hanging
+  // the render and bricking the window. Use a fresh regex instance per call.
+  const re = new RegExp(INLINE_RE.source, "g");
+  while ((m = re.exec(text)) !== null) {
     if (m.index > last) nodes.push(text.slice(last, m.index));
     const tok = m[0];
     if (tok.startsWith("`")) {
