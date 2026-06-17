@@ -196,11 +196,39 @@ export async function listenOnce(
 
 // --- Text to speech (native macOS `say` via Rust — Enhanced/Premium voices) ---
 
+// When muted, the avatar keeps operating normally (answers still appear, the
+// conversation flow continues) but its spoken output is silenced. Persisted so
+// the preference survives restarts.
+let muted: boolean = (() => {
+  try {
+    return localStorage.getItem("muted") === "1";
+  } catch {
+    return false;
+  }
+})();
+
+export function isMuted(): boolean {
+  return muted;
+}
+
+export function setMuted(value: boolean): void {
+  muted = value;
+  try {
+    localStorage.setItem("muted", value ? "1" : "0");
+  } catch {
+    /* noop */
+  }
+  // Silence anything mid-sentence the instant mute is turned on.
+  if (value) ttsStop().catch(() => {});
+}
+
 export function speak(
   text: string,
   opts: { onStart?: () => void; onEnd?: () => void } = {}
 ): void {
-  if (!text.trim()) {
+  // Muted: skip the audio but still resolve the flow (so hands-free convo mode
+  // keeps going) — exactly like the empty-text case.
+  if (muted || !text.trim()) {
     opts.onEnd?.();
     return;
   }
