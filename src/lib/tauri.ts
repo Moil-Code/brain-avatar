@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { FeatureFlags, Settings } from "./types";
+import type { Automation, FeatureFlags, Settings } from "./types";
+
+// --- Proactive automations (scheduler store + native notifications) ---
+export const getAutomations = () => invoke<Automation[]>("get_automations");
+export const setAutomations = (automations: Automation[]) =>
+  invoke<void>("set_automations", { automations });
+/** Post a native macOS notification (used by automation delivery). */
+export const notify = (title: string, body: string) =>
+  invoke<void>("notify", { title, body });
 
 export const getSettings = () => invoke<Settings>("get_settings");
 export const setSettings = (newSettings: Settings) =>
@@ -116,6 +124,8 @@ export const generateImage = (prompt: string, size?: string, steps?: number) =>
   invoke<string>("generate_image", { prompt, size, steps });
 export const postToFacebook = (imagePath: string, caption: string, page?: string) =>
   invoke<string>("post_to_facebook", { imagePath, caption, page });
+export const facebookInsights = (page?: string) =>
+  invoke<string>("facebook_insights", { page });
 export const createReminder = (title: string, due?: string, remindAt?: string) =>
   invoke<string>("create_reminder", { title, due, remindAt });
 export const sendTeamsMessage = (recipientEmail: string, message: string) =>

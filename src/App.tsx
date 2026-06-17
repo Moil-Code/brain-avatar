@@ -18,6 +18,13 @@ import {
   type ConvSummary,
 } from "./lib/tauri";
 import ChatsView from "./components/Chats";
+import AutomationsView from "./components/Automations";
+import {
+  deliverAutomation,
+  isDue,
+  loadAutomations,
+  saveAutomations,
+} from "./lib/automations";
 import { probeModels } from "./lib/llm";
 import {
   listenOnce,
@@ -35,6 +42,7 @@ import type {
   AvatarState,
   ChatMessage,
   FeatureFlags,
+  Automation,
   Settings,
   UiMessage,
   UiStep,
@@ -88,6 +96,7 @@ export default function App() {
   const [models, setModels] = useState<string[]>([]);
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   const [showChats, setShowChats] = useState(false);
+  const [showAutomations, setShowAutomations] = useState(false);
   const [conversations, setConversations] = useState<ConvSummary[]>([]);
   const [activeConv, setActiveConv] = useState<string>(() => getConversationId());
   const [convoMode, setConvoMode] = useState<boolean>(
@@ -259,6 +268,91 @@ export default function App() {
     [settings, modelOverride, activeConv]
   );
   runTurnRef.current = runTurn;
+
+  // --- proactive automations: run scheduled tasks on their own and deliver ---
+  // Refs let the interval read live state without re-subscribing every render.
+  const autoBusyRef = useRef(false);
+  const settingsRef = useRef<Settings | null>(null);
+  const busyRef = useRef(false);
+  settingsRef.current = settings;
+  busyRef.current = busy;
+
+  const runAutomation = useCallback(async (a: Automation) => {
+    const s = settingsRef.current;
+    if (!s) return;
+    try {
+      // Each automation starts a fresh context — it's a standalone task, not a
+      // continuation of the current chat.
+      const result = await runAgent({ userText: a.prompt, history: [], settings: s });
+      const content = (result.content || "").trim();
+      if (!content) return;
+
+      // Leave a record in the active chat so it's there when the avatar is opened.
+      setMessages((ms) => [
+        ...ms,
+        {
+          id: uid(),
+          role: "assistant",
+          content: `⏰ ${a.name}\n\n${content}`,
+          tools: result.tools,
+        },
+      ]);
+
+      // Stamp lastRun/lastResult so it isn't re-fired and the UI shows freshness.
+      const list = await loadAutomations().catch(() => [] as Automation[]);
+      const idx = list.findIndex((x) => x.id === a.id);
+      if (idx >= 0) {
+        list[idx] = {
+          ...list[idx],
+          lastRun: new Date().toISOString(),
+          lastResult: content.slice(0, 140),
+        };
+        await saveAutomations(list).catch(() => {});
+      }
+
+      await deliverAutomation(a, content);
+      if (a.delivery.speak) {
+        speak(content, {
+          onStart: () => setAvatarState("speaking"),
+          onEnd: () => setAvatarState("idle"),
+        });
+      }
+    } catch (e) {
+      console.error("automation failed", a.name, e);
+    }
+  }, []);
+  const runAutomationRef = useRef(runAutomation);
+  runAutomationRef.current = runAutomation;
+
+  useEffect(() => {
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      // User input always takes priority over background runs.
+      if (busyRef.current || runningRef.current || autoBusyRef.current) return;
+      if (!settingsRef.current) return;
+      const list = await loadAutomations().catch(() => [] as Automation[]);
+      const now = new Date();
+      const due = list.filter((a) => isDue(a, now));
+      if (due.length === 0) return;
+      autoBusyRef.current = true;
+      try {
+        for (const a of due) {
+          if (stopped || busyRef.current || runningRef.current) break;
+          await runAutomationRef.current(a);
+        }
+      } finally {
+        autoBusyRef.current = false;
+      }
+    };
+    const initial = window.setTimeout(tick, 12000); // first sweep shortly after launch
+    const iv = window.setInterval(tick, 60000); // then once a minute
+    return () => {
+      stopped = true;
+      clearTimeout(initial);
+      clearInterval(iv);
+    };
+  }, []);
 
   // --- request queue: stack multiple asks; run them one at a time ---
   const syncQueue = () => setQueue([...queueRef.current]);
@@ -451,6 +545,7 @@ export default function App() {
       <TitleBar
         onOpenSettings={() => setShowSettings(true)}
         onOpenChats={openChats}
+        onOpenAutomations={() => setShowAutomations(true)}
         onNewChat={newChat}
         onMinimize={startPeek}
         peeked={peeked}
@@ -492,6 +587,12 @@ export default function App() {
         onToggleMic={handleToggleMic}
         onStop={handleStop}
       />
+      {showAutomations && (
+        <AutomationsView
+          onClose={() => setShowAutomations(false)}
+          onRunNow={(a) => runAutomation(a)}
+        />
+      )}
       {showChats && (
         <ChatsView
           conversations={conversations}

@@ -81,6 +81,7 @@ async fn main() {
         .route("/reminder/create", post(reminder_create))
         .route("/teams/message", post(teams_message))
         .route("/chat/push", post(chat_push))
+        .route("/facebook/insights", post(facebook_insights))
         .route("/web/search", post(web_search))
         .route("/web/fetch", post(web_fetch))
         .route("/llm/complete", post(llm_complete))
@@ -331,6 +332,18 @@ async fn teams_message(State(st): State<Arc<AppState>>, Json(p): Json<TeamsMessa
     tools::send_teams_message_core(&st.settings, p.recipient_email, p.message)
         .await
         .map_err(err)
+}
+
+// ------------------------------------------------------------------------ facebook
+#[derive(Deserialize)]
+struct FbInsights {
+    page: Option<String>,
+}
+async fn facebook_insights(
+    State(_st): State<Arc<AppState>>,
+    Json(p): Json<FbInsights>,
+) -> ToolResult {
+    tools::facebook_insights_core(p.page).await.map_err(err)
 }
 
 // ----------------------------------------------------------------------------- web
