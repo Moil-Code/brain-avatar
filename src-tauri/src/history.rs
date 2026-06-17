@@ -56,6 +56,61 @@ pub async fn save_message(
     Ok(())
 }
 
+/// One conversation summary as returned by the Vercel `/api/conversations` view.
+/// Field names match the backend columns; we remap into `ConvSummary` (below) so
+/// the frontend can treat local + remote conversations uniformly.
+#[derive(Deserialize)]
+struct RemoteConvSummary {
+    conversation_id: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+    #[serde(default)]
+    message_count: Option<usize>,
+}
+
+/// List conversations from the cloud history layer (those created on ANY device).
+/// Returns the same shape as `list_conversations` so the UI can merge the two by id.
+/// No-ops to an empty list when sync isn't configured or the call fails upstream.
+#[tauri::command]
+pub async fn fetch_conversations(
+    limit: Option<u32>,
+    state: State<'_, SettingsState>,
+) -> Result<Vec<ConvSummary>, String> {
+    let Some((url, token)) = sync_config(&state) else {
+        return Ok(vec![]);
+    };
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{url}/api/conversations"))
+        .query(&[("limit", &limit.unwrap_or(200).to_string())])
+        .header("Authorization", format!("Bearer {token}"))
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("conversations fetch HTTP {}", resp.status()));
+    }
+    let rows = resp
+        .json::<Vec<RemoteConvSummary>>()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ConvSummary {
+            title: match r.title {
+                Some(t) if !t.trim().is_empty() => t,
+                _ => "New chat".to_string(),
+            },
+            id: r.conversation_id,
+            updated_at: r.updated_at.unwrap_or_default(),
+            message_count: r.message_count.unwrap_or(0),
+        })
+        .collect())
+}
+
 /// Load recent messages for a conversation from the history layer.
 #[tauri::command]
 pub async fn fetch_messages(
@@ -211,9 +266,65 @@ pub fn append_turn(
     save_store(&app, &store)
 }
 
-/// Delete a conversation from the local store (user-initiated from the UI).
+/// Replace a conversation's messages in the local store with a caller-supplied set
+/// (used to cache the cloud+local merge after opening a conversation, so it survives
+/// offline and shows up in "recent chats"). Creates the conversation if it's new;
+/// keeps an existing non-empty title. `updated_at` tracks the last message's ts.
 #[tauri::command]
-pub fn delete_conversation(app: AppHandle, conversation_id: String) -> Result<(), String> {
+pub fn replace_conversation(
+    app: AppHandle,
+    conversation_id: String,
+    title: String,
+    messages: Vec<ConvMessage>,
+) -> Result<(), String> {
+    let mut store = load_store(&app);
+    let now = chrono::Utc::now().to_rfc3339();
+    let ts_or = |s: Option<&String>| -> String {
+        s.filter(|t| !t.trim().is_empty()).cloned().unwrap_or_else(|| now.clone())
+    };
+    let created_at = ts_or(messages.first().map(|m| &m.ts));
+    let updated_at = ts_or(messages.last().map(|m| &m.ts));
+    match store.conversations.iter_mut().find(|c| c.id == conversation_id) {
+        Some(c) => {
+            if c.title.trim().is_empty() {
+                c.title = title;
+            }
+            c.messages = messages;
+            c.updated_at = updated_at;
+        }
+        None => store.conversations.push(Conversation {
+            id: conversation_id,
+            title,
+            created_at,
+            updated_at,
+            messages,
+        }),
+    }
+    save_store(&app, &store)
+}
+
+/// Delete a conversation from the local store AND the cloud history layer, so a
+/// user-initiated delete is cross-device (otherwise the cloud copy would reappear in
+/// the merged recent-chats list on the next open). The remote delete is best-effort:
+/// the local delete is what the UI reflects, so a sync hiccup never blocks it.
+#[tauri::command]
+pub async fn delete_conversation(
+    app: AppHandle,
+    conversation_id: String,
+    state: State<'_, SettingsState>,
+) -> Result<(), String> {
+    if let Some((url, token)) = sync_config(&state) {
+        let id = conversation_id.clone();
+        tokio::spawn(async move {
+            let _ = reqwest::Client::new()
+                .delete(format!("{url}/api/messages"))
+                .query(&[("conversationId", id.as_str())])
+                .header("Authorization", format!("Bearer {token}"))
+                .timeout(Duration::from_secs(15))
+                .send()
+                .await;
+        });
+    }
     let mut store = load_store(&app);
     store.conversations.retain(|c| c.id != conversation_id);
     save_store(&app, &store)

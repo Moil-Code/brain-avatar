@@ -31,3 +31,23 @@ create unique index if not exists messages_message_id_key
 -- RLS). Enabling RLS with no public policies means the anon/public key cannot
 -- read or write this table directly.
 alter table public.messages enable row level security;
+
+-- Cross-device conversation list. Powers GET /api/conversations so a chat started
+-- on one device is discoverable on another (true bidirectional history, not just a
+-- per-conversation backup). Derived entirely from `messages`, so there's nothing
+-- extra to write: title = the conversation's first user turn; updated_at = its most
+-- recent turn. Re-run this file after updating the app to create/refresh the view.
+create or replace view public.conversation_summaries as
+select
+  conversation_id,
+  count(*)::int                                          as message_count,
+  min(created_at)                                        as created_at,
+  max(created_at)                                        as updated_at,
+  (array_agg(content order by created_at)
+     filter (where role = 'user'))[1]                    as title
+from public.messages
+group by conversation_id;
+
+-- The API reads the view with the service-role key; grant it explicitly so the
+-- view works regardless of the project's default view grants.
+grant select on public.conversation_summaries to service_role;

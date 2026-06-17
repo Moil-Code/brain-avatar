@@ -194,8 +194,13 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
     (`http://<mac-mini-tailscale-ip>:8787`, printed by `daemon/setup-daemon.sh`) — the daemon
     holds the secrets and proxies the tools/LLM. The `.local` hostname only works for an
     interactive app sharing the Mac Mini's local network (with Local Network permission granted).
-- **History** — each turn is POSTed to the Vercel API → Supabase. Skipped silently if not
-  configured, so the app is fully usable offline.
+- **History** — each turn is POSTed to the Vercel API → Supabase (deduped by a stable
+  message id, so retries/re-syncs never double-write). **Cross-device:** the chat list and
+  each conversation's turns are pulled back from the cloud and merged with the local copy,
+  so a chat started on one Mac shows up — and continues — on another; deleting a chat
+  removes it everywhere. All of this is skipped silently when sync isn't configured, so the
+  app stays fully usable offline. _After updating, re-run [`backend/supabase/schema.sql`](backend/supabase/schema.sql)
+  to add the `conversation_summaries` view that powers the cross-device list._
 
 ## Troubleshooting
 
