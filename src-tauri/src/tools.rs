@@ -31,7 +31,55 @@ async fn run_cli(program: &str, args: &[String]) -> Result<String, String> {
 }
 
 /// Run m365, optionally using a custom Entra app id (for scopes the default app lacks).
+/// Append one structured line to the tool log so every external boundary call is
+/// observable after the fact (`tail -f ~/Library/Logs/brain-avatar-tools.log`).
+/// This is the ONE place we intentionally swallow errors: logging must never break
+/// a tool. Without this, failures are invisible and the model's paraphrase is the
+/// only signal — the root cause of "it breaks and we can't tell why".
+fn tool_log(tool: &str, op: &str, target: &str, status: &str, ms: u128, err: Option<&str>) {
+    use std::io::Write;
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "'").replace('\n', " ");
+    let err_field = err
+        .map(|e| format!(",\"err\":\"{}\"", esc(&e.chars().take(300).collect::<String>())))
+        .unwrap_or_default();
+    let line = format!(
+        "{{\"ts\":\"{}\",\"tool\":\"{}\",\"op\":\"{}\",\"target\":\"{}\",\"status\":\"{}\",\"ms\":{},\"ok\":{}{}}}\n",
+        Local::now().to_rfc3339(),
+        esc(tool), esc(op), esc(target), esc(status), ms, err.is_none(), err_field,
+    );
+    if let Ok(home) = std::env::var("HOME") {
+        let path = format!("{home}/Library/Logs/brain-avatar-tools.log");
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| f.write_all(line.as_bytes()));
+    }
+}
+
+/// Pull a readable (op, target) label out of m365 CLI args for the log line —
+/// e.g. `["request","--url","https://graph…/me/events","--method","post"]`
+/// → op "post", target "…/me/events".
+fn m365_label(args: &[String]) -> (String, String) {
+    let url = args
+        .iter()
+        .position(|a| a == "--url")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.rsplit("/v1.0/").last().unwrap_or(s).to_string())
+        .unwrap_or_default();
+    let method = args
+        .iter()
+        .position(|a| a == "--method")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .or_else(|| args.first().cloned())
+        .unwrap_or_else(|| "?".into());
+    (method, url)
+}
+
 async fn run_m365(m365: &str, app_id: &str, args: &[String]) -> Result<String, String> {
+    let started = std::time::Instant::now();
+    let (op, target) = m365_label(args);
     let mut cmd = Command::new(m365);
     cmd.args(args)
         .env("PATH", augmented_path())
@@ -39,18 +87,34 @@ async fn run_m365(m365: &str, app_id: &str, args: &[String]) -> Result<String, S
     if !app_id.trim().is_empty() {
         cmd.env("CLIMICROSOFT365_ENTRAAPPID", app_id);
     }
-    let out = timeout(CLI_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| "m365 timed out".to_string())?
-        .map_err(|e| format!("failed to spawn m365: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
-    } else {
-        Err(format!(
-            "{}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))
+    let outcome = timeout(CLI_TIMEOUT, cmd.output()).await;
+    let ms = started.elapsed().as_millis();
+    match outcome {
+        Err(_) => {
+            tool_log("m365", &op, &target, "timeout", ms, Some("CLI timed out"));
+            Err("m365 timed out".to_string())
+        }
+        Ok(Err(e)) => {
+            let msg = format!("failed to spawn m365: {e}");
+            tool_log("m365", &op, &target, "spawn_error", ms, Some(&msg));
+            Err(msg)
+        }
+        Ok(Ok(out)) if out.status.success() => {
+            tool_log("m365", &op, &target, "ok", ms, None);
+            Ok(String::from_utf8_lossy(&out.stdout).to_string())
+        }
+        Ok(Ok(out)) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            tool_log(
+                "m365",
+                &op,
+                &target,
+                &format!("exit_{}", out.status.code().unwrap_or(-1)),
+                ms,
+                Some(&stderr),
+            );
+            Err(format!("{}: {}", out.status, stderr))
+        }
     }
 }
 
@@ -369,15 +433,32 @@ fn format_calendar(stdout: &str, days: i64) -> String {
 // calendar write  ->  m365 request POST/PATCH/DELETE /me/events  (+ onlineMeetings)
 // ---------------------------------------------------------------------------
 
+/// Turn a raw Graph/m365 error into an accurate, actionable message — WITHOUT
+/// guessing. Only the access-denied branch asserts a cause (verified by the error
+/// code); everything else surfaces the real error so we never send the user chasing
+/// the wrong fix (the old version blamed "register the Entra app" for any 403).
 fn permission_hint(err: &str) -> String {
-    if err.contains("403") || err.to_lowercase().contains("forbidden") || err.contains("ErrorAccessDenied") {
+    let lower = err.to_lowercase();
+    let raw = err.chars().take(220).collect::<String>();
+    if err.contains("403")
+        || lower.contains("forbidden")
+        || lower.contains("erroraccessdenied")
+        || lower.contains("access is denied")
+    {
         format!(
-            "macOS/Microsoft blocked this — the account is missing the Calendars.ReadWrite \
-             permission. Tell Andres he needs to grant it (register the Entra app per the README) \
-             before calendar events can be created or changed. ({err})"
+            "Microsoft denied this write (403): the active m365 login is missing the required \
+             Calendars.ReadWrite scope (it has Calendars.Read, so reads work but writes don't). \
+             Fix: grant Calendars.ReadWrite on the Entra app, then re-consent — \
+             `m365 logout && m365 login`. (raw: {raw})"
         )
+    } else if lower.contains("not connected")
+        || lower.contains("log in")
+        || lower.contains("login")
+        || lower.contains("token")
+    {
+        format!("Not signed in to Microsoft 365 — run `m365 login`, then retry. (raw: {raw})")
     } else {
-        format!("Calendar request failed: {err}")
+        format!("Microsoft Graph request failed: {raw}")
     }
 }
 
