@@ -72,6 +72,12 @@ This creates the Xcode project under `src-tauri/gen/apple/`. (It uses
 `src-tauri/tauri.ios.conf.json`, which strips the macOS‑only speak sidecar and
 makes the window full‑screen — already wired up for you.)
 
+> **Heads‑up:** the `tauri ios …` commands only exist in the **macOS** build of
+> the Tauri CLI (iOS can only be built on a Mac). On Linux/Windows you'll see
+> "unrecognized subcommand 'ios'" — that's expected; run these on your Mac. If the
+> generated app icons ever look off, run `npm run tauri -- icon src-tauri/icons/icon.png`
+> after `ios:init` to regenerate every size.
+
 ### (Optional) enable the microphone for voice input
 
 Push‑to‑talk on the phone needs a microphone usage string. After `ios:init`, run:
