@@ -98,9 +98,18 @@ const splitRow = (l: string) =>
     .split("|")
     .map((c) => c.trim());
 
-/** Render a markdown string into safe React nodes for a chat bubble. */
+const MAX_BLOCK_DEPTH = 16;
+
+/** Public entry: reset the key counter ONCE, then render. Recursive block parsing
+ *  (blockquotes) goes through renderBlocks so keySeq stays monotonic across the whole
+ *  tree — resetting it inside recursion previously produced duplicate React keys. */
 export function renderMarkdown(src: string): ReactNode {
-  keySeq = 0; // deterministic keys per call
+  keySeq = 0;
+  return renderBlocks(src, 0);
+}
+
+/** Render a markdown string into safe React nodes for a chat bubble. */
+function renderBlocks(src: string, depth: number): ReactNode {
   const lines = src.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let i = 0;
@@ -159,7 +168,9 @@ export function renderMarkdown(src: string): ReactNode {
       }
       blocks.push(
         <blockquote key={nk()} className="md-quote">
-          {renderMarkdown(body.join("\n"))}
+          {depth < MAX_BLOCK_DEPTH
+            ? renderBlocks(body.join("\n"), depth + 1)
+            : body.join("\n")}
         </blockquote>
       );
       continue;

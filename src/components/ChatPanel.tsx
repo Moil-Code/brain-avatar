@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { extractDocText } from "../lib/tauri";
 import { renderMarkdown } from "../lib/markdown";
+import { ErrorBoundary } from "./ErrorBoundary";
 import type { Attachment, UiMessage } from "../lib/types";
 
 interface Props {
@@ -168,7 +169,9 @@ export default function ChatPanel({
             <div className="msg-body">
               {m.content ? (
                 m.role === "assistant" ? (
-                  renderMarkdown(m.content)
+                  <ErrorBoundary key={m.content} fallback={m.content}>
+                    {renderMarkdown(m.content)}
+                  </ErrorBoundary>
                 ) : (
                   m.content
                 )
