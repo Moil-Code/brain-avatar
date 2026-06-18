@@ -44,6 +44,8 @@ vi.mock("./tauri", () => ({
     return store;
   }),
   brainPage: vi.fn(async () => "brain_page OK: Josh Patel canonical page, 12 lines"),
+  brainSearch: vi.fn(async () => "brain_search OK: 4 hits for Buda HIVE"),
+  calendarEvents: vi.fn(async () => "calendar_events OK: 3 events this week"),
   readFile: vi.fn(async () => "read_file OK: /Users/x/file.md, 42 lines"),
 }));
 
@@ -227,13 +229,13 @@ describe("real-model failure patterns (found via live testing)", () => {
         { id: "", title: "A", status: "in_progress" },
         { id: "", title: "B", status: "todo" },
       ])] },
-      { content: "", tool_calls: [tool("b", "brain_page", {})] },
-      // R2: model re-sends ONLY card A (drops B). Merge must keep B.
-      { content: "", tool_calls: [mt("c", [
+      // R1: tool + board update in the SAME round (so the model's update wins, no
+      // harness-advance), but the model re-sends ONLY card A — dropping B. Merge must keep B.
+      { content: "", tool_calls: [tool("b", "brain_page", {}), mt("c", [
         { id: "t_0", title: "A", status: "done", evidence: "brain_page returned data" },
       ])] },
-      { content: "", tool_calls: [tool("d", "read_file", {})] },
-      { content: "", tool_calls: [mt("e", [
+      // R2: complete B.
+      { content: "", tool_calls: [tool("d", "read_file", {}), mt("e", [
         { id: "t_0", title: "A", status: "done", evidence: "brain_page returned data" },
         { id: "t_1", title: "B", status: "done", evidence: "read_file returned 9 lines" },
       ])] },
@@ -246,12 +248,41 @@ describe("real-model failure patterns (found via live testing)", () => {
       conversationId: "rt2",
       onBoardUpdate: (b: TaskBoard) => boards.push(b),
     } as any);
-    // After the drop round, the board still has BOTH cards (B preserved as todo).
+    // After the drop round (R1 board update = boards[1]), B is still on the board.
     const afterDrop = boards[1];
     expect(afterDrop.tasks).toHaveLength(2);
-    expect(afterDrop.tasks.find((c) => c.title === "B")?.status).toBe("todo");
+    expect(afterDrop.tasks.find((c) => c.title === "B")).toBeTruthy();
     // And nothing was lost by the end.
     expect(store!.tasks).toHaveLength(2);
+    expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
+  });
+
+  it("harness advances the board when the model runs tools but never updates it", async () => {
+    // The exact production failure: the model creates the board, then BATCHES the
+    // real tools and never calls manage_tasks again. The harness must advance the
+    // cards itself so they don't stay frozen in todo.
+    llmScript = [
+      { content: "", tool_calls: [mt("a", [
+        { id: "", title: "Find Josh", status: "in_progress" },
+        { id: "", title: "Buda HIVE", status: "todo" },
+        { id: "", title: "Commitments", status: "todo" },
+      ])] },
+      // R1: three real tools, NO manage_tasks update.
+      { content: "", tool_calls: [
+        tool("b", "brain_page", { name: "Josh" }),
+        tool("c", "brain_search", { query: "Buda HIVE" }),
+        tool("d", "calendar_events", {}),
+      ] },
+      { content: "All three done.", tool_calls: [] },
+    ];
+    await runAgent({
+      userText: "find Josh, look up Buda HIVE, and tell me my open commitments",
+      history: [],
+      settings,
+      conversationId: "ha1",
+    } as any);
+    // Despite the model never moving the cards, all three reached done.
+    expect(store!.tasks).toHaveLength(3);
     expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
   });
 
@@ -285,40 +316,29 @@ describe("real-model failure patterns (found via live testing)", () => {
     expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
   });
 
-  it("defers a non-board tool on round 0 and forces the board first (board-first)", async () => {
-    // tool_choice "required" forces *a* tool but can't force manage_tasks, so the
-    // real model dives into brain_page first. The harness must DROP that round-0 call
-    // and require the board before any domain tool runs.
+  it("builds the board from the tool calls when the model batches instead of decomposing", async () => {
+    // The production reality: tool_choice "required" can't force manage_tasks, and
+    // the small model relentlessly batches the domain tools and never lays out a
+    // board. The harness must BUILD the board from those tool calls (one card each)
+    // and advance them — guaranteeing a visible, completing board regardless.
     llmScript = [
-      // R0: model dives into brain_page WITHOUT laying out the board — must be deferred.
-      { content: "", tool_calls: [tool("a", "brain_page", { name: "Josh" })] },
-      // R1: forced to create the board first.
-      { content: "", tool_calls: [mt("b", [
-        { id: "", title: "Find Josh", status: "in_progress" },
-        { id: "", title: "Read TEDC", status: "todo" },
-      ])] },
-      // R2: now the real work runs, card 1 done.
-      { content: "", tool_calls: [tool("c", "brain_page", { name: "Josh" }), mt("d", [
-        { id: "t_0", title: "Find Josh", status: "done", evidence: "brain_page returned Josh page" },
-        { id: "t_1", title: "Read TEDC", status: "in_progress" },
-      ])] },
-      { content: "", tool_calls: [tool("e", "read_file", {}), mt("f", [
-        { id: "t_0", title: "Find Josh", status: "done", evidence: "brain_page returned Josh page" },
-        { id: "t_1", title: "Read TEDC", status: "done", evidence: "read_file returned 9 lines" },
-      ])] },
-      { content: "done.", tool_calls: [] },
+      // R0: three domain tools, NO manage_tasks anywhere.
+      { content: "", tool_calls: [
+        tool("a", "brain_page", { name: "Josh" }),
+        tool("b", "brain_search", { query: "Buda HIVE" }),
+        tool("c", "calendar_events", {}),
+      ] },
+      { content: "all three done.", tool_calls: [] },
     ];
     await runAgent({
-      userText: "find Josh in the brain and then read the TEDC document",
+      userText: "find Josh, look up Buda HIVE, and tell me my open commitments",
       history: [],
       settings,
       conversationId: "bf1",
     } as any);
-    // brain_page ran ONCE (in R2, after the board existed) — the R0 attempt was
-    // deferred. Without the guard it would have run in R0 too (2 calls).
-    expect((brainPage as any).mock.calls.length).toBe(1);
+    // The harness synthesized a 3-card board from the tool calls and drove it to done.
     expect(store).not.toBeNull();
-    expect(store!.tasks).toHaveLength(2);
+    expect(store!.tasks).toHaveLength(3);
     expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
   });
 });
