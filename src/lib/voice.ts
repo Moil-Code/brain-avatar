@@ -34,9 +34,15 @@ export async function startRecording(): Promise<Recorder> {
   recorder.ondataavailable = (e) => {
     if (e.data.size > 0) chunks.push(e.data);
   };
-  recorder.start();
+  // Pass a timeslice so audio is flushed into `dataavailable` periodically.
+  // WebKit/WKWebView (this app's macOS webview) frequently does NOT emit the
+  // buffered audio on stop() when started with no timeslice, leaving `chunks`
+  // empty so nothing ever gets transcribed. Recording in 250ms fragments
+  // guarantees we have data when the user stops.
+  recorder.start(250);
 
   const cleanup = () => stream.getTracks().forEach((t) => t.stop());
+  const startedAt = Date.now();
 
   return {
     cancel: () => {
@@ -52,7 +58,16 @@ export async function startRecording(): Promise<Recorder> {
         recorder.onstop = async () => {
           cleanup();
           try {
-            if (chunks.length === 0) return resolve("");
+            if (chunks.length === 0) {
+              // No audio captured at all. A sub-second tap is just an accidental
+              // press — stay silent. But if we "recorded" for a real beat and
+              // still got nothing, the mic/WebView failed to deliver audio; make
+              // that visible instead of silently doing nothing (the original bug).
+              if (Date.now() - startedAt > 700) {
+                throw new Error("no audio captured — check the mic input/permission");
+              }
+              return resolve("");
+            }
             const blob = new Blob(chunks, { type: mime });
             const base64 = await blobToBase64(blob);
             resolve(await transcribeAudio(base64, mime));
@@ -168,7 +183,9 @@ export async function listenOnce(
         /* noop */
       }
     };
-    recorder.start();
+    // 250ms timeslice — same WKWebView reliability fix as startRecording: without
+    // it the captured audio can be lost on stop() and we'd transcribe silence.
+    recorder.start(250);
     timer = window.setInterval(() => {
       if (opts.signal?.aborted) return stop();
       analyser.getByteTimeDomainData(buf);

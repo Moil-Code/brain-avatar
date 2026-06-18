@@ -388,6 +388,19 @@ export default function App() {
   );
   runTurnRef.current = runTurn;
 
+  // Surface a voice-path failure to the user as an assistant message. The voice
+  // capture/transcribe path used to swallow every error to console.error, so a
+  // missing API key, network blip, or empty capture looked like "nothing
+  // happened" — the avatar just dropped back to idle with no explanation.
+  const notifyVoiceError = useCallback((e: unknown) => {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("voice failed", e);
+    setMessages((ms) => [
+      ...ms,
+      { id: uid(), role: "assistant", content: `⚠️ Voice: ${msg}` },
+    ]);
+  }, []);
+
   // --- proactive automations: run scheduled tasks on their own and deliver ---
   // Refs let the interval read live state without re-subscribing every render.
   const autoBusyRef = useRef(false);
@@ -570,7 +583,7 @@ export default function App() {
         if (text && !transcriptIsJunk(text)) handleSend(text);
         else setAvatarState("idle");
       } catch (e) {
-        console.error(e);
+        notifyVoiceError(e);
         setAvatarState("idle");
       }
       return;
@@ -581,10 +594,10 @@ export default function App() {
       setRecording(true);
       setAvatarState("listening");
     } catch (e) {
-      console.error("mic failed", e);
+      notifyVoiceError(e);
       setAvatarState("idle");
     }
-  }, [recording, handleSend]);
+  }, [recording, handleSend, notifyVoiceError]);
   toggleMicRef.current = handleToggleMic;
 
   // Hands-free conversation: after a spoken reply, listen again (VAD auto-stops
@@ -601,12 +614,13 @@ export default function App() {
       listenAbortRef.current = null;
       if (text && !transcriptIsJunk(text)) handleSend(text);
       else setAvatarState("idle");
-    } catch {
+    } catch (e) {
       setRecording(false);
       listenAbortRef.current = null;
       setAvatarState("idle");
+      notifyVoiceError(e);
     }
-  }, [convoMode, busy, recording, handleSend]);
+  }, [convoMode, busy, recording, handleSend, notifyVoiceError]);
   autoListenRef.current = maybeAutoListen;
 
   const toggleConvoMode = useCallback(() => {
