@@ -43,6 +43,9 @@ vi.mock("./tauri", () => ({
     };
     return store;
   }),
+  clearTaskBoard: vi.fn(async () => {
+    store = null;
+  }),
   brainPage: vi.fn(async () => "brain_page OK: Josh Patel canonical page, 12 lines"),
   brainSearch: vi.fn(async () => "brain_search OK: 4 hits for Buda HIVE"),
   calendarEvents: vi.fn(async () => "calendar_events OK: 3 events this week"),
@@ -339,6 +342,62 @@ describe("real-model failure patterns (found via live testing)", () => {
     // The harness synthesized a 3-card board from the tool calls and drove it to done.
     expect(store).not.toBeNull();
     expect(store!.tasks).toHaveLength(3);
+    expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
+  });
+
+  it("clears a stale board from a previous request and starts fresh on a new ask", async () => {
+    // Leftover half-finished board from a PRIOR request in this conversation.
+    store = {
+      conversation_id: "sb1",
+      updated_at: "old",
+      version: 1,
+      tasks: [
+        { id: "old1", title: "Find Josh", status: "done", evidence: "x", created_at: "", updated_at: "", attempt_count: 1 },
+        { id: "old2", title: "Buda HIVE", status: "in_progress", created_at: "", updated_at: "", attempt_count: 1 },
+        { id: "old3", title: "Commitments", status: "todo", created_at: "", updated_at: "", attempt_count: 1 },
+      ],
+    } as any;
+    llmScript = [
+      // A NEW, unrelated multi-task request: model batches two tools, no manage_tasks.
+      { content: "", tool_calls: [
+        tool("a", "calendar_events", {}),
+        tool("b", "brain_search", { query: "briefing" }),
+      ] },
+      { content: "done.", tool_calls: [] },
+    ];
+    await runAgent({
+      userText: "find my daily briefing, mark Shelly as done, and check the Jennifer meeting",
+      history: [],
+      settings,
+      conversationId: "sb1",
+    } as any);
+    // The stale cards (Find Josh / Buda HIVE / Commitments) are gone; the board now
+    // reflects ONLY the new request, built from its tool calls and completed.
+    expect(store!.tasks.some((c) => c.title === "Find Josh")).toBe(false);
+    expect(store!.tasks).toHaveLength(2);
+    expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
+  });
+
+  it("resumes an existing board on an explicit continuation", async () => {
+    store = {
+      conversation_id: "co1",
+      updated_at: "old",
+      version: 1,
+      tasks: [
+        { id: "c1", title: "Pull Josh", status: "done", evidence: "x", created_at: "", updated_at: "", attempt_count: 1 },
+        { id: "c2", title: "Summarize deck", status: "in_progress", created_at: "", updated_at: "", attempt_count: 1 },
+      ],
+    } as any;
+    llmScript = [
+      { content: "", tool_calls: [tool("a", "read_file", {}), mt("b", [
+        { id: "c1", title: "Pull Josh", status: "done", evidence: "x" },
+        { id: "c2", title: "Summarize deck", status: "done", evidence: "read_file returned 42 lines" },
+      ])] },
+      { content: "finished.", tool_calls: [] },
+    ];
+    await runAgent({ userText: "continue", history: [], settings, conversationId: "co1" } as any);
+    // The existing board was NOT cleared — its cards carried through to done.
+    expect(store!.tasks.some((c) => c.title === "Pull Josh")).toBe(true);
     expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
   });
 });
