@@ -24,6 +24,9 @@ import {
   readFile,
   runAppleScript,
   systemControl,
+  sendImessage,
+  readImessage,
+  runShell,
   sendEmail,
   sendTeamsMessage,
   webSearch,
@@ -145,6 +148,12 @@ function toolStepLabel(name: string, a: any): string {
       return "Listing your apps";
     case "run_applescript":
       return "Controlling the app";
+    case "send_imessage":
+      return a.to ? `Texting ${a.to}` : "Sending an iMessage";
+    case "read_imessage":
+      return a.contact ? `Reading messages with ${a.contact}` : "Reading recent messages";
+    case "run_shell":
+      return a.command ? `Running: ${String(a.command).slice(0, 40)}…` : "Running a shell command";
     case "system_control": {
       const map: Record<string, string> = {
         volume_get: "Checking the volume",
@@ -614,6 +623,65 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "send_imessage",
+      description:
+        "Send an iMessage/SMS to a phone number or Apple ID email via Messages. Use for 'text X', " +
+        "'iMessage X', 'send a message to X'. This MESSAGES on Andres' behalf: FIRST show him the " +
+        "recipient and exact text and get his explicit 'yes', THEN call again with confirm=true. " +
+        "Calling without confirm=true returns a confirmation prompt instead of sending.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "Phone number (e.g. +15125551234) or Apple ID email" },
+          body: { type: "string", description: "The message text" },
+          confirm: { type: "boolean", description: "Set true ONLY after Andres approves; otherwise omit" },
+        },
+        required: ["to", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_imessage",
+      description:
+        "Read Andres' recent iMessage/SMS history from the Messages database. Use for 'what did X " +
+        "text me', 'read my messages', 'my last texts with X'. Pass `contact` (a phone number or " +
+        "email substring) to filter to one person, or omit it for the most recent across everyone. " +
+        "Read-only; needs Full Disk Access.",
+      parameters: {
+        type: "object",
+        properties: {
+          contact: { type: "string", description: "Optional phone/email substring to filter by" },
+          limit: { type: "integer", description: "How many recent messages (default 20, max 50)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_shell",
+      description:
+        "Run a shell command on Andres' Mac (zsh/sh via /bin/sh -c). This is the broad 'do almost " +
+        "anything on the Mac' tool — use it for tasks the dedicated tools don't cover (file ops, git, " +
+        "scripts, CLI utilities). A hard safety deny-list blocks destructive/credential commands no " +
+        "matter what. Because it is powerful, it is CONFIRM-GATED: call it FIRST without confirm to " +
+        "get back the exact command, show that to Andres, get his explicit 'yes', then call again with " +
+        "confirm=true. NEVER set confirm=true on your own. Output (stdout+stderr) is returned, capped.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "The shell command to run" },
+          confirm: { type: "boolean", description: "Set true ONLY after Andres approves; otherwise omit" },
+        },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "read_emails",
       description:
         "Read Andres' most recent inbox emails (sender, subject, date, preview). Use for 'read/" +
@@ -880,6 +948,19 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
         return await systemControl(
           String(args.action ?? ""),
           typeof args.value === "number" ? args.value : undefined
+        );
+      case "send_imessage":
+        return await sendImessage(
+          String(args.to ?? ""),
+          String(args.body ?? ""),
+          typeof args.confirm === "boolean" ? args.confirm : undefined
+        );
+      case "read_imessage":
+        return await readImessage(args.contact ? String(args.contact) : undefined, args.limit);
+      case "run_shell":
+        return await runShell(
+          String(args.command ?? ""),
+          typeof args.confirm === "boolean" ? args.confirm : undefined
         );
       case "read_emails":
         return await readEmails(args.count);

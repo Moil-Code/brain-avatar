@@ -1,6 +1,7 @@
 use crate::config::augmented_path;
+use crate::tools::tool_log;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -414,4 +415,147 @@ pub async fn system_control(action: String, value: Option<i64>) -> Result<String
              media_next, media_prev, sleep_display, lock_screen."
         )),
     }
+}
+
+// ---------------------------------------------------------------------------
+// iMessage  ->  send via AppleScript (Messages.app), read via the chat.db SQLite
+// ---------------------------------------------------------------------------
+
+/// Escape a string for safe interpolation INTO an AppleScript double-quoted
+/// literal: backslash first (so we don't double-escape our own escapes), then
+/// the quote.
+fn as_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Send an iMessage (or SMS, if iMessage isn't available for the recipient) to a
+/// phone number or Apple ID email via Messages.app. Sends on Andres' behalf, so
+/// it is gated behind an explicit `confirm=true` the model only passes after he
+/// approves, and every attempt is logged.
+#[tauri::command]
+pub async fn send_imessage(
+    to: String,
+    body: String,
+    confirm: Option<bool>,
+) -> Result<String, String> {
+    let to = to.trim().to_string();
+    let body = body.trim().to_string();
+    if to.is_empty() || body.is_empty() {
+        return Err("Both a recipient (`to`) and a message (`body`) are required.".into());
+    }
+    if !confirm.unwrap_or(false) {
+        return Ok(format!(
+            "CONFIRMATION REQUIRED before sending this iMessage:\n\n  To: {to}\n  Message: {body}\n\n\
+             Show Andres exactly who it's going to and what it says, wait for his explicit 'yes', \
+             then call send_imessage again with confirm=true. Do NOT set confirm=true on your own."
+        ));
+    }
+
+    // Resolve an iMessage service explicitly and send to that buddy. The first
+    // send to Messages triggers macOS's Automation permission prompt for the app.
+    let script = format!(
+        "tell application \"Messages\"\n\
+            set targetService to 1st service whose service type = iMessage\n\
+            set targetBuddy to buddy \"{to}\" of targetService\n\
+            send \"{body}\" to targetBuddy\n\
+         end tell",
+        to = as_escape(&to),
+        body = as_escape(&body),
+    );
+
+    let started = Instant::now();
+    let res = osa(&script).await;
+    let ms = started.elapsed().as_millis();
+    match res {
+        Ok(_) => {
+            tool_log("send_imessage", "send", &to, "ok", ms, None);
+            Ok(format!("iMessage sent to {to}."))
+        }
+        Err(e) => {
+            tool_log("send_imessage", "send", &to, "error", ms, Some(&e));
+            Err(e)
+        }
+    }
+}
+
+/// Read recent iMessage/SMS history from the local Messages database
+/// (`~/Library/Messages/chat.db`). Optionally filter to one contact (phone or
+/// email substring). Read-only. Requires Full Disk Access for Brain Avatar.
+#[tauri::command]
+pub async fn read_imessage(
+    contact: Option<String>,
+    limit: Option<u32>,
+) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let db = format!("{home}/Library/Messages/chat.db");
+    if !Path::new(&db).exists() {
+        return Err(format!("Messages database not found at {db}."));
+    }
+    let n = limit.unwrap_or(20).clamp(1, 50);
+
+    // Apple stores `message.date` as nanoseconds since 2001-01-01; convert to a
+    // local timestamp. Newer messages keep text in `attributedBody` (a blob) with
+    // a NULL `text`, which we surface as a placeholder rather than dropping.
+    let where_clause = match contact.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        Some(c) => format!("WHERE handle.id LIKE '%{}%'", c.replace('\'', "''")),
+        None => String::new(),
+    };
+    let query = format!(
+        "SELECT datetime(message.date/1000000000 + 978307200, 'unixepoch', 'localtime') AS d, \
+                COALESCE(handle.id, 'unknown') AS who, \
+                message.is_from_me, \
+                COALESCE(message.text, '') AS body \
+         FROM message \
+         LEFT JOIN handle ON message.handle_id = handle.ROWID \
+         {where_clause} \
+         ORDER BY message.date DESC LIMIT {n};"
+    );
+
+    let stdout = run_lenient(
+        "/usr/bin/sqlite3",
+        &["-separator", "\u{1f}", &db, &query],
+    )
+    .await;
+
+    if stdout.trim().is_empty() {
+        // Distinguish "no rows" from "couldn't open" by probing access once.
+        let probe = run("/usr/bin/sqlite3", &[&db, "SELECT 1;"]).await;
+        if let Err(e) = probe {
+            let low = e.to_lowercase();
+            if low.contains("authorization denied")
+                || low.contains("unable to open")
+                || low.contains("operation not permitted")
+            {
+                return Err(
+                    "Couldn't read Messages — Brain Avatar needs Full Disk Access. Enable it under \
+                     System Settings → Privacy & Security → Full Disk Access, then relaunch."
+                        .into(),
+                );
+            }
+            return Err(format!("Couldn't read Messages: {e}"));
+        }
+        return Ok(match &contact {
+            Some(c) => format!("No messages found with \"{c}\"."),
+            None => "No recent messages found.".into(),
+        });
+    }
+
+    let mut out = String::from("Recent messages (newest first):\n\n");
+    for line in stdout.lines().take(n as usize) {
+        let cols: Vec<&str> = line.split('\u{1f}').collect();
+        if cols.len() < 4 {
+            continue;
+        }
+        let when = cols[0];
+        let who = cols[1];
+        let from_me = cols[2] == "1";
+        let text = if cols[3].trim().is_empty() {
+            "(attachment or non-text message)"
+        } else {
+            cols[3]
+        };
+        let label = if from_me { "Andres".to_string() } else { who.to_string() };
+        out.push_str(&format!("• [{when}] {label}: {}\n", text.replace('\n', " ")));
+    }
+    Ok(out)
 }

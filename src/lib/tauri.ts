@@ -159,6 +159,15 @@ export const runAppleScript = (script: string) => invoke<string>("run_applescrip
 /** Curated macOS system controls: volume/mute/brightness/media/display sleep/lock. */
 export const systemControl = (action: string, value?: number) =>
   invoke<string>("system_control", { action, value });
+/** Send an iMessage. Pass confirm=true only after Andres approves recipient + text. */
+export const sendImessage = (to: string, body: string, confirm?: boolean) =>
+  invoke<string>("send_imessage", { to, body, confirm });
+/** Read recent iMessage/SMS history (optionally filtered to one contact). Read-only. */
+export const readImessage = (contact?: string, limit?: number) =>
+  invoke<string>("read_imessage", { contact, limit });
+/** Run a shell command. Hard deny-list + confirm=true gate (set only after Andres approves). */
+export const runShell = (command: string, confirm?: boolean) =>
+  invoke<string>("run_shell", { command, confirm });
 
 // --- History sync (optional Supabase mirror) ---
 export const saveMessage = (

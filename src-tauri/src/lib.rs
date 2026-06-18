@@ -4,6 +4,7 @@ pub mod config;
 mod files;
 mod history;
 pub mod llm;
+mod shell;
 mod task_board;
 pub mod tools;
 mod tts;
@@ -197,6 +198,9 @@ pub fn run() {
             files::list_apps,
             files::run_applescript,
             files::system_control,
+            files::send_imessage,
+            files::read_imessage,
+            shell::run_shell,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

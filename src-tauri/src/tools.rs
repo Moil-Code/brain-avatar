@@ -36,7 +36,7 @@ async fn run_cli(program: &str, args: &[String]) -> Result<String, String> {
 /// This is the ONE place we intentionally swallow errors: logging must never break
 /// a tool. Without this, failures are invisible and the model's paraphrase is the
 /// only signal — the root cause of "it breaks and we can't tell why".
-fn tool_log(tool: &str, op: &str, target: &str, status: &str, ms: u128, err: Option<&str>) {
+pub(crate) fn tool_log(tool: &str, op: &str, target: &str, status: &str, ms: u128, err: Option<&str>) {
     use std::io::Write;
     let line = tool_log_line(&Local::now().to_rfc3339(), tool, op, target, status, ms, err);
     if let Ok(home) = std::env::var("HOME") {
