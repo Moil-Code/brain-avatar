@@ -42,6 +42,7 @@ export async function startRecording(): Promise<Recorder> {
   recorder.start(250);
 
   const cleanup = () => stream.getTracks().forEach((t) => t.stop());
+  const startedAt = Date.now();
 
   return {
     cancel: () => {
@@ -57,7 +58,16 @@ export async function startRecording(): Promise<Recorder> {
         recorder.onstop = async () => {
           cleanup();
           try {
-            if (chunks.length === 0) return resolve("");
+            if (chunks.length === 0) {
+              // No audio captured at all. A sub-second tap is just an accidental
+              // press — stay silent. But if we "recorded" for a real beat and
+              // still got nothing, the mic/WebView failed to deliver audio; make
+              // that visible instead of silently doing nothing (the original bug).
+              if (Date.now() - startedAt > 700) {
+                throw new Error("no audio captured — check the mic input/permission");
+              }
+              return resolve("");
+            }
             const blob = new Blob(chunks, { type: mime });
             const base64 = await blobToBase64(blob);
             resolve(await transcribeAudio(base64, mime));
