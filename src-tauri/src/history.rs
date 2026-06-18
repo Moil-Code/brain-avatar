@@ -139,6 +139,36 @@ pub async fn fetch_messages(
     resp.json::<Vec<StoredMessage>>().await.map_err(|e| e.to_string())
 }
 
+/// Fetch all conversations for a given date from the cloud history layer, grouped
+/// with their messages. Used by the nightly brain enrichment automation.
+/// Returns the raw JSON string from the backend (empty object when sync isn't configured).
+#[tauri::command]
+pub async fn fetch_daily_digest(
+    date: String,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let Some((url, token)) = sync_config(&state) else {
+        return Ok("{}".into());
+    };
+    let d = if date.trim().is_empty() {
+        chrono::Utc::now().format("%Y-%m-%d").to_string()
+    } else {
+        date
+    };
+    let resp = reqwest::Client::new()
+        .get(format!("{url}/api/digest"))
+        .query(&[("date", d.as_str())])
+        .header("Authorization", format!("Bearer {token}"))
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("digest fetch HTTP {}", resp.status()));
+    }
+    resp.text().await.map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Local conversation store — durable, offline, survives app updates. Lives in
 // the app config dir as conversations.json. This is what powers "recent chats"

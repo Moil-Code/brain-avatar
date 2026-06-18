@@ -176,6 +176,10 @@ export const fetchMessages = (conversationId: string, limit?: number) =>
  *  by id for a unified, cross-device recent-chats list. [] when sync isn't configured. */
 export const fetchConversations = (limit?: number) =>
   invoke<ConvSummary[]>("fetch_conversations", { limit });
+/** Fetch all conversations for a given date as raw JSON for brain enrichment.
+ *  Returns "{}" when sync isn't configured. Date defaults to today when omitted. */
+export const fetchDailyDigest = (date?: string) =>
+  invoke<string>("fetch_daily_digest", { date: date ?? "" });
 
 // --- Local conversation store (durable "recent chats") ---
 export interface ConvSummary {

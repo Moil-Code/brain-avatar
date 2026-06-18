@@ -176,6 +176,7 @@ pub fn run() {
             history::save_message,
             history::fetch_messages,
             history::fetch_conversations,
+            history::fetch_daily_digest,
             history::list_conversations,
             history::get_conversation,
             history::append_turn,

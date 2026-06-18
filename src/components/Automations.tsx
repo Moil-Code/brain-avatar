@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  BRAIN_ENRICHMENT_PRESET,
   DEFAULT_AUTOMATION_EMAIL,
   describeSchedule,
   loadAutomations,
@@ -59,6 +60,10 @@ const PRESETS: { label: string; build: () => Automation }[] = [
         schedule: { kind: "daily", time: "18:00" },
         delivery: { speak: false, notify: true, email: false, brain: true },
       }),
+  },
+  {
+    label: "🧠 Nightly Brain Enrichment (10:30pm)",
+    build: () => makeAutomation(BRAIN_ENRICHMENT_PRESET),
   },
 ];
 
