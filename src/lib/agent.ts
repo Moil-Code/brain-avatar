@@ -66,6 +66,22 @@ const BASE_ROUNDS = 5;
 // re-sends, so budget generously above the raw task count (cap keeps it bounded).
 const MAX_ROUNDS_CAP = 20;
 
+// The board protocol is injected as a dedicated system message every multi-task
+// turn — NOT baked into settings.system_prompt, because users customize that and
+// existing installs never get the update. The worked example (literal cards array)
+// is what keeps decompose reliable on small models (measured 1/5 -> 5/5).
+const BOARD_PROTOCOL =
+  "TASK BOARD PROTOCOL — when a request has multiple steps (3+ actions, a numbered/bulleted list, " +
+  "or 'do A, then B, then C'):\n" +
+  "1. FIRST call manage_tasks to create one card per task — the FIRST card status 'in_progress', the rest 'todo'.\n" +
+  "2. Then do the work with real tools. The board advances as you go; mark each card 'done' (with an 'evidence' " +
+  "field naming the tool you used) and set the next card 'in_progress' when you can. Always re-send the COMPLETE card list.\n" +
+  "3. Only give your final prose answer once every card is done or blocked. Never write the plan in prose.\n" +
+  'EXAMPLE — user: "pull Josh, summarize the deck, email Maria": your FIRST action is manage_tasks with cards: ' +
+  '[{"title":"Pull Josh","status":"in_progress"},{"title":"Summarize deck","status":"todo"},' +
+  '{"title":"Email Maria","status":"todo"}]. Then call brain_page, then manage_tasks marking card 1 done with ' +
+  "evidence, and so on until all are done.";
+
 function basename(p?: string): string {
   if (!p) return "";
   return p.split("/").filter(Boolean).pop() ?? p;
@@ -923,6 +939,42 @@ export interface RunAgentResult {
   route?: Route;
 }
 
+/** Ensure exactly one card is in_progress while work remains: if none is and a
+ *  todo exists, promote the first todo. Keeps the board showing live progress
+ *  (DOING ≥ 1) even when the model dumps every card as todo. Mutates in place. */
+function ensureOneInProgress(cards: TaskInput[]): void {
+  if (cards.some((c) => c.status === "in_progress")) return;
+  const next = cards.find((c) => c.status === "todo");
+  if (next) next.status = "in_progress";
+}
+
+/** Harness-driven board advance. Small local models reliably CREATE the board but
+ *  won't keep calling manage_tasks to move cards — they batch the real tools and
+ *  leave the board frozen at todo. So when real tools ran and the model didn't
+ *  update the board itself, WE advance it: mark the front-most open card(s) done
+ *  (one per tool that ran, evidence = that tool) and put the next card
+ *  in_progress. This makes the board track actual work regardless of the model. */
+function advanceBoardByTools(board: TaskBoard, toolsRan: string[]): TaskInput[] {
+  const cards: TaskInput[] = board.tasks.map((c) => ({
+    id: c.id,
+    title: c.title,
+    status: c.status,
+    evidence: c.evidence,
+    blocker: c.blocker,
+  }));
+  let ti = 0;
+  for (const c of cards) {
+    if (ti >= toolsRan.length) break;
+    if (c.status === "todo" || c.status === "in_progress") {
+      c.status = "done";
+      if (!c.evidence || !c.evidence.trim()) c.evidence = `${toolsRan[ti]} ran for this card`;
+      ti++;
+    }
+  }
+  ensureOneInProgress(cards);
+  return cards;
+}
+
 /** Apply one manage_tasks call: sanitize, run the harness-side evidence gate,
  *  then persist. Returns the model-facing tool result text and (on success) the
  *  new board. `toolsSinceUpdate` is the set of real tools run since the last
@@ -963,6 +1015,8 @@ async function applyBoardUpdate(
       blocker: typeof c.blocker === "string" ? c.blocker : undefined,
     };
   });
+  // Show live progress: if the model dumped every card as todo, promote the first.
+  ensureOneInProgress(sanitized);
 
   // Evidence gate: a card NEWLY transitioning to done must be backed by a real
   // (non-board) tool run since the last board write, whose result the evidence
@@ -1126,6 +1180,12 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       boardSnapIdx = messages.length - 1;
     }
   };
+  // Inject the board protocol (rules + worked example) directly — the user's saved
+  // system_prompt does NOT contain it, so config.rs's default never reaches existing
+  // installs. This is what teaches the model the board exists and how to use it.
+  if (boardEnabled && (mustDecompose || hasOpenBoard)) {
+    messages.push({ role: "system", content: BOARD_PROTOCOL });
+  }
   if (mustDecompose && !hasOpenBoard) {
     messages.push({
       role: "system",
@@ -1249,24 +1309,37 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       return { content: answer, tools: toolsUsed, route };
     }
 
-    // Board-first enforcement. On a multi-task request the model MUST lay out the
-    // board before executing domain tools. tool_choice "required" forces *a* tool
-    // but LM Studio can't force manage_tasks specifically, so the model often dives
-    // straight into brain_page/calendar/etc. and the board never appears. If it
-    // tried to run other tools before any board exists, DROP this round's calls
-    // (don't push them — that would orphan tool_calls) and require the board first.
-    // Bounded so a stubborn model degrades to just-do-the-work rather than looping.
+    // Board-from-tools fallback. On a multi-task request the model SHOULD call
+    // manage_tasks first, but small models relentlessly batch the domain tools
+    // instead and can't be argued out of it (deferring just loops). So when the
+    // model ran domain tools without ever laying out a board, BUILD the board from
+    // those tool calls — one readable card per tool — then let them execute and the
+    // harness advance the cards. This guarantees a visible, moving board even when
+    // the model never decomposes. (If it DID call manage_tasks, use that instead.)
     const hasBoardCall = toolCalls.some((tc) => tc.function.name === "manage_tasks");
-    if (mustDecompose && (!board || board.tasks.length === 0) && !hasBoardCall && decomposeRetries < 3) {
-      decomposeRetries++;
-      messages.push({
-        role: "system",
-        content:
-          "STOP — do not run any other tool yet. This request has multiple steps, so your FIRST " +
-          "call must be manage_tasks with the full board (one card per task, the first set to " +
-          "in_progress). Lay out the board now, then work the cards one at a time.",
+    if (boardEnabled && mustDecompose && (!board || board.tasks.length === 0) && !hasBoardCall) {
+      const cards: TaskInput[] = toolCalls.map((tc, i) => {
+        let a: any = {};
+        try {
+          a = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+        } catch {
+          /* tolerate malformed args for the label */
+        }
+        return {
+          id: "",
+          title: toolStepLabel(tc.function.name, a),
+          status: i === 0 ? "in_progress" : "todo",
+        };
       });
-      continue;
+      try {
+        board = await setTaskBoard(conversationId, cards);
+        opts.onBoardUpdate?.(board);
+        maxRounds = Math.min(MAX_ROUNDS_CAP, Math.max(maxRounds, 4 + 3 * board.tasks.length));
+        reinjectBoard();
+      } catch {
+        /* if the store rejects, just proceed without a board this turn */
+      }
+      // Fall through: execute the tools this round; harness-advance moves the cards.
     }
 
     // Record the assistant's tool-call message, then run each tool.
@@ -1281,6 +1354,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     // evaluate any manage_tasks "done" transitions. Board calls are deferred to
     // the second pass below.
     const pendingBoardCalls: ToolCall[] = [];
+    const toolsRanThisRound: string[] = []; // ordered, successful, for harness-advance
     for (const tc of toolCalls) {
       // Stop must prevent the next tool from firing — especially side-effecting
       // ones (send_email, calendar_create, post_to_facebook).
@@ -1307,7 +1381,10 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       // a tool that 401'd. Failed tools still appear in the UI badge (toolsUsed).
       const toolFailed =
         result.startsWith(`Tool ${tc.function.name} failed:`) || result.startsWith("Unknown tool:");
-      if (!toolFailed) toolsSinceBoardUpdate.add(tc.function.name);
+      if (!toolFailed) {
+        toolsSinceBoardUpdate.add(tc.function.name);
+        toolsRanThisRound.push(tc.function.name);
+      }
       onStep?.({ id: stepId, label, done: true });
       messages.push({
         role: "tool",
@@ -1319,6 +1396,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
 
     // Second pass: apply manage_tasks calls through the evidence gate, persist,
     // and surface the new board to the UI + back into the model context.
+    let modelUpdatedBoardThisRound = false;
     for (const tc of pendingBoardCalls) {
       if (signal?.aborted) throw new Error("aborted");
       const stepId = `tool-${round}-${tc.id || "manage_tasks"}`;
@@ -1330,6 +1408,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         : { text: "manage_tasks is unavailable here (no conversation context)." };
       if (result.board) {
         board = result.board;
+        modelUpdatedBoardThisRound = true;
         opts.onBoardUpdate?.(board);
         // The tools that justified this update are now consumed; the next card's
         // done transition must be backed by fresh tool calls.
@@ -1344,6 +1423,26 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         name: "manage_tasks",
         content: result.text,
       });
+    }
+
+    // Harness-driven advance: small local models batch the real tools and leave the
+    // board frozen at todo. If tools ran this round but the model didn't move the
+    // board itself, advance it for them so the cards track the actual work.
+    if (
+      boardEnabled &&
+      board &&
+      toolsRanThisRound.length > 0 &&
+      !modelUpdatedBoardThisRound &&
+      openCardCount(board) > 0
+    ) {
+      try {
+        board = await setTaskBoard(conversationId, advanceBoardByTools(board, toolsRanThisRound));
+        opts.onBoardUpdate?.(board);
+        toolsSinceBoardUpdate.clear();
+        reinjectBoard();
+      } catch {
+        /* keep the board as-is if the store rejects the advance */
+      }
     }
     onState?.("thinking");
   }
