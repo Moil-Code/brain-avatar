@@ -37,7 +37,7 @@ import {
   summarizeAutomations,
   upsertAutomation,
 } from "./automations";
-import { getTaskBoard, setTaskBoard } from "./tauri";
+import { clearTaskBoard, getTaskBoard, setTaskBoard } from "./tauri";
 import {
   detectNarration,
   estimateTaskCount,
@@ -1151,6 +1151,20 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   let board: TaskBoard | null = null;
   if (boardEnabled) {
     board = await getTaskBoard(conversationId).catch(() => null);
+    // The board persists per-conversation, but a NEW request must start fresh —
+    // don't inherit a stale/half-finished board from a PREVIOUS request in this
+    // chat (that bled old cards into unrelated new asks). Only a short, explicit
+    // continuation ("continue", "keep going", "finish those") resumes a board.
+    const t = userText.trim();
+    const isContinuation =
+      t.length <= 40 &&
+      /^(continue|keep going|go on|carry on|proceed|resume|next|finish( (it|them|those|up))?|go ahead|yes,? (continue|keep going|proceed|go))\b/i.test(
+        t
+      );
+    if (board && openCardCount(board) > 0 && !isContinuation) {
+      await clearTaskBoard(conversationId).catch(() => {});
+      board = null;
+    }
     opts.onBoardLoad?.(board);
   }
   const taskCount = estimateTaskCount(userText);
