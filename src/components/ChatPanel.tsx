@@ -114,8 +114,22 @@ export default function ChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // Hydrate ratings from localStorage so they survive page reload.
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("msg-ratings") ?? "{}");
+      setRatings(stored);
+    } catch { /* ignore */ }
+  }, []);
+
   const handleRate = async (messageId: string, rating: -1 | 1) => {
     setRatings((r) => ({ ...r, [messageId]: rating }));
+    // Persist locally so ratings survive page reload.
+    try {
+      const stored = JSON.parse(localStorage.getItem("msg-ratings") ?? "{}");
+      localStorage.setItem("msg-ratings", JSON.stringify({ ...stored, [messageId]: rating }));
+    } catch { /* ignore */ }
+    // Also sync to cloud if configured (optional).
     if (!syncApiUrl || !conversationId) return;
     try {
       await fetch(`${syncApiUrl}/api/feedback`, {
@@ -126,9 +140,7 @@ export default function ChatPanel({
         },
         body: JSON.stringify({ conversationId, messageId, rating }),
       });
-    } catch {
-      // best-effort — never surface feedback errors to the user
-    }
+    } catch { /* best-effort */ }
   };
 
   useEffect(() => {
@@ -222,7 +234,7 @@ export default function ChatPanel({
                 ))}
               </div>
             )}
-            {m.role === "assistant" && !m.pending && syncApiUrl && (
+            {m.role === "assistant" && !m.pending && (
               <div className="msg-feedback">
                 <button
                   className={`fb-btn${ratings[m.id] === 1 ? " fb-active" : ""}`}
