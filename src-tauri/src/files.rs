@@ -559,3 +559,124 @@ pub async fn read_imessage(
     }
     Ok(out)
 }
+
+// ---------------------------------------------------------------------------
+// browser_control  ->  drive the user's real Google Chrome via AppleScript
+// ---------------------------------------------------------------------------
+
+/// Run JavaScript in Chrome's active tab. Needs Chrome's one-time opt-in
+/// (View → Developer → "Allow JavaScript from Apple Events"); we detect the
+/// "turned off" error and tell the user how to enable it.
+async fn chrome_js(js: &str) -> Result<String, String> {
+    let script = format!(
+        "tell application \"Google Chrome\" to execute active tab of front window javascript \"{}\"",
+        as_escape(js)
+    );
+    match osa(&script).await {
+        Ok(s) => Ok(s),
+        Err(e) => {
+            let low = e.to_lowercase();
+            if low.contains("turned off") || low.contains("javascript") {
+                Err("Chrome blocks JavaScript via AppleScript by default. Enable it once: \
+                     Chrome menu bar → View → Developer → \"Allow JavaScript from Apple Events\", \
+                     then try again."
+                    .into())
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Curated Google Chrome controls — a small-model-friendly action set (like
+/// system_control), so the model picks an action + simple params instead of
+/// writing fragile AppleScript/JS. Read actions (current_url, list_tabs,
+/// read_page) are safe; mutating ones (click_text, run_js) are confirm-gated by
+/// the agent layer before they reach here.
+#[tauri::command]
+pub async fn browser_control(
+    action: String,
+    target: Option<String>,
+    text: Option<String>,
+) -> Result<String, String> {
+    match action.trim().to_lowercase().as_str() {
+        "open_url" => {
+            let url = target
+                .filter(|u| !u.trim().is_empty())
+                .ok_or("open_url needs `target` (the URL to open)")?;
+            let url = if url.starts_with("http://") || url.starts_with("https://") {
+                url
+            } else {
+                format!("https://{url}")
+            };
+            let script = format!(
+                "tell application \"Google Chrome\"\n\
+                    activate\n\
+                    if (count of windows) = 0 then\n\
+                        make new window\n\
+                        set URL of active tab of front window to \"{u}\"\n\
+                    else\n\
+                        tell front window to make new tab with properties {{URL:\"{u}\"}}\n\
+                    end if\n\
+                 end tell",
+                u = as_escape(&url),
+            );
+            osa(&script).await.map(|_| format!("Opened {url} in Chrome."))
+        }
+        "current_url" | "active_tab" => {
+            let script = "tell application \"Google Chrome\" to return (URL of active tab of \
+                          front window) & \" ||| \" & (title of active tab of front window)";
+            osa(script).await.map(|s| format!("Active tab: {s}"))
+        }
+        "list_tabs" => {
+            let script = "tell application \"Google Chrome\"\n\
+                            set out to \"\"\n\
+                            repeat with t in (tabs of front window)\n\
+                                set out to out & (title of t) & \" — \" & (URL of t) & linefeed\n\
+                            end repeat\n\
+                            return out\n\
+                          end tell";
+            osa(script).await.map(|s| {
+                if s.trim().is_empty() {
+                    "No open tabs.".into()
+                } else {
+                    format!("Open tabs in the front Chrome window:\n{s}")
+                }
+            })
+        }
+        "read_page" | "read_page_text" => {
+            let js = "(function(){return document.body?document.body.innerText.slice(0,8000):'(no readable body)';})()";
+            let body = chrome_js(js).await?;
+            Ok(if body.trim().is_empty() {
+                "(the page has no readable text)".into()
+            } else {
+                format!("Active tab text:\n\n{body}")
+            })
+        }
+        "click_text" => {
+            let t = target
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("click_text needs `target` (the visible text of the link/button to click)")?;
+            let lit = serde_json::to_string(&t).unwrap_or_else(|_| "\"\"".into());
+            let js = format!(
+                "(function(){{var t={lit}.toLowerCase();\
+                  var els=[].slice.call(document.querySelectorAll('a,button,input[type=submit],input[type=button],[role=button]'));\
+                  var el=els.filter(function(e){{return ((e.innerText||e.value||'')+'').toLowerCase().indexOf(t)>=0;}})[0];\
+                  if(el){{el.click();return 'clicked: '+((el.innerText||el.value||el.tagName)+'').slice(0,80);}}\
+                  return 'no clickable element matching: '+t;}})()"
+            );
+            chrome_js(&js).await
+        }
+        "run_js" => {
+            let js = text
+                .or(target)
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("run_js needs `text` (the JavaScript to run in the page)")?;
+            chrome_js(&js).await
+        }
+        other => Err(format!(
+            "Unknown browser action '{other}'. Supported: open_url, current_url, list_tabs, \
+             read_page, click_text, run_js."
+        )),
+    }
+}

@@ -39,6 +39,8 @@ pub async fn transcribe_audio_core(
         "audio.wav"
     } else if mime.contains("mp4") || mime.contains("m4a") {
         "audio.mp4"
+    } else if mime.contains("mpeg") || mime.contains("mp3") {
+        "audio.mp3"
     } else if mime.contains("ogg") {
         "audio.ogg"
     } else {

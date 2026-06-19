@@ -27,6 +27,8 @@ import {
   sendImessage,
   readImessage,
   runShell,
+  browserControl,
+  watchVideo,
   sendEmail,
   sendTeamsMessage,
   webSearch,
@@ -155,6 +157,21 @@ function toolStepLabel(name: string, a: any): string {
       return a.contact ? `Reading messages with ${a.contact}` : "Reading recent messages";
     case "run_shell":
       return a.command ? `Running: ${String(a.command).slice(0, 40)}…` : "Running a shell command";
+    case "browser_control": {
+      const map: Record<string, string> = {
+        open_url: a.target ? `Opening ${shortUrl(a.target)} in Chrome` : "Opening Chrome",
+        current_url: "Checking the active tab",
+        active_tab: "Checking the active tab",
+        list_tabs: "Listing Chrome tabs",
+        read_page: "Reading the page",
+        read_page_text: "Reading the page",
+        click_text: a.target ? `Clicking “${a.target}”` : "Clicking in Chrome",
+        run_js: "Running JavaScript in Chrome",
+      };
+      return map[String(a.action)] ?? "Controlling Chrome";
+    }
+    case "watch_video":
+      return a.source || a.url ? `Watching ${shortUrl(a.source ?? a.url)}` : "Watching the video";
     case "system_control": {
       const map: Record<string, string> = {
         volume_get: "Checking the volume",
@@ -735,6 +752,51 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "browser_control",
+      description:
+        "Control Andres' actual Google Chrome. Use for 'open X in Chrome', 'what tab am I on', " +
+        "'read this page', 'click the X button/link', 'list my tabs'. `action` is one of: " +
+        "open_url (needs target=URL), current_url, list_tabs, read_page (returns the active tab's " +
+        "visible text), click_text (needs target=the visible link/button text), run_js (needs " +
+        "text=JavaScript — advanced). read_page/current_url/list_tabs are read-only; click_text and " +
+        "run_js act on the page, so Andres is asked to approve them first.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            description: "open_url | current_url | list_tabs | read_page | click_text | run_js",
+          },
+          target: { type: "string", description: "URL (open_url) or visible text to click (click_text)" },
+          text: { type: "string", description: "JavaScript source (run_js)" },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "watch_video",
+      description:
+        "Watch and analyze a video by transcribing its audio — use for 'summarize this YouTube " +
+        "video', 'what does this video say', 'watch this and tell me X'. `source` is a video URL " +
+        "(YouTube, etc.) or a local file path. Optionally pass `question` to answer something " +
+        "specific; otherwise it summarizes. Returns the transcript for you to analyze, so base your " +
+        "answer on it. (Online videos need yt-dlp; local files need ffmpeg.)",
+      parameters: {
+        type: "object",
+        properties: {
+          source: { type: "string", description: "Video URL or local file path" },
+          question: { type: "string", description: "Optional specific question about the video" },
+        },
+        required: ["source"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "read_emails",
       description:
         "Read Andres' most recent inbox emails (sender, subject, date, preview). Use for 'read/" +
@@ -898,6 +960,31 @@ function buildSchedule(args: any): AutomationSchedule {
   return { kind: "daily", time: String(args.time ?? "09:00") };
 }
 
+/** Build the approval request for a side-effecting call, or null if the call
+ *  needs no confirmation (read-only / non-mutating). */
+function confirmRequestFor(name: string, args: any): ConfirmRequest | null {
+  if (name === "run_shell")
+    return { tool: name, title: "Run this shell command?", detail: String(args.command ?? "") };
+  if (name === "send_imessage")
+    return {
+      tool: name,
+      title: "Send this iMessage?",
+      detail: `To: ${String(args.to ?? "")}\n\n${String(args.body ?? "")}`,
+    };
+  if (name === "browser_control") {
+    const a = String(args.action ?? "").toLowerCase();
+    if (a === "click_text")
+      return { tool: name, title: "Click in Chrome?", detail: `Click: “${String(args.target ?? "")}”` };
+    if (a === "run_js")
+      return {
+        tool: name,
+        title: "Run JavaScript in Chrome?",
+        detail: String(args.text ?? args.target ?? ""),
+      };
+  }
+  return null;
+}
+
 async function executeTool(
   name: string,
   argsJson: string,
@@ -913,31 +1000,28 @@ async function executeTool(
   // Hard UI gate for side-effecting local tools. When the UI provides onConfirm,
   // it is AUTHORITATIVE: we show the user the exact action and only run it on an
   // explicit approval — ignoring whatever `confirm` the model passed (so a prompt-
-  // injected confirm=true can't self-approve). Approve → run with confirm=true.
-  if (onConfirm && (name === "run_shell" || name === "send_imessage")) {
-    const req: ConfirmRequest =
-      name === "run_shell"
-        ? { tool: name, title: "Run this shell command?", detail: String(args.command ?? "") }
-        : {
-            tool: name,
-            title: "Send this iMessage?",
-            detail: `To: ${String(args.to ?? "")}\n\n${String(args.body ?? "")}`,
-          };
-    let approved = false;
-    try {
-      approved = await onConfirm(req);
-    } catch {
-      approved = false;
-    }
-    if (!approved) {
-      return `Andres declined this ${name === "run_shell" ? "command" : "message"}. Do not run it; ask him what he'd like instead.`;
-    }
-    try {
-      return name === "run_shell"
-        ? await runShell(String(args.command ?? ""), true)
-        : await sendImessage(String(args.to ?? ""), String(args.body ?? ""), true);
-    } catch (e) {
-      return `Tool ${name} failed: ${e instanceof Error ? e.message : String(e)}`;
+  // injected confirm=true can't self-approve).
+  if (onConfirm) {
+    const req = confirmRequestFor(name, args);
+    if (req) {
+      let approved = false;
+      try {
+        approved = await onConfirm(req);
+      } catch {
+        approved = false;
+      }
+      if (!approved) {
+        return `Andres declined this action. Do not run it; ask him what he'd like instead.`;
+      }
+      // Shell/iMessage have a Rust-side confirm gate — pass confirm=true now that
+      // he approved. Browser actions have no such arg, so fall through to dispatch.
+      try {
+        if (name === "run_shell") return await runShell(String(args.command ?? ""), true);
+        if (name === "send_imessage")
+          return await sendImessage(String(args.to ?? ""), String(args.body ?? ""), true);
+      } catch (e) {
+        return `Tool ${name} failed: ${e instanceof Error ? e.message : String(e)}`;
+      }
     }
   }
   // MCP tools are dynamic, so route them before the static switch.
@@ -1058,6 +1142,17 @@ async function executeTool(
         return await runShell(
           String(args.command ?? ""),
           typeof args.confirm === "boolean" ? args.confirm : undefined
+        );
+      case "browser_control":
+        return await browserControl(
+          String(args.action ?? ""),
+          args.target != null ? String(args.target) : undefined,
+          args.text != null ? String(args.text) : undefined
+        );
+      case "watch_video":
+        return await watchVideo(
+          String(args.source ?? args.url ?? ""),
+          args.question ? String(args.question) : undefined
         );
       case "read_emails":
         return await readEmails(args.count);

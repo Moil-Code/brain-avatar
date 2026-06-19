@@ -192,6 +192,16 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
   `curl|sh`, SSH-key/Keychain reads, `sudo`, … no matter what — the one gate prompt injection
   can't bypass), an explicit **confirm=true** the model only passes after you approve, and a
   structured **audit line** (`~/Library/Logs/brain-avatar-tools.log`) for every command.
+- **Browser (Chrome)** — `browser_control` drives your **actual** Google Chrome via AppleScript:
+  `open_url`, `current_url`, `list_tabs`, `read_page` (the active tab's visible text), `click_text`
+  (click a link/button by its visible text), and `run_js` (advanced page scripting). Read actions
+  are free; `click_text`/`run_js` change the page, so they go through the **approval modal**. The JS
+  actions need Chrome's one-time opt-in: **View → Developer → "Allow JavaScript from Apple Events."**
+- **Video** — `watch_video` analyzes a video by transcribing its audio: pass a **URL** (YouTube,
+  etc. — needs `yt-dlp`) or a **local file path** (needs `ffmpeg`), plus an optional question. It
+  extracts a small 16 kHz mono track, runs it through **Groq Whisper**, and hands the transcript to
+  the model to summarize or answer. Long videos are auto-split into chunks. (Visual frame analysis
+  is a planned follow-up, gated on a confirmed local vision model.)
 - **MCP tool servers** — Brain is an **MCP client**: add a Model Context Protocol server in
   **Settings → MCP tool servers** (command + args, e.g. `npx -y
   @modelcontextprotocol/server-filesystem ~/Documents`) and all of its tools appear to the

@@ -168,6 +168,12 @@ export const readImessage = (contact?: string, limit?: number) =>
 /** Run a shell command. Hard deny-list + confirm=true gate (set only after Andres approves). */
 export const runShell = (command: string, confirm?: boolean) =>
   invoke<string>("run_shell", { command, confirm });
+/** Curated Google Chrome controls (open_url, current_url, list_tabs, read_page, click_text, run_js). */
+export const browserControl = (action: string, target?: string, text?: string) =>
+  invoke<string>("browser_control", { action, target, text });
+/** Watch a video (URL or local path): transcribe it, return transcript + metadata to analyze. */
+export const watchVideo = (source: string, question?: string) =>
+  invoke<string>("watch_video", { source, question });
 
 // --- MCP (Model Context Protocol) servers ---
 export interface McpToolInfo {
