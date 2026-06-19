@@ -4,6 +4,7 @@ pub mod config;
 mod files;
 mod history;
 pub mod llm;
+mod mcp;
 mod shell;
 mod task_board;
 pub mod tools;
@@ -201,6 +202,9 @@ pub fn run() {
             files::send_imessage,
             files::read_imessage,
             shell::run_shell,
+            mcp::mcp_list_tools,
+            mcp::mcp_call_tool,
+            mcp::mcp_probe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Automation, FeatureFlags, Settings, TaskBoard, TaskInput } from "./types";
+import type { Automation, FeatureFlags, McpServer, Settings, TaskBoard, TaskInput } from "./types";
 
 // --- Proactive automations (scheduler store + native notifications) ---
 export const getAutomations = () => invoke<Automation[]>("get_automations");
@@ -168,6 +168,22 @@ export const readImessage = (contact?: string, limit?: number) =>
 /** Run a shell command. Hard deny-list + confirm=true gate (set only after Andres approves). */
 export const runShell = (command: string, confirm?: boolean) =>
   invoke<string>("run_shell", { command, confirm });
+
+// --- MCP (Model Context Protocol) servers ---
+export interface McpToolInfo {
+  server: string;
+  name: string;
+  description: string;
+  inputSchema: unknown;
+}
+/** Discover the tools exposed by every enabled MCP server (spawns each briefly). */
+export const mcpListTools = () =>
+  invoke<{ tools: McpToolInfo[]; errors: string[] }>("mcp_list_tools");
+/** Call a tool on a configured MCP server; returns the tool's text output. */
+export const mcpCallTool = (server: string, tool: string, args: unknown) =>
+  invoke<string>("mcp_call_tool", { server, tool, args });
+/** Settings "Test" — probe one (possibly unsaved) server and report its tools. */
+export const mcpProbe = (server: McpServer) => invoke<string>("mcp_probe", { server });
 
 // --- History sync (optional Supabase mirror) ---
 export const saveMessage = (

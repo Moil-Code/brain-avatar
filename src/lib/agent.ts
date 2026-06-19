@@ -41,6 +41,7 @@ import {
   upsertAutomation,
 } from "./automations";
 import { clearTaskBoard, getTaskBoard, setTaskBoard } from "./tauri";
+import { mcpCallTool, mcpListTools, type McpToolInfo } from "./tauri";
 import {
   detectNarration,
   estimateTaskCount,
@@ -181,9 +182,61 @@ function toolStepLabel(name: string, a: any): string {
       return "Preparing the Teams message";
     case "manage_tasks":
       return "Updating the task board";
-    default:
+    default: {
+      const mcp = mcpRouting.get(name);
+      if (mcp) return `Using ${mcp.server}: ${mcp.tool}`;
       return name;
+    }
   }
+}
+
+// --- Dynamic MCP tools ------------------------------------------------------
+// Tools from configured MCP servers are discovered at runtime and merged into
+// the list handed to the model — so adding a server adds capabilities with no
+// code change. `mcpRouting` maps the (sanitized) function name the model emits
+// back to the server+tool it came from, so executeTool can dispatch it.
+let mcpToolDefs: any[] = [];
+const mcpRouting = new Map<string, { server: string; tool: string }>();
+let mcpLoadedAt = 0;
+const MCP_TTL_MS = 60_000;
+
+/** OpenAI function names must match /^[A-Za-z0-9_-]{1,64}$/ — sanitize and cap. */
+function mcpFnName(server: string, tool: string): string {
+  return `mcp_${server}_${tool}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
+}
+
+/** Discover MCP tools (cached briefly). Failures degrade to built-in tools only. */
+async function loadMcpTools(force = false): Promise<any[]> {
+  const now = Date.now();
+  if (!force && mcpLoadedAt !== 0 && now - mcpLoadedAt < MCP_TTL_MS) return mcpToolDefs;
+  try {
+    const { tools } = await mcpListTools();
+    const seen = new Set<string>();
+    mcpRouting.clear();
+    mcpToolDefs = tools.map((t: McpToolInfo) => {
+      let fn = mcpFnName(t.server, t.name);
+      // Guard against name collisions after sanitizing/truncation.
+      while (seen.has(fn)) fn = fn.slice(0, 60) + Math.floor(Math.random() * 9000 + 1000);
+      seen.add(fn);
+      mcpRouting.set(fn, { server: t.server, tool: t.name });
+      const schema =
+        t.inputSchema && typeof t.inputSchema === "object"
+          ? t.inputSchema
+          : { type: "object", properties: {} };
+      return {
+        type: "function",
+        function: {
+          name: fn,
+          description: `[${t.server}] ${t.description || t.name}`,
+          parameters: schema,
+        },
+      };
+    });
+    mcpLoadedAt = now;
+  } catch {
+    /* MCP unavailable — fall back to built-in tools only */
+  }
+  return mcpToolDefs;
 }
 
 export const TOOL_DEFS = [
@@ -852,6 +905,15 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
   } catch {
     /* tolerate malformed args */
   }
+  // MCP tools are dynamic, so route them before the static switch.
+  const mcp = mcpRouting.get(name);
+  if (mcp) {
+    try {
+      return await mcpCallTool(mcp.server, mcp.tool, args);
+    } catch (e) {
+      return `Tool ${name} failed: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
   try {
     switch (name) {
       case "brain_page":
@@ -1223,6 +1285,10 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
 
   const toolsUsed: string[] = [];
 
+  // Merge any MCP server tools into the set offered to the model this turn.
+  const mcpDefs = await loadMcpTools();
+  const toolDefs = mcpDefs.length ? [...TOOL_DEFS, ...mcpDefs] : TOOL_DEFS;
+
   // --- Kanban board layer ----------------------------------------------------
   // A multi-task request is decomposed onto a persistent, per-conversation board
   // and worked card by card, so the model can't "queue a plan" in prose and drop
@@ -1328,7 +1394,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         endpoint.token,
         endpoint.model,
         messages,
-        TOOL_DEFS,
+        toolDefs,
         settings.max_tokens,
         toolChoice
       );
@@ -1339,7 +1405,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
           endpoint.token,
           endpoint.model,
           messages,
-          TOOL_DEFS,
+          toolDefs,
           settings.max_tokens
         );
       } else {

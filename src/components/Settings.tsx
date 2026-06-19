@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
-import { daemonProbe, listVoices, llmProbe, openVoiceDownload, setSettings, ttsSpeak } from "../lib/tauri";
-import type { Settings as SettingsType } from "../lib/types";
+import {
+  daemonProbe,
+  listVoices,
+  llmProbe,
+  mcpProbe,
+  openVoiceDownload,
+  setSettings,
+  ttsSpeak,
+} from "../lib/tauri";
+import type { McpServer, Settings as SettingsType } from "../lib/types";
 
 interface Props {
   initial: SettingsType;
@@ -101,6 +109,26 @@ export default function Settings({ initial, onSaved, onClose }: Props) {
     else setProbe(`✗ Neither endpoint reachable. Remote: ${r.error ?? "?"}`);
   };
 
+  const servers: McpServer[] = draft.mcp_servers ?? [];
+  const setServers = (next: McpServer[]) => setDraft((d) => ({ ...d, mcp_servers: next }));
+  const updateServer = (i: number, patch: Partial<McpServer>) =>
+    setServers(servers.map((s, j) => (j === i ? { ...s, ...patch } : s)));
+  const addServer = () =>
+    setServers([...servers, { name: "", command: "npx", args: [], env: {}, enabled: true }]);
+  const removeServer = (i: number) => setServers(servers.filter((_, j) => j !== i));
+  const testServer = async (s: McpServer) => {
+    if (!s.command.trim()) {
+      setProbe("Give the server a command first (e.g. npx).");
+      return;
+    }
+    setProbe(`Testing MCP server “${s.name || s.command}”…`);
+    try {
+      setProbe(`✓ ${await mcpProbe(s)}`);
+    } catch (e) {
+      setProbe(`✗ ${e}`);
+    }
+  };
+
   const testDaemon = async () => {
     if (!draft.brain_daemon_url.trim()) {
       setProbe("Enter a daemon URL first (or leave blank to run locally).");
@@ -185,6 +213,75 @@ export default function Settings({ initial, onSaved, onClose }: Props) {
             }
           >
             ▶ Preview voice
+          </button>
+        </div>
+
+        <div className="settings-section">
+          <h3>MCP tool servers</h3>
+          <p className="settings-hint">
+            Connect external Model Context Protocol servers to give Brain new tools — filesystem,
+            iMessage, Notes, GitHub, and more — with no app changes. Each server is launched over
+            stdio; its tools appear to the model automatically. Example: command{" "}
+            <code>npx</code>, args{" "}
+            <code>-y @modelcontextprotocol/server-filesystem ~/Documents</code>.
+          </p>
+          {servers.map((s, i) => (
+            <div className="mcp-server" key={i}>
+              <label className="field">
+                <span>Name</span>
+                <input
+                  type="text"
+                  value={s.name}
+                  placeholder="filesystem"
+                  onChange={(e) => updateServer(i, { name: e.target.value })}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+              <label className="field">
+                <span>Command</span>
+                <input
+                  type="text"
+                  value={s.command}
+                  placeholder="npx"
+                  onChange={(e) => updateServer(i, { command: e.target.value })}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+              <label className="field">
+                <span>Args (space-separated)</span>
+                <input
+                  type="text"
+                  value={s.args.join(" ")}
+                  placeholder="-y @modelcontextprotocol/server-filesystem ~/Documents"
+                  onChange={(e) =>
+                    updateServer(i, { args: e.target.value.split(/\s+/).filter(Boolean) })
+                  }
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+              <div className="mcp-server-row">
+                <label className="mcp-enable">
+                  <input
+                    type="checkbox"
+                    checked={s.enabled}
+                    onChange={(e) => updateServer(i, { enabled: e.target.checked })}
+                  />
+                  Enabled
+                </label>
+                <button className="ghost-btn" onClick={() => testServer(s)}>
+                  Test
+                </button>
+                <button className="ghost-btn" onClick={() => removeServer(i)}>
+                  Remove
+                </button>
+              </div>
+            </div>
+          ))}
+          <button className="ghost-btn" onClick={addServer}>
+            + Add MCP server
           </button>
         </div>
 

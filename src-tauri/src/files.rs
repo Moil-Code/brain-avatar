@@ -513,13 +513,13 @@ pub async fn read_imessage(
 
     let stdout = run_lenient(
         "/usr/bin/sqlite3",
-        &["-separator", "\u{1f}", &db, &query],
+        &["-separator", "\u{1f}", db.as_str(), query.as_str()],
     )
     .await;
 
     if stdout.trim().is_empty() {
         // Distinguish "no rows" from "couldn't open" by probing access once.
-        let probe = run("/usr/bin/sqlite3", &[&db, "SELECT 1;"]).await;
+        let probe = run("/usr/bin/sqlite3", &[db.as_str(), "SELECT 1;"]).await;
         if let Err(e) = probe {
             let low = e.to_lowercase();
             if low.contains("authorization denied")
