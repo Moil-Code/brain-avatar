@@ -139,6 +139,43 @@ pub async fn fetch_messages(
     resp.json::<Vec<StoredMessage>>().await.map_err(|e| e.to_string())
 }
 
+/// Fetch all conversations for a given date from the local store, grouped with their
+/// messages. Filters by the `ts` timestamp prefix on each message so only messages
+/// from that calendar day are included. Works fully offline — no Supabase required.
+#[tauri::command]
+pub fn fetch_daily_digest(date: String, app: AppHandle) -> Result<String, String> {
+    let d = if date.trim().is_empty() {
+        chrono::Utc::now().format("%Y-%m-%d").to_string()
+    } else {
+        date
+    };
+    let store = load_store(&app);
+    let convs: Vec<serde_json::Value> = store
+        .conversations
+        .iter()
+        .filter_map(|c| {
+            let msgs: Vec<serde_json::Value> = c
+                .messages
+                .iter()
+                .filter(|m| m.ts.starts_with(&d))
+                .map(|m| {
+                    json!({ "role": m.role, "content": m.content, "created_at": m.ts })
+                })
+                .collect();
+            if msgs.is_empty() {
+                return None;
+            }
+            Some(json!({
+                "conversation_id": c.id,
+                "title": c.title,
+                "messages": msgs,
+            }))
+        })
+        .collect();
+    serde_json::to_string(&json!({ "date": d, "conversations": convs }))
+        .map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Local conversation store — durable, offline, survives app updates. Lives in
 // the app config dir as conversations.json. This is what powers "recent chats"

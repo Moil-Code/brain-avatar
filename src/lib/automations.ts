@@ -95,6 +95,22 @@ export function makeAutomation(input: {
   };
 }
 
+/** Ready-made nightly automation — processes today's conversations and pushes
+ *  key insights into the brain. Pass to makeAutomation() to instantiate. */
+export const BRAIN_ENRICHMENT_PRESET = {
+  name: "Nightly Brain Enrichment",
+  prompt:
+    "Fetch today's conversations using fetch_daily_conversations. For each conversation, " +
+    "extract: key decisions made, people mentioned (with context), projects or tasks referenced, " +
+    "commitments or follow-ups promised, and any lessons learned. Before saving each insight, " +
+    "use brain_search to check if it is already known — skip anything the brain already has. " +
+    "For each genuinely new insight, call push_chat with a descriptive title " +
+    "(e.g. 'Decision: [topic] – [date]') and the full insight content. " +
+    "Aim for 3–7 distinct insights. If no new insights are found, say so.",
+  schedule: { kind: "daily" as const, time: "22:30" },
+  delivery: { speak: false, notify: true, email: false, brain: true },
+} satisfies Parameters<typeof makeAutomation>[0];
+
 // --- scheduling ----------------------------------------------------------
 
 /** Most recent scheduled slot at or before `now` for a daily automation. */
