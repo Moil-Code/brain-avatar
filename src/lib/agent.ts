@@ -898,12 +898,47 @@ function buildSchedule(args: any): AutomationSchedule {
   return { kind: "daily", time: String(args.time ?? "09:00") };
 }
 
-async function executeTool(name: string, argsJson: string): Promise<string> {
+async function executeTool(
+  name: string,
+  argsJson: string,
+  onConfirm?: (req: ConfirmRequest) => Promise<boolean>
+): Promise<string> {
   let args: any = {};
   try {
     args = argsJson ? JSON.parse(argsJson) : {};
   } catch {
     /* tolerate malformed args */
+  }
+
+  // Hard UI gate for side-effecting local tools. When the UI provides onConfirm,
+  // it is AUTHORITATIVE: we show the user the exact action and only run it on an
+  // explicit approval — ignoring whatever `confirm` the model passed (so a prompt-
+  // injected confirm=true can't self-approve). Approve → run with confirm=true.
+  if (onConfirm && (name === "run_shell" || name === "send_imessage")) {
+    const req: ConfirmRequest =
+      name === "run_shell"
+        ? { tool: name, title: "Run this shell command?", detail: String(args.command ?? "") }
+        : {
+            tool: name,
+            title: "Send this iMessage?",
+            detail: `To: ${String(args.to ?? "")}\n\n${String(args.body ?? "")}`,
+          };
+    let approved = false;
+    try {
+      approved = await onConfirm(req);
+    } catch {
+      approved = false;
+    }
+    if (!approved) {
+      return `Andres declined this ${name === "run_shell" ? "command" : "message"}. Do not run it; ask him what he'd like instead.`;
+    }
+    try {
+      return name === "run_shell"
+        ? await runShell(String(args.command ?? ""), true)
+        : await sendImessage(String(args.to ?? ""), String(args.body ?? ""), true);
+    } catch (e) {
+      return `Tool ${name} failed: ${e instanceof Error ? e.message : String(e)}`;
+    }
   }
   // MCP tools are dynamic, so route them before the static switch.
   const mcp = mcpRouting.get(name);
@@ -1052,6 +1087,17 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
   }
 }
 
+/** A user-facing approval request raised by a side-effecting tool. The UI shows
+ *  it as a modal; resolving true runs the action, false declines it. */
+export interface ConfirmRequest {
+  /** The tool asking for approval (e.g. "run_shell", "send_imessage"). */
+  tool: string;
+  /** Short heading, e.g. "Run this shell command?". */
+  title: string;
+  /** The exact thing that will happen (command text, or recipient + message). */
+  detail: string;
+}
+
 export interface RunAgentOpts {
   userText: string;
   history: ChatMessage[];
@@ -1073,6 +1119,10 @@ export interface RunAgentOpts {
   onBoardLoad?: (board: TaskBoard | null) => void;
   /** Fired after every successful board write so the UI can animate the cards. */
   onBoardUpdate?: (board: TaskBoard) => void;
+  /** Ask the user to approve a side-effecting action (shell, iMessage). Returns
+   *  true to run it, false to decline. When absent (e.g. headless automations),
+   *  these tools fall back to their built-in confirm-arg gate. */
+  onConfirm?: (req: ConfirmRequest) => Promise<boolean>;
   signal?: AbortSignal;
 }
 
@@ -1535,7 +1585,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       onStep?.({ id: stepId, label, done: false });
       onToolStart?.(tc.function.name);
       if (!toolsUsed.includes(tc.function.name)) toolsUsed.push(tc.function.name);
-      const result = await executeTool(tc.function.name, tc.function.arguments);
+      const result = await executeTool(tc.function.name, tc.function.arguments, opts.onConfirm);
       // Only a SUCCESSFUL tool counts toward the done-evidence gate. executeTool
       // returns "Tool X failed: …" / "Unknown tool: X" as a non-empty string on
       // failure — if that satisfied the gate, the model could mark a card done off
