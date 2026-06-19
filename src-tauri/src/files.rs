@@ -494,8 +494,10 @@ pub async fn read_imessage(
     let n = limit.unwrap_or(20).clamp(1, 50);
 
     // Apple stores `message.date` as nanoseconds since 2001-01-01; convert to a
-    // local timestamp. Newer messages keep text in `attributedBody` (a blob) with
-    // a NULL `text`, which we surface as a placeholder rather than dropping.
+    // local timestamp. On modern macOS `message.text` is usually NULL and the body
+    // lives in `attributedBody` (a typedstream blob), so we also pull it as hex and
+    // recover the text in Rust. Newlines in the text are flattened in SQL so one
+    // message never spans multiple output rows (which would corrupt parsing).
     let where_clause = match contact.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
         Some(c) => format!("WHERE handle.id LIKE '%{}%'", c.replace('\'', "''")),
         None => String::new(),
@@ -504,7 +506,8 @@ pub async fn read_imessage(
         "SELECT datetime(message.date/1000000000 + 978307200, 'unixepoch', 'localtime') AS d, \
                 COALESCE(handle.id, 'unknown') AS who, \
                 message.is_from_me, \
-                COALESCE(message.text, '') AS body \
+                COALESCE(replace(replace(message.text, char(10), ' '), char(13), ' '), '') AS body, \
+                COALESCE(hex(message.attributedBody), '') AS body2 \
          FROM message \
          LEFT JOIN handle ON message.handle_id = handle.ROWID \
          {where_clause} \
@@ -543,21 +546,97 @@ pub async fn read_imessage(
     let mut out = String::from("Recent messages (newest first):\n\n");
     for line in stdout.lines().take(n as usize) {
         let cols: Vec<&str> = line.split('\u{1f}').collect();
-        if cols.len() < 4 {
+        if cols.len() < 5 {
             continue;
         }
         let when = cols[0];
         let who = cols[1];
         let from_me = cols[2] == "1";
-        let text = if cols[3].trim().is_empty() {
-            "(attachment or non-text message)"
+        // Prefer the plain `text` column; fall back to recovering it from the
+        // attributedBody blob (the common case on modern macOS).
+        let mut text = cols[3].trim().to_string();
+        if text.is_empty() {
+            if let Some(t) = decode_hex(cols[4]).as_deref().and_then(text_from_attributed_body) {
+                text = t;
+            }
+        }
+        let shown = if text.is_empty() {
+            "(attachment or non-text message)".to_string()
         } else {
-            cols[3]
+            text.replace('\n', " ")
         };
         let label = if from_me { "Andres".to_string() } else { who.to_string() };
-        out.push_str(&format!("• [{when}] {label}: {}\n", text.replace('\n', " ")));
+        out.push_str(&format!("• [{when}] {label}: {shown}\n"));
     }
     Ok(out)
+}
+
+/// Decode an uppercase/lowercase hex string (as emitted by SQLite `hex()`) to
+/// bytes. Returns None on any non-hex / odd-length input.
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim();
+    if s.is_empty() || s.len() % 2 != 0 {
+        return None;
+    }
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let mut i = 0;
+    while i < b.len() {
+        let hi = (b[i] as char).to_digit(16)?;
+        let lo = (b[i + 1] as char).to_digit(16)?;
+        out.push((hi * 16 + lo) as u8);
+        i += 2;
+    }
+    Some(out)
+}
+
+/// Best-effort recovery of a message body from a Messages `attributedBody`
+/// typedstream blob. The text is an NSString stored right after the `NSString`
+/// marker: a few framing bytes, a `+` (0x2B), a length, then the UTF-8 bytes.
+/// Every index is bounds-checked, so a malformed blob simply yields None rather
+/// than panicking. Heuristic — not a full typedstream parser — but it recovers
+/// the vast majority of real messages.
+fn text_from_attributed_body(bytes: &[u8]) -> Option<String> {
+    let marker = b"NSString";
+    let pos = bytes.windows(marker.len()).position(|w| w == marker)?;
+    let mut i = pos + marker.len();
+    // Scan a short window forward to the 0x2B byte that precedes the length.
+    let end_scan = (i + 12).min(bytes.len());
+    while i < end_scan && bytes[i] != 0x2b {
+        i += 1;
+    }
+    if i >= bytes.len() || bytes[i] != 0x2b {
+        return None;
+    }
+    i += 1; // past the '+'
+    if i >= bytes.len() {
+        return None;
+    }
+    // Length is 1 byte (< 0x81) or 0x81 followed by a little-endian u16.
+    let len = if bytes[i] < 0x81 {
+        let l = bytes[i] as usize;
+        i += 1;
+        l
+    } else if bytes[i] == 0x81 {
+        if i + 2 >= bytes.len() {
+            return None;
+        }
+        let l = u16::from_le_bytes([bytes[i + 1], bytes[i + 2]]) as usize;
+        i += 3;
+        l
+    } else {
+        return None;
+    };
+    let end = i.checked_add(len)?;
+    if end > bytes.len() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&bytes[i..end]).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 // ---------------------------------------------------------------------------

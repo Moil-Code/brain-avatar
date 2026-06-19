@@ -17,7 +17,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::time::timeout;
 
-const MCP_TIMEOUT: Duration = Duration::from_secs(30);
+// Generous: the first `npx -y <server>` call downloads the package before it
+// answers, which can take well over 30s on a cold cache.
+const MCP_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A live stdio connection to one MCP server, post-handshake.
 struct Conn {

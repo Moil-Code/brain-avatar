@@ -85,6 +85,10 @@ async fn prepare_audio(dir: &Path, source: &str) -> Result<(PathBuf, String), St
         if !have("yt-dlp").await {
             return Err("`yt-dlp` isn't installed — `brew install yt-dlp` to analyze online videos.".into());
         }
+        // yt-dlp's mp3 extraction shells out to ffmpeg, so it's required too.
+        if !have("ffmpeg").await {
+            return Err("`ffmpeg` isn't installed — `brew install ffmpeg` (yt-dlp needs it to extract audio).".into());
+        }
         // Title (best-effort; don't fail the whole job if metadata is unavailable).
         let title = run(
             "yt-dlp",
@@ -215,7 +219,13 @@ pub async fn watch_video(
     }
 
     let started = Instant::now();
-    let dir = std::env::temp_dir().join(format!("brain-video-{}", std::process::id()));
+    // Unique per call (pid + nanos) so concurrent runs can't clobber each other's
+    // temp files or clean up the wrong directory.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("brain-video-{}-{}", std::process::id(), nonce));
     let _ = std::fs::create_dir_all(&dir);
 
     let result = async {
