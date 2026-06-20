@@ -88,6 +88,24 @@ const BOARD_PROTOCOL =
   '{"title":"Email Maria","status":"todo"}]. Then call brain_page, then manage_tasks marking card 1 done with ' +
   "evidence, and so on until all are done.";
 
+// Injected EVERY turn as its own system message — NOT baked into settings.system_prompt,
+// because users customize that and existing installs never get prompt updates (same
+// reasoning as BOARD_PROTOCOL). This keeps the model aware of the newer tools regardless
+// of a stale saved prompt — it's why "find my last text" was wrongly refused as
+// "I can't access SMS" when read_imessage was right there.
+const CAPABILITIES_NOTE: ChatMessage = {
+  role: "system",
+  content:
+    "You DO have these tools — never claim you can't do them; call the tool instead:\n" +
+    "• read_imessage / send_imessage — read and send iMessage/SMS via Messages. For 'find/read my " +
+    "texts', 'my last text message', 'what did X text me', use read_imessage (NOT Teams/email).\n" +
+    "• browser_control — drive Google Chrome: open_url, current_url, list_tabs, read_page, click_text, run_js.\n" +
+    "• run_shell — run a shell command on the Mac for anything the dedicated tools don't cover.\n" +
+    "• watch_video — transcribe and analyze a video from a URL or local file path.\n" +
+    "• plus any tools from connected MCP servers (shown alongside the built-ins).\n" +
+    "Confirm before send_imessage, run_shell, and page-mutating browser actions (click_text/run_js).",
+};
+
 function basename(p?: string): string {
   if (!p) return "";
   return p.split("/").filter(Boolean).pop() ?? p;
@@ -1423,6 +1441,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   const messages: ChatMessage[] = [
     { role: "system", content: settings.system_prompt },
     dateMsg,
+    CAPABILITIES_NOTE,
     ...recentHistory,
     ...planMsg,
     { role: "user", content: userContent as string },
