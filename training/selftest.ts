@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import type { ChatMessage, TrajectoryRecord } from "./types.ts";
 import { scoreCase, type EvalCase } from "./eval/cases.ts";
 import { redactText } from "./redact.ts";
+import { mockToolResult } from "./mockenv.ts";
 
 let n = 0;
 const check = (name: string, fn: () => void) => {
@@ -75,6 +76,19 @@ check("synth: decompose case calls manage_tasks first", () => {
   assert.ok(dec, "has a deep/decompose record");
   const firstAsst = dec!.messages.find((m) => m.role === "assistant" && m.tool_calls?.length);
   assert.equal(firstAsst?.tool_calls?.[0].function.name, "manage_tasks");
+});
+
+// --- mock env (teacher distillation) -----------------------------------------
+check("mockenv: known tools return non-empty results", () => {
+  for (const t of ["brain_page", "calendar_events", "web_search", "read_emails", "find_files"]) {
+    assert.ok(mockToolResult(t, "{}").length > 0, `${t} returns a result`);
+  }
+});
+check("mockenv: brain_page echoes the entity name", () => {
+  assert.ok(mockToolResult("brain_page", JSON.stringify({ name: "Acme" })).includes("Acme"));
+});
+check("mockenv: side-effect tools are never really fired", () => {
+  assert.ok(mockToolResult("send_email", "{}").includes("not actually sent"));
 });
 
 console.log(`\n1..${n}\nall ${n} checks passed`);

@@ -29,7 +29,14 @@ FUSED_DIR="${ADAPTER_DIR}/fused"
 echo "==> 1/5  Generate synthetic gold trajectories"
 node --experimental-strip-types training/synthesize.ts
 
-echo "==> 2/5  Export corpus (live + synthetic → MLX ${MODE} format)"
+# Optional: distill gold trajectories from the 26B teacher. Set DISTILL_MODEL to
+# the deep model id served by LM Studio (needs LMSTUDIO_URL too).
+if [[ -n "${LMSTUDIO_URL:-}" && -n "${DISTILL_MODEL:-}" ]]; then
+  echo "==> 1b/5  Distill from teacher (${DISTILL_MODEL})"
+  MODEL="${DISTILL_MODEL}" node --experimental-strip-types training/distill.ts
+fi
+
+echo "==> 2/5  Export corpus (live + distilled + synthetic → MLX ${MODE} format)"
 # MLX-LM expects train.jsonl / valid.jsonl in one dir.
 node --experimental-strip-types training/export.ts --mode "${MODE}" --out "${DATA_DIR}"
 

@@ -36,6 +36,7 @@ const DEFAULT_LIVE = join(
 );
 const liveDir = arg("live", DEFAULT_LIVE);
 const synthFile = arg("synth", "training/data/synthetic.jsonl");
+const distillFile = arg("distill", "training/data/distilled.jsonl");
 const outDir = arg("out", "training/data/export");
 const mode = arg("mode", "sft");
 const validRatio = Number(arg("valid-ratio", "0.1"));
@@ -108,16 +109,21 @@ function hash01(s: string): number {
 // --- build corpus -------------------------------------------------------------
 const sys = canonicalSystem();
 const live = loadLive(liveDir).map(redactRecord);
+const distilled = loadJsonl(distillFile).map(redactRecord);
 let synth = loadJsonl(synthFile).map(redactRecord);
 
-// Cap synthetic share so the fine-tune doesn't drift onto templated phrasing once
-// real data exists. Early on (no live data) this is a no-op and it's all synthetic.
-if (live.length > 0 && synth.length > 0) {
-  const maxSynth = Math.floor((maxSynthRatio / (1 - maxSynthRatio)) * live.length);
-  if (synth.length > maxSynth) synth = synth.slice(0, maxSynth);
+// Cap the GENERATED share (synthetic + distilled) so the fine-tune doesn't drift
+// onto templated/teacher phrasing once real data exists. Early on (no live data)
+// this is a no-op and the corpus is generated-only.
+const generatedCount = synth.length + distilled.length;
+if (live.length > 0 && generatedCount > 0) {
+  const maxGen = Math.floor((maxSynthRatio / (1 - maxSynthRatio)) * live.length);
+  // Trim synthetic first (distilled is the scarcer, higher-value generated source).
+  const overflow = generatedCount - maxGen;
+  if (overflow > 0) synth = synth.slice(0, Math.max(0, synth.length - overflow));
 }
 
-const corpus = [...live, ...synth];
+const corpus = [...live, ...distilled, ...synth];
 const kept = mode === "kto" ? corpus.filter((r) => r.rating !== null) : corpus.filter(isGold);
 
 const train: unknown[] = [];
@@ -134,7 +140,7 @@ const write = (name: string, rows: unknown[]) =>
 write("train.jsonl", train);
 write("valid.jsonl", valid);
 
-console.log(`mode=${mode}  live=${live.length}  synthetic=${synth.length}  kept=${kept.length}`);
+console.log(`mode=${mode}  live=${live.length}  distilled=${distilled.length}  synthetic=${synth.length}  kept=${kept.length}`);
 console.log(`→ ${join(outDir, "train.jsonl")}  (${train.length} train, ${valid.length} valid)`);
 if (!sys) console.log("note: training/system_prompt.txt absent — kept each record's own system message.");
 if (live.length === 0) console.log(`note: no live data at ${liveDir} — corpus is synthetic-only for now.`);

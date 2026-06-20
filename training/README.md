@@ -23,7 +23,9 @@ the why.
 | File | What it does | Runs |
 |---|---|---|
 | `types.ts` | Shared trajectory + example types (mirrors `trajectory.rs`) | — |
-| `synthesize.ts` | Generates gold trajectories for each documented failure mode against a mock tool env; `source:"synthetic"` | `node --experimental-strip-types training/synthesize.ts` |
+| `synthesize.ts` | Generates ~135 gold trajectories (13 scenarios × entity pool × phrasings) for each documented failure mode against a mock tool env; `source:"synthetic"` | `node --experimental-strip-types training/synthesize.ts` |
+| `mockenv.ts` | Deterministic, side-effect-free mock tool results (shared by distillation) | imported by distill |
+| `distill.ts` | Teacher distillation: the 26B produces gold trajectories over seed tasks (mock tools, no side effects); `source:"distilled"` | `LMSTUDIO_URL=… MODEL=<26B> node --experimental-strip-types training/distill.ts` |
 | `redact.ts` | Deterministic structured-PII scrubber (emails, tokens, paths, creds) | imported by export |
 | `export.ts` | Fuse live+synthetic → redact → normalize system prompt → filter → train/valid split, in `sft` or `kto` mode | `node --experimental-strip-types training/export.ts --mode sft` |
 | `eval/cases.ts` | Frozen eval suite + pure `scoreCase` (first-tool / no-narration / confirm-before-send) | — |
