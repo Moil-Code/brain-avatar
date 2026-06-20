@@ -38,6 +38,7 @@ src-tauri/binaries/
 # real transcripts or model weights)
 training/data/
 training/adapters/
+training/.venv/
 
 # Secrets (keep the examples)
 .env

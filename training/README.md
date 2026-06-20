@@ -66,13 +66,47 @@ node --experimental-strip-types training/eval/run.ts        # lints the suite
 
 ## On the Mac Mini (the real run)
 
+**Don't run `pip install mlx-lm` directly** — Homebrew's Python blocks it with
+`externally-managed-environment` (PEP 668). `train.sh` handles this for you: it
+creates a local venv at `training/.venv` and installs mlx-lm there. Just run it.
+
 ```bash
-pip install mlx-lm
+# 1. Baseline the current model so the tracker has a "before" number to beat:
 LMSTUDIO_URL=http://localhost:1234/v1 MODEL=qwen3-8b \
-  node --experimental-strip-types training/eval/run.ts      # baseline the BASE model first
-BASE_MODEL=<qwen3-8b-mlx repo/path> bash training/train.sh  # train + fuse + gate
+  node --experimental-strip-types training/eval/run.ts
+
+# 2. Train + fuse + gate (auto-creates the venv, installs mlx-lm):
+BASE_MODEL=<qwen3-8b-mlx repo/path> bash training/train.sh
+
 # then load the fused model in LM Studio and A/B before defaulting to it
 ```
+
+If you ever want mlx-lm in your own shell (e.g. to poke at it):
+
+```bash
+python3 -m venv training/.venv && source training/.venv/bin/activate
+python -m pip install mlx-lm
+```
+
+## Where do I see the dashboard?
+
+It's **inside the Brain Avatar app** — the **📈 button in the title bar** (next to
+⏰ Automations), which opens the **Training tracker** panel. It shows what's in the
+local corpus (by source / task / tool, ratings, daily growth) and your training-run
+history with eval before→after.
+
+You need to be running the build that includes it (this branch). In the repo:
+
+```bash
+npm install
+npm run tauri dev      # hot-reload dev build — fastest way to see the 📈 tab
+# or: npm run tauri build   # then launch the packaged .app
+```
+
+The tracker reads `~/Library/Application Support/com.moil.brainavatar/` —
+`trajectories/*.jsonl` (what to train on) and `training-runs.jsonl` (when you
+trained, appended by `train.sh`). It's empty until you use the app a bit; run
+`train.sh` once and a run row appears.
 
 ## Deliberate follow-ups (not yet done)
 

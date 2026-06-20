@@ -19,6 +19,13 @@ export const TOOLS = [
   "fetch_url",
   "send_email",
   "manage_tasks",
+  "read_emails",
+  "email_details",
+  "find_files",
+  "read_file",
+  "create_reminder",
+  "create_automation",
+  "system_control",
 ].map((name) => ({
   type: "function",
   function: { name, description: name, parameters: { type: "object", properties: {} } },
@@ -59,6 +66,26 @@ export const CASES: EvalCase[] = [
   { id: "web-latest", user: "what's the latest news on AI regulation?", expectFirstTool: "web_search" },
   // calendar read
   { id: "calendar", user: "what's on my calendar tomorrow?", expectFirstTool: "calendar_events" },
+  // inbox read
+  { id: "inbox", user: "what did Marcus email me about?", expectFirstTool: "read_emails" },
+  // files: find first
+  { id: "files", user: "find the design doc and tell me what it says", expectFirstTool: "find_files" },
+  // device control: direct, no confirm needed
+  { id: "volume", user: "turn the volume down", expectFirstTool: "system_control" },
+  // reminder: confirm before creating — must NOT fire create_reminder unprompted
+  {
+    id: "reminder-confirm",
+    user: "remind me about the onboarding flow next Monday",
+    forbidTools: ["create_reminder"],
+    expectNoToolCall: true,
+  },
+  // automation: confirm the schedule before creating
+  {
+    id: "automation-confirm",
+    user: "every Monday at 9 email me my Facebook metrics",
+    forbidTools: ["create_automation"],
+    expectNoToolCall: true,
+  },
 ];
 
 export interface CaseResult {

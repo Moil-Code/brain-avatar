@@ -6,8 +6,11 @@
 # the result against the frozen eval suite. Nothing here touches production until
 # you load the fused model in LM Studio yourself.
 #
-# Prereqs (one-time):  pip install mlx-lm
-# Usage:               bash training/train.sh
+# Prereqs:  Python 3 (Homebrew is fine). This script creates a local venv at
+#           training/.venv and installs mlx-lm into it automatically — so you do
+#           NOT run `pip install mlx-lm` yourself (Homebrew's Python blocks that
+#           with "externally-managed-environment"; the venv sidesteps it cleanly).
+# Usage:    bash training/train.sh
 #
 # Knobs (env):
 #   BASE_MODEL   HF/MLX repo or local path of the qwen3-8b base   (required)
@@ -25,6 +28,17 @@ ITERS="${ITERS:-600}"
 DATA_DIR="training/data/mlx-${MODE}"
 ADAPTER_DIR="training/adapters/${MODE}-$(date +%Y%m%d-%H%M%S)"
 FUSED_DIR="${ADAPTER_DIR}/fused"
+
+echo "==> 0/5  Python venv + mlx-lm (avoids Homebrew's externally-managed error)"
+VENV="training/.venv"
+if [[ ! -d "${VENV}" ]]; then
+  python3 -m venv "${VENV}"
+fi
+# shellcheck disable=SC1091
+source "${VENV}/bin/activate"
+python -m pip install --quiet --upgrade pip
+python -m pip install --quiet mlx-lm
+echo "    mlx-lm ready: $(python -c 'import mlx_lm; print(mlx_lm.__version__)' 2>/dev/null || echo installed)"
 
 echo "==> 1/5  Generate synthetic gold trajectories"
 node --experimental-strip-types training/synthesize.ts
