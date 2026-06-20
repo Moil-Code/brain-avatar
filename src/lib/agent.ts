@@ -1518,6 +1518,50 @@ async function applyBoardUpdate(
   }
 }
 
+/** Recover tool calls a model emitted as TEXT instead of in the structured
+ *  `tool_calls` field. Some models/templates (notably the 26B reasoning model, or
+ *  any model whose tool-call parser LM Studio doesn't recognize) leak
+ *  `<tool_call>{json}</tool_call>` into `content`. We parse the well-formed JSON
+ *  blocks back into real calls so the action still runs instead of being shown as
+ *  garbage. Malformed/freeform leaks are NOT recovered (too risky) — they're just
+ *  stripped from the displayed answer by stripToolMarkup. */
+export function recoverToolCalls(content: string): ToolCall[] {
+  if (!content || !content.includes("<tool_call")) return [];
+  const out: ToolCall[] = [];
+  const re = /<tool_call[^>]*>\s*(\{[\s\S]*?\})\s*<\/tool_call>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    try {
+      const obj = JSON.parse(m[1]);
+      const name = obj.name ?? obj.function?.name;
+      if (!name || typeof name !== "string") continue;
+      const args = obj.arguments ?? obj.parameters ?? obj.function?.arguments ?? {};
+      out.push({
+        id: `recovered-${out.length}-${Date.now().toString(36)}`,
+        type: "function",
+        function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args) },
+      });
+    } catch {
+      /* not valid JSON — leave it for stripToolMarkup */
+    }
+  }
+  return out;
+}
+
+/** Remove tool-call / tool-response protocol markup from text destined for the
+ *  user, so a leaked `<tool_call|>`, `</tool_call>`, etc. is never shown or spoken.
+ *  Reasoning/harmony markup is already stripped Rust-side; this is the tool-call
+ *  safety net the Rust sanitizer's `<|…|>` gate doesn't cover. */
+export function stripToolMarkup(s: string): string {
+  return s
+    .replace(/<tool_call[^>]*>[\s\S]*?<\/tool_call>/g, "") // full blocks
+    .replace(/<\/?tool_call[^>]*>/g, "") // stray open/close tags
+    .replace(/<\/?tool_response[^>]*>/g, "")
+    .replace(/<\|?tool[_a-z]*\|?>/gi, "") // <tool_call|>, <|tool_calls|>, …
+    .replace(/\|>/g, "")
+    .trim();
+}
+
 /** Run the full tool-calling loop and return the final grounded answer. */
 export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   const { userText, history, settings, onState, onToken, onToolStart, onRoute, onStep, signal } =
@@ -1730,7 +1774,13 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     // we commit to running this round's (possibly side-effecting) tools.
     if (signal?.aborted) throw new Error("aborted");
     const content = res.content ?? "";
-    const toolCalls = Array.isArray(res.tool_calls) ? res.tool_calls : [];
+    let toolCalls = Array.isArray(res.tool_calls) ? res.tool_calls : [];
+    // A model may have emitted a tool call as TEXT (leaked markup) rather than in
+    // the structured field — recover it so the action runs instead of being shown.
+    if (toolCalls.length === 0) {
+      const recovered = recoverToolCalls(content);
+      if (recovered.length) toolCalls = recovered;
+    }
 
     if (toolCalls.length === 0) {
       // Narration guard: the model described work instead of doing it. Nudge once.
@@ -1777,7 +1827,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         });
         continue;
       }
-      const answer = content.trim();
+      const answer = stripToolMarkup(content.trim());
       onStep?.({ id: "answer", label: "Writing the answer", done: true });
       onToken?.(answer);
       return { content: answer, tools: toolsUsed, route };
@@ -1930,7 +1980,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     undefined,
     settings.max_tokens
   );
-  const answer = (final.content ?? "").trim();
+  const answer = stripToolMarkup((final.content ?? "").trim());
   onToken?.(answer);
   return { content: answer, tools: toolsUsed, route };
 }

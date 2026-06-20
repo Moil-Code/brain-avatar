@@ -57,4 +57,26 @@ describe("routeTask model selection", () => {
       expect(r.modelId).not.toContain("mtp");
     }
   });
+
+  it("keeps tool-driven requests on the fast tier even when they say 'analyze'", async () => {
+    // The screenshot case: 'watch the video and provide that analysis' must NOT go
+    // to the fragile 26B (which leaks tool-call markup in the loop).
+    for (const text of [
+      "watch the video and provide that analysis",
+      "check my email and summarize it",
+      "find the file and analyze its contents",
+    ]) {
+      const r = await routeTask({ userText: text, endpoint: ep(LOADED) });
+      expect(r.taskType).toBe("action");
+      expect(r.modelId).toBe("qwen3-8b-mlx");
+    }
+  });
+
+  it("still routes pure synthesis/writing to the deep model", async () => {
+    const r = await routeTask({
+      userText: "write a thorough strategic analysis essay on our market position",
+      endpoint: ep(LOADED),
+    });
+    expect(r.taskType).toBe("deep");
+  });
 });
