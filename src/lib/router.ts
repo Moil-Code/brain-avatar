@@ -96,7 +96,16 @@ const WRITE_RE =
   /\b(write|draft|compose|rewrite|expand|polish)\b.{0,40}\b(post|email|letter|essay|article|report|proposal|memo|script|story|poem|blog|thread|bio|summary)\b/i;
 const LONG_RE = /\b\d{3,}[\s-]?(?:word|words|char)/i;
 
+/** Signals the request needs TOOLS (watch a video, email, calendar, files, web,
+ *  device control…). The deep 26B reasoning model is fragile inside the tool loop
+ *  — it leaks tool-call markup and stalls — so even when a request also reads as
+ *  "deep" (it says "analyze"/"summarize"), keep anything tool-driven on the fast
+ *  qwen3-8b tier, which emits clean structured tool calls. */
+const ACTION_RE =
+  /\b(watch|video|youtube|play|pause|open|launch|app|email|e-?mail|inbox|mail|reply|forward|send|message|text|teams|call|schedule|calendar|meeting|invite|remind|reminder|file|files|folder|find|locate|search|google|browse|website|url|link|fetch|download|post|publish|tweet|facebook|instagram|crm|attachment|automation|volume|brightness|screenshot|shell|run\s+command)\b/i;
+
 function isDeep(text: string): boolean {
+  if (ACTION_RE.test(text)) return false; // tool task → fast tier, never the 26B
   return DEEP_RE.test(text) || WRITE_RE.test(text) || LONG_RE.test(text);
 }
 
