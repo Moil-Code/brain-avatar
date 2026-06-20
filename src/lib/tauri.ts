@@ -181,6 +181,32 @@ export const fetchConversations = (limit?: number) =>
 export const fetchDailyDigest = (date?: string) =>
   invoke<string>("fetch_daily_digest", { date: date ?? "" });
 
+// --- On-device training corpus (local-only; never synced) ---
+/** One captured turn appended to the daily trajectory shard. Mirrors the Rust
+ *  `Trajectory` struct (src-tauri/src/trajectory.rs). */
+export interface TrajectoryRecord {
+  schema_version: number;
+  conversation_id: string;
+  turn_id: string;
+  created_at: string;
+  model_id: string;
+  task_type: string;
+  routed: boolean;
+  user: string;
+  messages: unknown[];
+  tool_events: { round: number; name: string; arguments: string; ok: boolean }[];
+  tools_used: string[];
+  rounds: number;
+  final_answer: string;
+  rating: number | null;
+}
+/** Append one completed turn to today's local training shard. Best-effort. */
+export const saveTrajectory = (trajectory: TrajectoryRecord) =>
+  invoke<void>("save_trajectory", { trajectory });
+/** Attach a thumbs rating (-1/1) to an already-captured turn (the KTO label). */
+export const rateTrajectory = (turnId: string, rating: -1 | 1) =>
+  invoke<void>("rate_trajectory", { turnId, rating });
+
 // --- Local conversation store (durable "recent chats") ---
 export interface ConvSummary {
   id: string;

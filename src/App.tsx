@@ -19,6 +19,7 @@ import {
   pushChat,
   replaceConversation,
   saveMessage,
+  saveTrajectory,
   type ConvSummary,
 } from "./lib/tauri";
 import ChatsView from "./components/Chats";
@@ -363,6 +364,27 @@ export default function App() {
         pushChat(activeConv, "", "assistant", answer).catch(() => {});
         saveMessage(activeConv, "user", text, userMsg.id).catch(() => {});
         saveMessage(activeConv, "assistant", answer, botId).catch(() => {});
+
+        // Capture the full turn for the on-device training corpus (local-only;
+        // never synced). botId is the join key the thumbs rating later updates.
+        if (result.trajectory) {
+          saveTrajectory({
+            schema_version: 1,
+            conversation_id: activeConv,
+            turn_id: botId,
+            created_at: new Date().toISOString(),
+            model_id: result.route?.modelId ?? "",
+            task_type: result.route?.taskType ?? "",
+            routed: result.route?.routed ?? false,
+            user: text,
+            messages: result.trajectory.messages,
+            tool_events: result.trajectory.toolEvents,
+            tools_used: result.tools ?? [],
+            rounds: result.trajectory.rounds,
+            final_answer: answer,
+            rating: null,
+          }).catch(() => {});
+        }
 
         speak(answer, {
           onStart: () => setAvatarState("speaking"),

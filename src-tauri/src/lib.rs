@@ -6,6 +6,7 @@ mod history;
 pub mod llm;
 mod task_board;
 pub mod tools;
+mod trajectory;
 mod tts;
 pub mod voice;
 
@@ -195,6 +196,8 @@ pub fn run() {
             task_board::set_task_board,
             task_board::list_task_boards,
             task_board::clear_task_board,
+            trajectory::save_trajectory,
+            trajectory::rate_trajectory,
             tts::tts_speak,
             tts::tts_stop,
             tts::list_voices,

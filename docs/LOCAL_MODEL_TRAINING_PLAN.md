@@ -148,15 +148,35 @@ args from data that never recorded the call. Until this is fixed, every day of
 Ordering principle: **instrument and measure before you train.** A fine-tune you
 can't evaluate is worse than no fine-tune — it can silently regress tool-calling.
 
+### Decisions locked (2026-06-20)
+
+- **Everything local — no Supabase in the training flow.** Trajectories are captured
+  on-device, never synced. (Pivots 0.1 below away from the cloud `messages` table.)
+- **First fine-tune target: `qwen3-8b`** (the validated production tool tier).
+- **Training runs on the Mac Mini** via MLX-LM; this repo ships the scripts, the
+  human runs them and reports eval numbers ("I script, you run").
+
 ### Phase 0 — Data foundation & eval harness (no training)
 
 The prerequisite for everything. All plumbing, all reversible.
 
-0.1 **Persist full trajectories.** Extend `save_message`/schema to store the
-   assistant `tool_calls` (name + args), the `tool` result rows, and the route
-   (`taskType`, `modelId`) per turn. Add a `turns`/`trajectory` table keyed by
-   `conversation_id` + turn index; keep the existing `messages` table for the UI.
-   *This unblocks all tool-use training.*
+0.1 ✅ **Persist full trajectories — LOCAL (DONE, 2026-06-20).** Implemented as an
+   on-device append-only store, *not* via Supabase (per the decision above):
+   - `src-tauri/src/trajectory.rs` — `save_trajectory` appends one JSON line per
+     completed turn to `<app_config_dir>/trajectories/YYYY-MM-DD.jsonl`;
+     `rate_trajectory` attaches the thumbs label (`-1/1`) to a captured turn by
+     `turn_id`. Local-only; never synced.
+   - `src/lib/agent.ts` — `runAgent` now returns a `trajectory` ({ `messages` the
+     model saw, `toolEvents` [{round, name, arguments, ok}], `rounds` }).
+   - `src/App.tsx` — writes the record (route/model, user text, messages, tool
+     events, final answer, `rating: null`) after each successful turn.
+   - `src/components/ChatPanel.tsx` — 👍/👎 now also calls `rateTrajectory`, so the
+     KTO label is recorded locally even with no cloud sync.
+
+   **On-disk record (schema_version 1), one JSON object per line:**
+   `conversation_id, turn_id, created_at, model_id, task_type, routed, user,`
+   `messages[], tool_events[], tools_used[], rounds, final_answer, rating`.
+   *This is the unblock — the tool-use trajectory we used to discard is now kept.*
 
 0.2 **Add derived outcome labels.** On each turn record: did every tool call
    parse/execute, was there a next-turn user correction, did a send/post get
