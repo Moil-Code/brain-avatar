@@ -84,6 +84,10 @@ async fn main() {
         .route("/mail/read", post(mail_read))
         .route("/teams/unread", post(teams_unread))
         .route("/mail/details", post(mail_details))
+        .route("/mail/attachments", post(mail_attachments))
+        .route("/mail/attachment", post(mail_attachment))
+        .route("/mail/reply", post(mail_reply))
+        .route("/mail/action", post(mail_action))
         .route("/reminder/create", post(reminder_create))
         .route("/teams/message", post(teams_message))
         .route("/chat/push", post(chat_push))
@@ -330,6 +334,56 @@ struct MailDetails {
 }
 async fn mail_details(State(st): State<Arc<AppState>>, Json(p): Json<MailDetails>) -> ToolResult {
     tools::email_details_core(&st.settings, p.query)
+        .await
+        .map_err(err)
+}
+
+#[derive(Deserialize)]
+struct MailAttachments {
+    query: String,
+}
+async fn mail_attachments(
+    State(st): State<Arc<AppState>>,
+    Json(p): Json<MailAttachments>,
+) -> ToolResult {
+    tools::list_attachments_core(&st.settings, p.query)
+        .await
+        .map_err(err)
+}
+
+#[derive(Deserialize)]
+struct MailAttachment {
+    query: String,
+    name: Option<String>,
+}
+async fn mail_attachment(
+    State(st): State<Arc<AppState>>,
+    Json(p): Json<MailAttachment>,
+) -> ToolResult {
+    tools::read_attachment_core(&st.settings, p.query, p.name)
+        .await
+        .map_err(err)
+}
+
+#[derive(Deserialize)]
+struct MailReply {
+    query: String,
+    body: String,
+    reply_all: Option<bool>,
+}
+async fn mail_reply(State(st): State<Arc<AppState>>, Json(p): Json<MailReply>) -> ToolResult {
+    tools::reply_email_core(&st.settings, p.query, p.body, p.reply_all)
+        .await
+        .map_err(err)
+}
+
+#[derive(Deserialize)]
+struct MailAction {
+    query: String,
+    action: String,
+}
+async fn mail_action(State(st): State<Arc<AppState>>, Json(p): Json<MailAction>) -> ToolResult {
+    tools::email_action_core(&st.settings, p.query, p.action)
         .await
         .map_err(err)
 }
