@@ -50,6 +50,15 @@ pub struct Trajectory {
     /// KTO label: -1/1 once the user rates the turn; None until then.
     #[serde(default)]
     pub rating: Option<i8>,
+    /// Provenance so the exporter can mix/weight sources: "live" (real usage),
+    /// "synthetic" (generated), "distilled" (teacher model). Live capture omits it
+    /// → defaults to "live".
+    #[serde(default = "default_source")]
+    pub source: String,
+}
+
+fn default_source() -> String {
+    "live".into()
 }
 
 fn traj_dir(app: &AppHandle) -> Result<PathBuf, String> {

@@ -383,6 +383,7 @@ export default function App() {
             rounds: result.trajectory.rounds,
             final_answer: answer,
             rating: null,
+            source: "live",
           }).catch(() => {});
         }
 

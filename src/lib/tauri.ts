@@ -199,6 +199,8 @@ export interface TrajectoryRecord {
   rounds: number;
   final_answer: string;
   rating: number | null;
+  /** Provenance: "live" | "synthetic" | "distilled". Live capture sends "live". */
+  source: string;
 }
 /** Append one completed turn to today's local training shard. Best-effort. */
 export const saveTrajectory = (trajectory: TrajectoryRecord) =>

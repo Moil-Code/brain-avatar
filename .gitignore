@@ -34,6 +34,11 @@ src-tauri/binaries/
 # Vercel
 .vercel
 
+# Training pipeline — generated data & adapters (regenerated locally; never commit
+# real transcripts or model weights)
+training/data/
+training/adapters/
+
 # Secrets (keep the examples)
 .env
 .env.local
