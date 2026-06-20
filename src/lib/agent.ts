@@ -25,6 +25,11 @@ import {
   readFile,
   runAppleScript,
   systemControl,
+  sendImessage,
+  readImessage,
+  runShell,
+  browserControl,
+  watchVideo,
   sendEmail,
   sendTeamsMessage,
   webSearch,
@@ -39,6 +44,7 @@ import {
   upsertAutomation,
 } from "./automations";
 import { clearTaskBoard, getTaskBoard, setTaskBoard } from "./tauri";
+import { mcpCallTool, mcpListTools, type McpToolInfo } from "./tauri";
 import {
   detectNarration,
   estimateTaskCount,
@@ -82,6 +88,24 @@ const BOARD_PROTOCOL =
   '[{"title":"Pull Josh","status":"in_progress"},{"title":"Summarize deck","status":"todo"},' +
   '{"title":"Email Maria","status":"todo"}]. Then call brain_page, then manage_tasks marking card 1 done with ' +
   "evidence, and so on until all are done.";
+
+// Injected EVERY turn as its own system message — NOT baked into settings.system_prompt,
+// because users customize that and existing installs never get prompt updates (same
+// reasoning as BOARD_PROTOCOL). This keeps the model aware of the newer tools regardless
+// of a stale saved prompt — it's why "find my last text" was wrongly refused as
+// "I can't access SMS" when read_imessage was right there.
+const CAPABILITIES_NOTE: ChatMessage = {
+  role: "system",
+  content:
+    "You DO have these tools — never claim you can't do them; call the tool instead:\n" +
+    "• read_imessage / send_imessage — read and send iMessage/SMS via Messages. For 'find/read my " +
+    "texts', 'my last text message', 'what did X text me', use read_imessage (NOT Teams/email).\n" +
+    "• browser_control — drive Google Chrome: open_url, current_url, list_tabs, read_page, click_text, run_js.\n" +
+    "• run_shell — run a shell command on the Mac for anything the dedicated tools don't cover.\n" +
+    "• watch_video — transcribe and analyze a video from a URL or local file path.\n" +
+    "• plus any tools from connected MCP servers (shown alongside the built-ins).\n" +
+    "Confirm before send_imessage, run_shell, and page-mutating browser actions (click_text/run_js).",
+};
 
 function basename(p?: string): string {
   if (!p) return "";
@@ -146,6 +170,27 @@ function toolStepLabel(name: string, a: any): string {
       return "Listing your apps";
     case "run_applescript":
       return "Controlling the app";
+    case "send_imessage":
+      return a.to ? `Texting ${a.to}` : "Sending an iMessage";
+    case "read_imessage":
+      return a.contact ? `Reading messages with ${a.contact}` : "Reading recent messages";
+    case "run_shell":
+      return a.command ? `Running: ${String(a.command).slice(0, 40)}…` : "Running a shell command";
+    case "browser_control": {
+      const map: Record<string, string> = {
+        open_url: a.target ? `Opening ${shortUrl(a.target)} in Chrome` : "Opening Chrome",
+        current_url: "Checking the active tab",
+        active_tab: "Checking the active tab",
+        list_tabs: "Listing Chrome tabs",
+        read_page: "Reading the page",
+        read_page_text: "Reading the page",
+        click_text: a.target ? `Clicking “${a.target}”` : "Clicking in Chrome",
+        run_js: "Running JavaScript in Chrome",
+      };
+      return map[String(a.action)] ?? "Controlling Chrome";
+    }
+    case "watch_video":
+      return a.source || a.url ? `Watching ${shortUrl(a.source ?? a.url)}` : "Watching the video";
     case "system_control": {
       const map: Record<string, string> = {
         volume_get: "Checking the volume",
@@ -175,9 +220,61 @@ function toolStepLabel(name: string, a: any): string {
       return "Updating the task board";
     case "fetch_daily_conversations":
       return a.date ? `Fetching conversations for ${a.date}` : "Fetching today's conversations";
-    default:
+    default: {
+      const mcp = mcpRouting.get(name);
+      if (mcp) return `Using ${mcp.server}: ${mcp.tool}`;
       return name;
+    }
   }
+}
+
+// --- Dynamic MCP tools ------------------------------------------------------
+// Tools from configured MCP servers are discovered at runtime and merged into
+// the list handed to the model — so adding a server adds capabilities with no
+// code change. `mcpRouting` maps the (sanitized) function name the model emits
+// back to the server+tool it came from, so executeTool can dispatch it.
+let mcpToolDefs: any[] = [];
+const mcpRouting = new Map<string, { server: string; tool: string }>();
+let mcpLoadedAt = 0;
+const MCP_TTL_MS = 60_000;
+
+/** OpenAI function names must match /^[A-Za-z0-9_-]{1,64}$/ — sanitize and cap. */
+function mcpFnName(server: string, tool: string): string {
+  return `mcp_${server}_${tool}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
+}
+
+/** Discover MCP tools (cached briefly). Failures degrade to built-in tools only. */
+async function loadMcpTools(force = false): Promise<any[]> {
+  const now = Date.now();
+  if (!force && mcpLoadedAt !== 0 && now - mcpLoadedAt < MCP_TTL_MS) return mcpToolDefs;
+  try {
+    const { tools } = await mcpListTools();
+    const seen = new Set<string>();
+    mcpRouting.clear();
+    mcpToolDefs = tools.map((t: McpToolInfo) => {
+      let fn = mcpFnName(t.server, t.name);
+      // Guard against name collisions after sanitizing/truncation.
+      while (seen.has(fn)) fn = fn.slice(0, 60) + Math.floor(Math.random() * 9000 + 1000);
+      seen.add(fn);
+      mcpRouting.set(fn, { server: t.server, tool: t.name });
+      const schema =
+        t.inputSchema && typeof t.inputSchema === "object"
+          ? t.inputSchema
+          : { type: "object", properties: {} };
+      return {
+        type: "function",
+        function: {
+          name: fn,
+          description: `[${t.server}] ${t.description || t.name}`,
+          parameters: schema,
+        },
+      };
+    });
+    mcpLoadedAt = now;
+  } catch {
+    /* MCP unavailable — fall back to built-in tools only */
+  }
+  return mcpToolDefs;
 }
 
 export const TOOL_DEFS = [
@@ -617,6 +714,110 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "send_imessage",
+      description:
+        "Send an iMessage/SMS to a phone number or Apple ID email via Messages. Use for 'text X', " +
+        "'iMessage X', 'send a message to X'. This MESSAGES on Andres' behalf: FIRST show him the " +
+        "recipient and exact text and get his explicit 'yes', THEN call again with confirm=true. " +
+        "Calling without confirm=true returns a confirmation prompt instead of sending.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "Phone number (e.g. +15125551234) or Apple ID email" },
+          body: { type: "string", description: "The message text" },
+          confirm: { type: "boolean", description: "Set true ONLY after Andres approves; otherwise omit" },
+        },
+        required: ["to", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_imessage",
+      description:
+        "Read Andres' recent iMessage/SMS history from the Messages database. Use for 'what did X " +
+        "text me', 'read my messages', 'my last texts with X'. Pass `contact` (a phone number or " +
+        "email substring) to filter to one person, or omit it for the most recent across everyone. " +
+        "Read-only; needs Full Disk Access.",
+      parameters: {
+        type: "object",
+        properties: {
+          contact: { type: "string", description: "Optional phone/email substring to filter by" },
+          limit: { type: "integer", description: "How many recent messages (default 20, max 50)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_shell",
+      description:
+        "Run a shell command on Andres' Mac (zsh/sh via /bin/sh -c). This is the broad 'do almost " +
+        "anything on the Mac' tool — use it for tasks the dedicated tools don't cover (file ops, git, " +
+        "scripts, CLI utilities). A hard safety deny-list blocks destructive/credential commands no " +
+        "matter what. Because it is powerful, it is CONFIRM-GATED: call it FIRST without confirm to " +
+        "get back the exact command, show that to Andres, get his explicit 'yes', then call again with " +
+        "confirm=true. NEVER set confirm=true on your own. Output (stdout+stderr) is returned, capped.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "The shell command to run" },
+          confirm: { type: "boolean", description: "Set true ONLY after Andres approves; otherwise omit" },
+        },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_control",
+      description:
+        "Control Andres' actual Google Chrome. Use for 'open X in Chrome', 'what tab am I on', " +
+        "'read this page', 'click the X button/link', 'list my tabs'. `action` is one of: " +
+        "open_url (needs target=URL), current_url, list_tabs, read_page (returns the active tab's " +
+        "visible text), click_text (needs target=the visible link/button text), run_js (needs " +
+        "text=JavaScript — advanced). read_page/current_url/list_tabs are read-only; click_text and " +
+        "run_js act on the page, so Andres is asked to approve them first.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            description: "open_url | current_url | list_tabs | read_page | click_text | run_js",
+          },
+          target: { type: "string", description: "URL (open_url) or visible text to click (click_text)" },
+          text: { type: "string", description: "JavaScript source (run_js)" },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "watch_video",
+      description:
+        "Watch and analyze a video by transcribing its audio — use for 'summarize this YouTube " +
+        "video', 'what does this video say', 'watch this and tell me X'. `source` is a video URL " +
+        "(YouTube, etc.) or a local file path. Optionally pass `question` to answer something " +
+        "specific; otherwise it summarizes. Returns the transcript for you to analyze, so base your " +
+        "answer on it. (Online videos need yt-dlp; local files need ffmpeg.)",
+      parameters: {
+        type: "object",
+        properties: {
+          source: { type: "string", description: "Video URL or local file path" },
+          question: { type: "string", description: "Optional specific question about the video" },
+        },
+        required: ["source"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "read_emails",
       description:
         "Read Andres' most recent inbox emails (sender, subject, date, preview). Use for 'read/" +
@@ -801,12 +1002,78 @@ function buildSchedule(args: any): AutomationSchedule {
   return { kind: "daily", time: String(args.time ?? "09:00") };
 }
 
-async function executeTool(name: string, argsJson: string): Promise<string> {
+/** Build the approval request for a side-effecting call, or null if the call
+ *  needs no confirmation (read-only / non-mutating). */
+function confirmRequestFor(name: string, args: any): ConfirmRequest | null {
+  if (name === "run_shell")
+    return { tool: name, title: "Run this shell command?", detail: String(args.command ?? "") };
+  if (name === "send_imessage")
+    return {
+      tool: name,
+      title: "Send this iMessage?",
+      detail: `To: ${String(args.to ?? "")}\n\n${String(args.body ?? "")}`,
+    };
+  if (name === "browser_control") {
+    const a = String(args.action ?? "").toLowerCase();
+    if (a === "click_text")
+      return { tool: name, title: "Click in Chrome?", detail: `Click: “${String(args.target ?? "")}”` };
+    if (a === "run_js")
+      return {
+        tool: name,
+        title: "Run JavaScript in Chrome?",
+        detail: String(args.text ?? args.target ?? ""),
+      };
+  }
+  return null;
+}
+
+async function executeTool(
+  name: string,
+  argsJson: string,
+  onConfirm?: (req: ConfirmRequest) => Promise<boolean>
+): Promise<string> {
   let args: any = {};
   try {
     args = argsJson ? JSON.parse(argsJson) : {};
   } catch {
     /* tolerate malformed args */
+  }
+
+  // Hard UI gate for side-effecting local tools. When the UI provides onConfirm,
+  // it is AUTHORITATIVE: we show the user the exact action and only run it on an
+  // explicit approval — ignoring whatever `confirm` the model passed (so a prompt-
+  // injected confirm=true can't self-approve).
+  if (onConfirm) {
+    const req = confirmRequestFor(name, args);
+    if (req) {
+      let approved = false;
+      try {
+        approved = await onConfirm(req);
+      } catch {
+        approved = false;
+      }
+      if (!approved) {
+        return `Andres declined this action. Do not run it; ask him what he'd like instead.`;
+      }
+      // Shell/iMessage have a Rust-side confirm gate — pass confirm=true now that
+      // he approved. Browser actions have no such arg, so fall through to dispatch.
+      try {
+        if (name === "run_shell") return await runShell(String(args.command ?? ""), true);
+        if (name === "send_imessage")
+          return await sendImessage(String(args.to ?? ""), String(args.body ?? ""), true);
+      } catch (e) {
+        return `Tool ${name} failed: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    }
+  }
+  // MCP tools are dynamic, so route them before the static switch.
+  const mcp = mcpRouting.get(name);
+  if (mcp) {
+    try {
+      return await mcpCallTool(mcp.server, mcp.tool, args);
+    } catch (e) {
+      return `Tool ${name} failed: ${e instanceof Error ? e.message : String(e)}`;
+    }
   }
   try {
     switch (name) {
@@ -905,6 +1172,30 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
           String(args.action ?? ""),
           typeof args.value === "number" ? args.value : undefined
         );
+      case "send_imessage":
+        return await sendImessage(
+          String(args.to ?? ""),
+          String(args.body ?? ""),
+          typeof args.confirm === "boolean" ? args.confirm : undefined
+        );
+      case "read_imessage":
+        return await readImessage(args.contact ? String(args.contact) : undefined, args.limit);
+      case "run_shell":
+        return await runShell(
+          String(args.command ?? ""),
+          typeof args.confirm === "boolean" ? args.confirm : undefined
+        );
+      case "browser_control":
+        return await browserControl(
+          String(args.action ?? ""),
+          args.target != null ? String(args.target) : undefined,
+          args.text != null ? String(args.text) : undefined
+        );
+      case "watch_video":
+        return await watchVideo(
+          String(args.source ?? args.url ?? ""),
+          args.question ? String(args.question) : undefined
+        );
       case "read_emails":
         return await readEmails(args.count);
       case "read_teams":
@@ -953,6 +1244,17 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
   }
 }
 
+/** A user-facing approval request raised by a side-effecting tool. The UI shows
+ *  it as a modal; resolving true runs the action, false declines it. */
+export interface ConfirmRequest {
+  /** The tool asking for approval (e.g. "run_shell", "send_imessage"). */
+  tool: string;
+  /** Short heading, e.g. "Run this shell command?". */
+  title: string;
+  /** The exact thing that will happen (command text, or recipient + message). */
+  detail: string;
+}
+
 export interface RunAgentOpts {
   userText: string;
   history: ChatMessage[];
@@ -974,6 +1276,10 @@ export interface RunAgentOpts {
   onBoardLoad?: (board: TaskBoard | null) => void;
   /** Fired after every successful board write so the UI can animate the cards. */
   onBoardUpdate?: (board: TaskBoard) => void;
+  /** Ask the user to approve a side-effecting action (shell, iMessage). Returns
+   *  true to run it, false to decline. When absent (e.g. headless automations),
+   *  these tools fall back to their built-in confirm-arg gate. */
+  onConfirm?: (req: ConfirmRequest) => Promise<boolean>;
   signal?: AbortSignal;
 }
 
@@ -1179,12 +1485,17 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   const messages: ChatMessage[] = [
     { role: "system", content: settings.system_prompt },
     dateMsg,
+    CAPABILITIES_NOTE,
     ...recentHistory,
     ...planMsg,
     { role: "user", content: userContent as string },
   ];
 
   const toolsUsed: string[] = [];
+
+  // Merge any MCP server tools into the set offered to the model this turn.
+  const mcpDefs = await loadMcpTools();
+  const toolDefs = mcpDefs.length ? [...TOOL_DEFS, ...mcpDefs] : TOOL_DEFS;
 
   // --- Kanban board layer ----------------------------------------------------
   // A multi-task request is decomposed onto a persistent, per-conversation board
@@ -1291,7 +1602,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         endpoint.token,
         endpoint.model,
         messages,
-        TOOL_DEFS,
+        toolDefs,
         settings.max_tokens,
         toolChoice
       );
@@ -1302,7 +1613,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
           endpoint.token,
           endpoint.model,
           messages,
-          TOOL_DEFS,
+          toolDefs,
           settings.max_tokens
         );
       } else {
@@ -1432,7 +1743,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       onStep?.({ id: stepId, label, done: false });
       onToolStart?.(tc.function.name);
       if (!toolsUsed.includes(tc.function.name)) toolsUsed.push(tc.function.name);
-      const result = await executeTool(tc.function.name, tc.function.arguments);
+      const result = await executeTool(tc.function.name, tc.function.arguments, opts.onConfirm);
       // Only a SUCCESSFUL tool counts toward the done-evidence gate. executeTool
       // returns "Tool X failed: …" / "Unknown tool: X" as a non-empty string on
       // failure — if that satisfied the gate, the model could mark a card done off

@@ -4,7 +4,10 @@ pub mod config;
 mod files;
 mod history;
 pub mod llm;
+mod mcp;
+mod shell;
 mod task_board;
+mod video;
 pub mod tools;
 mod tts;
 pub mod voice;
@@ -207,6 +210,14 @@ pub fn run() {
             files::list_apps,
             files::run_applescript,
             files::system_control,
+            files::send_imessage,
+            files::read_imessage,
+            files::browser_control,
+            shell::run_shell,
+            video::watch_video,
+            mcp::mcp_list_tools,
+            mcp::mcp_call_tool,
+            mcp::mcp_probe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

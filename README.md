@@ -183,6 +183,31 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
   works end to end. macOS asks you to allow controlling each new app the first time
   (Automation prompt). The avatar confirms before any send/post/delete. File reads need
   **Full Disk Access** (System Settings → Privacy) for Documents/Desktop/Downloads.
+- **iMessage** — `read_imessage` reads recent threads from the local Messages database
+  (`~/Library/Messages/chat.db`, needs **Full Disk Access**) and `send_imessage` sends a text
+  via Messages.app. Sending is **confirm-gated**: the avatar shows you the recipient + exact
+  text and only sends after you say yes (`confirm=true`).
+- **Shell** — `run_shell` runs an arbitrary command — the broad "do almost anything on the
+  Mac" lever. It's gated three ways: a hard **deny-list** (blocks `rm -rf /`, `mkfs`, `dd`,
+  `curl|sh`, SSH-key/Keychain reads, `sudo`, … no matter what — the one gate prompt injection
+  can't bypass), an explicit **confirm=true** the model only passes after you approve, and a
+  structured **audit line** (`~/Library/Logs/brain-avatar-tools.log`) for every command.
+- **Browser (Chrome)** — `browser_control` drives your **actual** Google Chrome via AppleScript:
+  `open_url`, `current_url`, `list_tabs`, `read_page` (the active tab's visible text), `click_text`
+  (click a link/button by its visible text), and `run_js` (advanced page scripting). Read actions
+  are free; `click_text`/`run_js` change the page, so they go through the **approval modal**. The JS
+  actions need Chrome's one-time opt-in: **View → Developer → "Allow JavaScript from Apple Events."**
+- **Video** — `watch_video` analyzes a video by transcribing its audio: pass a **URL** (YouTube,
+  etc. — needs `yt-dlp`) or a **local file path** (needs `ffmpeg`), plus an optional question. It
+  extracts a small 16 kHz mono track, runs it through **Groq Whisper**, and hands the transcript to
+  the model to summarize or answer. Long videos are auto-split into chunks. (Visual frame analysis
+  is a planned follow-up, gated on a confirmed local vision model.)
+- **MCP tool servers** — Brain is an **MCP client**: add a Model Context Protocol server in
+  **Settings → MCP tool servers** (command + args, e.g. `npx -y
+  @modelcontextprotocol/server-filesystem ~/Documents`) and all of its tools appear to the
+  model automatically — **no code change per capability**. This is how you grow the avatar's
+  reach in bulk (filesystem, iMessage, Notes, GitHub, Slack, …). Servers are launched over
+  stdio per call; secrets go in each server's `env`. Hit **Test** to see a server's tools.
 - **Hotkeys** — `⌘⇧Space` summon/hide · `⌘⇧V` summon + talk (press to speak, press again
   to send). No always-on mic.
 - **LLM** — OpenAI-compatible LM Studio. The **remote 24GB Mac (`Mac-mini.local:1234`)**

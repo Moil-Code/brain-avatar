@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Automation, FeatureFlags, Settings, TaskBoard, TaskInput } from "./types";
+import type { Automation, FeatureFlags, McpServer, Settings, TaskBoard, TaskInput } from "./types";
 
 // --- Proactive automations (scheduler store + native notifications) ---
 export const getAutomations = () => invoke<Automation[]>("get_automations");
@@ -159,6 +159,37 @@ export const runAppleScript = (script: string) => invoke<string>("run_applescrip
 /** Curated macOS system controls: volume/mute/brightness/media/display sleep/lock. */
 export const systemControl = (action: string, value?: number) =>
   invoke<string>("system_control", { action, value });
+/** Send an iMessage. Pass confirm=true only after Andres approves recipient + text. */
+export const sendImessage = (to: string, body: string, confirm?: boolean) =>
+  invoke<string>("send_imessage", { to, body, confirm });
+/** Read recent iMessage/SMS history (optionally filtered to one contact). Read-only. */
+export const readImessage = (contact?: string, limit?: number) =>
+  invoke<string>("read_imessage", { contact, limit });
+/** Run a shell command. Hard deny-list + confirm=true gate (set only after Andres approves). */
+export const runShell = (command: string, confirm?: boolean) =>
+  invoke<string>("run_shell", { command, confirm });
+/** Curated Google Chrome controls (open_url, current_url, list_tabs, read_page, click_text, run_js). */
+export const browserControl = (action: string, target?: string, text?: string) =>
+  invoke<string>("browser_control", { action, target, text });
+/** Watch a video (URL or local path): transcribe it, return transcript + metadata to analyze. */
+export const watchVideo = (source: string, question?: string) =>
+  invoke<string>("watch_video", { source, question });
+
+// --- MCP (Model Context Protocol) servers ---
+export interface McpToolInfo {
+  server: string;
+  name: string;
+  description: string;
+  inputSchema: unknown;
+}
+/** Discover the tools exposed by every enabled MCP server (spawns each briefly). */
+export const mcpListTools = () =>
+  invoke<{ tools: McpToolInfo[]; errors: string[] }>("mcp_list_tools");
+/** Call a tool on a configured MCP server; returns the tool's text output. */
+export const mcpCallTool = (server: string, tool: string, args: unknown) =>
+  invoke<string>("mcp_call_tool", { server, tool, args });
+/** Settings "Test" — probe one (possibly unsaved) server and report its tools. */
+export const mcpProbe = (server: McpServer) => invoke<string>("mcp_probe", { server });
 
 // --- History sync (optional Supabase mirror) ---
 export const saveMessage = (

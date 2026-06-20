@@ -69,6 +69,17 @@ export interface Settings {
   brain_daemon_token: string;
   tts_voice: string;
   system_prompt: string;
+  mcp_servers: McpServer[];
+}
+
+/** An external MCP (Model Context Protocol) tool server Brain spawns over stdio.
+ *  Its tools are discovered at runtime and offered to the model. */
+export interface McpServer {
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  enabled: boolean;
 }
 
 /** How often an automation fires. Kept as a small tagged union so the UI and the

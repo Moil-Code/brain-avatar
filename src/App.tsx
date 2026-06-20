@@ -4,7 +4,7 @@ import Avatar from "./components/Avatar";
 import ChatPanel from "./components/ChatPanel";
 import SettingsView from "./components/Settings";
 import TitleBar from "./components/TitleBar";
-import { runAgent } from "./lib/agent";
+import { runAgent, type ConfirmRequest } from "./lib/agent";
 import {
   appendTurn,
   cancelGeneration,
@@ -168,6 +168,11 @@ export default function App() {
   // Kanban board for the active conversation (null until the agent creates one).
   const [board, setBoard] = useState<TaskBoard | null>(null);
   const [boardExpanded, setBoardExpanded] = useState(false);
+  // Pending approval modal for side-effecting tools (shell, iMessage). `resolve`
+  // is the agent's awaiting promise — Approve/Deny settle it.
+  const [confirmReq, setConfirmReq] = useState<
+    { req: ConfirmRequest; resolve: (ok: boolean) => void } | null
+  >(null);
   const activeConvRef = useRef<string>(activeConv);
   useEffect(() => {
     activeConvRef.current = activeConv;
@@ -313,6 +318,8 @@ export default function App() {
           modelOverride,
           conversationId: activeConv,
           signal: ac.signal,
+          onConfirm: (req) =>
+            new Promise<boolean>((resolve) => setConfirmReq({ req, resolve })),
           onBoardLoad: (b) => {
             if (b === null || b.conversation_id === activeConvRef.current) setBoard(b);
           },
@@ -652,6 +659,11 @@ export default function App() {
   const handleStop = useCallback(() => {
     queueRef.current = [];
     syncQueue();
+    // Decline any pending approval so the agent's awaiting tool unblocks.
+    setConfirmReq((c) => {
+      c?.resolve(false);
+      return null;
+    });
     cancelGeneration(); // kill any in-flight model generation on the server immediately
     abortRef.current?.abort();
     listenAbortRef.current?.abort();
@@ -803,6 +815,37 @@ export default function App() {
           }}
           onClose={() => setShowSettings(false)}
         />
+      )}
+      {confirmReq && (
+        <div className="confirm-overlay">
+          <div className="confirm-modal">
+            <h3>{confirmReq.req.title}</h3>
+            <pre className="confirm-detail">{confirmReq.req.detail}</pre>
+            <p className="confirm-note">
+              Brain will only do this if you approve. Make sure it’s exactly what you want.
+            </p>
+            <div className="confirm-actions">
+              <button
+                className="ghost-btn"
+                onClick={() => {
+                  confirmReq.resolve(false);
+                  setConfirmReq(null);
+                }}
+              >
+                Decline
+              </button>
+              <button
+                className="primary-btn"
+                onClick={() => {
+                  confirmReq.resolve(true);
+                  setConfirmReq(null);
+                }}
+              >
+                Approve & run
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
