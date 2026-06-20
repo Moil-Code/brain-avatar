@@ -297,8 +297,13 @@ pub async fn llm_probe(base_url: String, token: Option<String>) -> ProbeResult {
                     others.push(id);
                 }
             }
-            loaded.extend(others);
-            return ProbeResult { ok: true, models: loaded, error: None };
+            // Show ONLY the currently-loaded models — the picker and router should
+            // reflect what's actually resident on the 24GB box, not every model ever
+            // downloaded (that's the "noise"). Fall back to the full list only on a
+            // cold start (nothing loaded yet) so a JIT endpoint still offers choices
+            // and the avatar is never stranded with an empty list.
+            let models = if loaded.is_empty() { others } else { loaded };
+            return ProbeResult { ok: true, models, error: None };
         }
     }
 
