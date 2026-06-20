@@ -12,6 +12,9 @@ vi.mock("./llm", () => ({
 }));
 vi.mock("./router", () => ({
   routeTask: vi.fn(async () => ({ modelId: "qwen3-8b", taskType: "deep", enhanced: "", routed: false })),
+  // Default: never short-circuit, so the existing board tests run unchanged. The
+  // preflight test below overrides this for one case.
+  missingInput: vi.fn(() => null),
 }));
 
 // Mock the Tauri bridge: scripted llmComplete, an in-memory board that mimics the
@@ -53,7 +56,8 @@ vi.mock("./tauri", () => ({
 }));
 
 import { runAgent } from "./agent";
-import { brainPage } from "./tauri"; // the mocked wrapper, for call-count assertions
+import { brainPage, llmComplete } from "./tauri"; // mocked wrappers, for call-count assertions
+import { missingInput } from "./router"; // mocked, for the preflight short-circuit test
 
 const settings = { system_prompt: "you are brain", max_tokens: 4096 } as any;
 
@@ -399,5 +403,40 @@ describe("real-model failure patterns (found via live testing)", () => {
     // The existing board was NOT cleared — its cards carried through to done.
     expect(store!.tasks.some((c) => c.title === "Pull Josh")).toBe(true);
     expect(store!.tasks.every((c) => c.status === "done")).toBe(true);
+  });
+});
+
+describe("missing-input handling — ask first, don't grind", () => {
+  it("returns the clarifying question instantly when the preflight fires — no LLM call", async () => {
+    (missingInput as any).mockReturnValueOnce("Paste the video link and I'll watch it.");
+    const res = await runAgent({
+      userText: "watch this video and tell me what works",
+      history: [],
+      settings,
+      conversationId: "mi1",
+    } as any);
+    expect(res.content).toMatch(/paste the video link/i);
+    // The whole point: it did NOT spin up the slow model loop or a board.
+    expect(llmComplete).not.toHaveBeenCalled();
+    expect(res.tools).toHaveLength(0);
+    expect(store).toBeNull();
+  });
+
+  it("stops and asks when the model calls ask_user — runs no other tool, builds no board", async () => {
+    llmScript = [
+      // The model recognizes the gap and asks instead of guessing.
+      { content: "", tool_calls: [tool("a", "ask_user", { question: "Which deck do you mean — Q3 or Q4?" })] },
+    ];
+    const res = await runAgent({
+      userText: "summarize the deck and email it to the team",
+      history: [],
+      settings,
+      conversationId: "mi2",
+    } as any);
+    expect(res.content).toMatch(/which deck/i);
+    expect(res.tools).toContain("ask_user");
+    // No domain tool ran and no board was persisted around the unanswerable ask.
+    expect(brainPage).not.toHaveBeenCalled();
+    expect(store).toBeNull();
   });
 });

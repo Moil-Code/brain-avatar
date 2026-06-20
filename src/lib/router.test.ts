@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routeTask, usableModels } from "./router";
+import { missingInput, routeTask, usableModels } from "./router";
 
 // The validated stack plus the junk that LM Studio sometimes also advertises:
 // an experimental 27B qwen fine-tune that fails to load on the 24GB box, and an
@@ -56,5 +56,60 @@ describe("routeTask model selection", () => {
       const r = await routeTask({ userText: text, endpoint: ep(LOADED) });
       expect(r.modelId).not.toContain("mtp");
     }
+  });
+});
+
+describe("missingInput preflight", () => {
+  it("asks for the link when told to watch a video with no URL (the reported case)", () => {
+    const q = missingInput(
+      "watch this video and then tell me what works, what doesn't, what it's about, and how it " +
+        "could be better designed for higher visibility and conversion"
+    );
+    expect(q).toBeTruthy();
+    expect(q).toMatch(/link|url/i);
+  });
+
+  it("proceeds (no ask) once a URL is present in the request", () => {
+    expect(
+      missingInput("watch this video https://youtu.be/abc123 and tell me what works")
+    ).toBeNull();
+    expect(
+      missingInput("summarize the video at https://www.youtube.com/watch?v=xyz")
+    ).toBeNull();
+  });
+
+  it("proceeds when the link was given earlier in the thread", () => {
+    expect(
+      missingInput("ok now watch that video and tell me what works", {
+        priorText: "here it is https://youtu.be/abc123",
+      })
+    ).toBeNull();
+  });
+
+  it("proceeds for a local video file path", () => {
+    expect(missingInput("transcribe this video /Users/me/demo.mp4")).toBeNull();
+  });
+
+  it("does not fire without a consume-verb (a reference is not a request to open it)", () => {
+    expect(missingInput("I want to make this video go viral, any tips?")).toBeNull();
+    expect(missingInput("this link converts well, what do you think of the copy?")).toBeNull();
+  });
+
+  it("stays out of the way for ordinary requests", () => {
+    expect(missingInput("what's on my calendar today?")).toBeNull();
+    expect(missingInput("summarize my last email from Tonya")).toBeNull();
+    expect(missingInput("analyze this strategy and write a report")).toBeNull();
+  });
+
+  it("does not fire when the user attached a file (handled by the vision/doc path)", () => {
+    expect(
+      missingInput("watch this video and tell me what works", { hasAttachment: true })
+    ).toBeNull();
+  });
+
+  it("asks for a plain link reference with no URL", () => {
+    const q = missingInput("summarize this link for me");
+    expect(q).toBeTruthy();
+    expect(q).toMatch(/link|url/i);
   });
 });

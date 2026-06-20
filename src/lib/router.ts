@@ -100,6 +100,50 @@ function isDeep(text: string): boolean {
   return DEEP_RE.test(text) || WRITE_RE.test(text) || LONG_RE.test(text);
 }
 
+// --- Missing-input preflight -----------------------------------------------
+// A reference to a video/link the user wants the avatar to CONSUME ("watch this
+// video", "summarize that link"). Requires a consume-verb so it doesn't fire on
+// "make this video go viral" (a reference with no intent for us to open it).
+const CONSUME_RE =
+  /\b(watch|transcrib(?:e|ing)|summari[sz]e|analy[sz]e|review|recap|critique|break\s?down|look at|go over|tell me (?:what|about)|what(?:'?s| is| does| it about))\b/i;
+const VIDEO_REF_RE =
+  /\b(?:this|that|the|attached|following|above|below|my)\s+(?:video|youtube(?:\s*video)?|clip|recording|reel|short|webinar|livestream|stream|footage)\b/i;
+const LINK_REF_RE = /\b(?:this|that|the|following|above)\s+(?:link|url)\b/i;
+
+// A locator the avatar can actually act on: an http(s)/www URL, a bare YouTube
+// id, or a local video file path. If ANY of these is present we have what we
+// need — never ask.
+const LOCATOR_RE =
+  /\bhttps?:\/\/|\bwww\.\S+\.\w|\b(?:youtu\.be\/|youtube\.com\/(?:watch|shorts))|\S+\.(?:mp4|mov|mkv|webm|avi|m4v)\b/i;
+
+/**
+ * Instant, model-free check for the one missing-input case nothing else can
+ * recover: the user wants us to watch/read a video or link but supplied no
+ * locator anywhere in this turn OR the recent thread, and attached no file.
+ * Returns a ready-to-send clarifying question, or null to proceed normally.
+ *
+ * Deliberately NARROW (video/link only, consume-verb required). Files and emails
+ * are intentionally excluded — find_files and the email search tools can resolve
+ * those by name, so blocking them would manufacture false "I need a path" asks.
+ * Everything this doesn't catch is handled by the model-driven ask_user tool.
+ */
+export function missingInput(
+  userText: string,
+  opts?: { priorText?: string; hasAttachment?: boolean }
+): string | null {
+  if (opts?.hasAttachment) return null;
+  const text = userText ?? "";
+  if (!CONSUME_RE.test(text)) return null;
+  const wantsVideo = VIDEO_REF_RE.test(text);
+  const wantsLink = LINK_REF_RE.test(text);
+  if (!wantsVideo && !wantsLink) return null;
+  // A locator in THIS turn or earlier in the conversation means we can proceed.
+  if (LOCATOR_RE.test(text) || (opts?.priorText && LOCATOR_RE.test(opts.priorText))) return null;
+  return wantsVideo
+    ? "Happy to — paste the video link (a YouTube URL or any video URL) and I'll watch it and tell you what works, what doesn't, and how to improve it."
+    : "Sure — send me the link (a URL) and I'll take a look.";
+}
+
 /**
  * The routing layer: pick the best LOADED model for the request. No network call —
  * routing is a local heuristic (default → fast tool tier qwen3-8b; deep work → 26B;

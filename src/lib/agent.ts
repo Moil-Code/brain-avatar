@@ -1,5 +1,5 @@
 import { resolveBaseEndpoint } from "./llm";
-import { routeTask, type Route } from "./router";
+import { missingInput, routeTask, type Route } from "./router";
 import {
   brainPage,
   brainSearch,
@@ -108,6 +108,9 @@ const CAPABILITIES_NOTE: ChatMessage = {
     "• run_shell — run a shell command on the Mac for anything the dedicated tools don't cover.\n" +
     "• watch_video — transcribe and analyze a video from a URL or local file path.\n" +
     "• plus any tools from connected MCP servers (shown alongside the built-ins).\n" +
+    "• ask_user — when a request is missing something you NEED (a video/link URL, which file, a " +
+    "recipient, a date), call ask_user with one specific question and stop. Don't guess, don't build " +
+    "a task board around the gap, don't do partial work — ask first.\n" +
     "Confirm before send_imessage, run_shell, and page-mutating browser actions (click_text/run_js).",
 };
 
@@ -290,6 +293,28 @@ async function loadMcpTools(force = false): Promise<any[]> {
 }
 
 export const TOOL_DEFS = [
+  {
+    type: "function",
+    function: {
+      name: "ask_user",
+      description:
+        "Ask Andres for a piece of information you NEED but don't have, then STOP and wait for his " +
+        "reply. Use this the MOMENT a request is missing something you can't infer or look up — a " +
+        "video/link URL, which of several files he means, a recipient, a date, an amount. Do NOT " +
+        "guess, do NOT start a task board, and do NOT do partial work around the gap: ask first. " +
+        "Pass a single, specific question. This ends your turn; he'll answer and you'll continue.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: {
+            type: "string",
+            description: "The specific thing you need from Andres, phrased as a short question.",
+          },
+        },
+        required: ["question"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -1529,6 +1554,27 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   const docs = attachments.filter((a) => a.kind === "doc" && a.text);
   const hasImage = images.length > 0;
 
+  // Instant missing-input preflight (no model round, no endpoint load). If the user
+  // clearly wants the avatar to consume a video or link but gave no locator here OR
+  // earlier in the thread, ask for it immediately. Without this, "watch this video"
+  // with no URL gets forced through the multi-task board loop and burns minutes on a
+  // slow model before it thinks to ask. Narrow by design; the ask_user tool is the
+  // general fallback for missing inputs this doesn't catch.
+  const priorText = history
+    .slice(-6)
+    .map((m) => (typeof m.content === "string" ? m.content : ""))
+    .join("\n");
+  const clarify = missingInput(userText, { priorText, hasAttachment: attachments.length > 0 });
+  if (clarify) {
+    onStep?.({ id: "answer", label: "Asking for a detail", done: true });
+    onToken?.(clarify);
+    return {
+      content: clarify,
+      tools: [],
+      route: { modelId: "", taskType: "clarify", enhanced: userText, routed: false },
+    };
+  }
+
   // Routing layer: find the reachable endpoint + its loaded models, classify the
   // task, pick the best model, and rewrite the request into a sharper instruction.
   // A model picked from the menu (modelOverride) bypasses routing entirely.
@@ -1666,7 +1712,8 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       content:
         `This request has about ${taskCount} distinct tasks. FIRST call manage_tasks to create one ` +
         `card per task (set the first to in_progress); then work them one at a time with real tools. ` +
-        `Do not write the plan in prose.`,
+        `Do not write the plan in prose. BUT if a required input is missing (a link/file/recipient you ` +
+        `weren't given), call ask_user for it instead of building a board around the gap.`,
     });
   }
   reinjectBoard();
@@ -1781,6 +1828,28 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       onStep?.({ id: "answer", label: "Writing the answer", done: true });
       onToken?.(answer);
       return { content: answer, tools: toolsUsed, route };
+    }
+
+    // Clarify-and-stop. If the model asked for a missing input, surface that
+    // question and END the turn — before running any other tool or spinning up a
+    // board around a request it can't complete. This is the model-driven complement
+    // to the deterministic preflight: it catches gaps no regex can (a missing
+    // recipient, which of two files, an ambiguous date). Checked FIRST so an
+    // ask_user emitted alongside a premature watch_video/send_email wins.
+    const askCall = toolCalls.find((tc) => tc.function.name === "ask_user");
+    if (askCall) {
+      let question = "";
+      try {
+        const a = askCall.function.arguments ? JSON.parse(askCall.function.arguments) : {};
+        question = String(a.question ?? "").trim();
+      } catch {
+        /* fall through to the default prompt */
+      }
+      if (!question) question = "I need a bit more information to do that — could you clarify?";
+      if (!toolsUsed.includes("ask_user")) toolsUsed.push("ask_user");
+      onStep?.({ id: "answer", label: "Asking for a detail", done: true });
+      onToken?.(question);
+      return { content: question, tools: toolsUsed, route };
     }
 
     // Board-from-tools fallback. On a multi-task request the model SHOULD call
