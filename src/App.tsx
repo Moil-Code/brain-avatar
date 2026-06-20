@@ -784,6 +784,9 @@ export default function App() {
         board={board}
         boardExpanded={boardExpanded}
         onToggleBoard={() => setBoardExpanded((v) => !v)}
+        syncApiUrl={settings?.sync_api_url}
+        syncToken={settings?.sync_token}
+        conversationId={activeConv}
       />
       {showAutomations && (
         <AutomationsView

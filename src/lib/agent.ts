@@ -10,6 +10,7 @@ import {
   createReminder,
   createTeamsMeeting,
   emailDetails,
+  fetchDailyDigest,
   fetchUrl,
   generateImage,
   webTask,
@@ -217,6 +218,8 @@ function toolStepLabel(name: string, a: any): string {
       return "Preparing the Teams message";
     case "manage_tasks":
       return "Updating the task board";
+    case "fetch_daily_conversations":
+      return a.date ? `Fetching conversations for ${a.date}` : "Fetching today's conversations";
     default: {
       const mcp = mcpRouting.get(name);
       if (mcp) return `Using ${mcp.server}: ${mcp.tool}`;
@@ -965,6 +968,27 @@ export const TOOL_DEFS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "fetch_daily_conversations",
+      description:
+        "Retrieve today's (or any past date's) full conversation transcripts from the cloud " +
+        "history. Returns all conversations for that date with their messages, formatted for " +
+        "reading. Use this as the primary data source for the nightly brain enrichment automation — " +
+        "call it first, then extract key insights (decisions, people, projects, commitments, " +
+        "lessons learned) and push each new insight to gbrain with push_chat. Date defaults to today.",
+      parameters: {
+        type: "object",
+        properties: {
+          date: {
+            type: "string",
+            description: "Date in YYYY-MM-DD format. Omit or leave empty for today.",
+          },
+        },
+      },
+    },
+  },
 ];
 
 /** Map the flat create_automation args into a typed schedule. */
@@ -1192,6 +1216,26 @@ async function executeTool(
           String(args.recipient_email ?? ""),
           String(args.message ?? "")
         );
+      case "fetch_daily_conversations": {
+        const raw = await fetchDailyDigest(args.date ? String(args.date) : undefined);
+        try {
+          const digest = JSON.parse(raw);
+          const convs: any[] = digest.conversations ?? [];
+          if (convs.length === 0) return `No conversations found for ${digest.date ?? "that date"}.`;
+          const lines: string[] = [`${convs.length} conversation(s) on ${digest.date}:\n`];
+          for (const c of convs) {
+            lines.push(`--- Conversation ${c.conversation_id} ---`);
+            for (const m of c.messages ?? []) {
+              const ts = m.created_at ? new Date(m.created_at).toLocaleTimeString() : "";
+              lines.push(`[${String(m.role).toUpperCase()}${ts ? " " + ts : ""}]: ${m.content}`);
+            }
+            lines.push("");
+          }
+          return lines.join("\n");
+        } catch {
+          return raw;
+        }
+      }
       default:
         return `Unknown tool: ${name}`;
     }

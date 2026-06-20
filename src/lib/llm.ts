@@ -1,4 +1,5 @@
 import { llmProbe } from "./tauri";
+import { usableModels } from "./router";
 import type { ChatMessage, LlmEndpoint, Settings, ToolCall } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -19,13 +20,19 @@ export async function resolveEndpoint(
   opts: { preferDeep?: boolean } = {}
 ): Promise<LlmEndpoint> {
   const pickModel = (models: string[]) => {
+    // An explicit, still-loaded choice always wins (manual override from settings).
     if (settings.model && models.includes(settings.model)) return settings.model;
     if (settings.model && models.length === 0) return settings.model;
-    const find = (re: RegExp) => models.find((m) => re.test(m.toLowerCase()));
+    // Otherwise route only among models we actually run (drops embeddings and
+    // experimental/oversized builds like a 27B qwen fine-tune that won't fit).
+    const ms = usableModels(models);
+    const find = (re: RegExp) => ms.find((m) => re.test(m.toLowerCase()));
     if (opts.preferDeep) {
-      return find(/a4b|a3b|moe/) ?? find(/2[4-9]b|3[0-9]b/) ?? find(/gemma/) ?? models[0] ?? settings.model ?? "";
+      return find(/a4b|a3b|moe/) ?? find(/2[4-9]b|3[0-9]b/) ?? find(/gemma/) ?? ms[0] ?? models[0] ?? settings.model ?? "";
     }
-    return find(/qwen/) ?? find(/gemma.*e[0-9]+b/) ?? find(/(8b|7b|4b|3b|2b|mini)/) ?? models[0] ?? settings.model ?? "";
+    return (
+      find(/qwen/) ?? find(/gemma.*e[0-9]+b/) ?? find(/(8b|7b|4b|3b|2b|mini)/) ?? ms[0] ?? models[0] ?? settings.model ?? ""
+    );
   };
 
   const tryLocal = async (): Promise<LlmEndpoint | null> => {
@@ -108,17 +115,18 @@ export async function resolveBaseEndpoint(settings: Settings): Promise<BaseEndpo
 }
 
 /** List the models loaded on the reachable endpoint (remote first), or [] if
- *  none reachable. Used to populate the model-picker menu. Never throws. */
+ *  none reachable. Used to populate the model-picker menu — filtered to the models
+ *  we actually run (no embeddings, no experimental/oversized builds). Never throws. */
 export async function probeModels(settings: Settings): Promise<string[]> {
   if (settings.lm_studio_remote_url) {
     const p = await llmProbe(settings.lm_studio_remote_url, settings.lm_studio_remote_token).catch(
       () => null
     );
-    if (p?.ok && p.models.length) return p.models;
+    if (p?.ok && p.models.length) return usableModels(p.models);
   }
   if (settings.lm_studio_local_url) {
     const p = await llmProbe(settings.lm_studio_local_url).catch(() => null);
-    if (p?.ok) return p.models;
+    if (p?.ok) return usableModels(p.models);
   }
   return [];
 }

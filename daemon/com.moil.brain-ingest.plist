@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Brain chat-inbox ingest — fires once nightly at 23:00 on the brain owner (Mac Mini).
+  Processes ~/.brain-chat-inbox/pushed.json into gbrain so MacBook chats are searchable.
+
+  First: edit daemon/run-brain-ingest.sh and fill in the correct gbrain ingest command.
+
+  Install:
+    cp daemon/com.moil.brain-ingest.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.moil.brain-ingest.plist
+
+  Run manually:
+    launchctl start com.moil.brain-ingest
+
+  Note: StartCalendarInterval (not KeepAlive) — this is a one-shot nightly job, not a daemon.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.moil.brain-ingest</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/jarvisurrego/brain-avatar/daemon/run-brain-ingest.sh</string>
+  </array>
+
+  <!-- Fire once nightly at 23:00 -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>23</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/jarvisurrego/Library/Logs/brain-ingest.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jarvisurrego/Library/Logs/brain-ingest.log</string>
+
+  <!-- Run as the user's login session so HOME, PATH, and keychain are available -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/jarvisurrego</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/jarvisurrego/.bun/bin</string>
+  </dict>
+</dict>
+</plist>

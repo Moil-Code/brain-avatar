@@ -23,6 +23,11 @@ interface Props {
   board?: Board | null;
   boardExpanded?: boolean;
   onToggleBoard?: () => void;
+  /** Sync API URL + token for posting feedback ratings (optional — omit to hide buttons). */
+  syncApiUrl?: string;
+  syncToken?: string;
+  /** Active conversation id — needed to associate feedback with the right conversation. */
+  conversationId?: string;
 }
 
 function aid() {
@@ -98,12 +103,45 @@ export default function ChatPanel({
   board,
   boardExpanded,
   onToggleBoard,
+  syncApiUrl,
+  syncToken,
+  conversationId,
 }: Props) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attaching, setAttaching] = useState(false);
+  const [ratings, setRatings] = useState<Record<string, -1 | 1>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Hydrate ratings from localStorage so they survive page reload.
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("msg-ratings") ?? "{}");
+      setRatings(stored);
+    } catch { /* ignore */ }
+  }, []);
+
+  const handleRate = async (messageId: string, rating: -1 | 1) => {
+    setRatings((r) => ({ ...r, [messageId]: rating }));
+    // Persist locally so ratings survive page reload.
+    try {
+      const stored = JSON.parse(localStorage.getItem("msg-ratings") ?? "{}");
+      localStorage.setItem("msg-ratings", JSON.stringify({ ...stored, [messageId]: rating }));
+    } catch { /* ignore */ }
+    // Also sync to cloud if configured (optional).
+    if (!syncApiUrl || !conversationId) return;
+    try {
+      await fetch(`${syncApiUrl}/api/feedback`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${syncToken ?? ""}`,
+        },
+        body: JSON.stringify({ conversationId, messageId, rating }),
+      });
+    } catch { /* best-effort */ }
+  };
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -194,6 +232,24 @@ export default function ChatPanel({
                 {m.images.map((src, i) => (
                   <img key={i} className="msg-image" src={src} alt="generated" />
                 ))}
+              </div>
+            )}
+            {m.role === "assistant" && !m.pending && (
+              <div className="msg-feedback">
+                <button
+                  className={`fb-btn${ratings[m.id] === 1 ? " fb-active" : ""}`}
+                  title="Good response"
+                  onClick={() => handleRate(m.id, 1)}
+                >
+                  👍
+                </button>
+                <button
+                  className={`fb-btn${ratings[m.id] === -1 ? " fb-active" : ""}`}
+                  title="Poor response"
+                  onClick={() => handleRate(m.id, -1)}
+                >
+                  👎
+                </button>
               </div>
             )}
           </div>

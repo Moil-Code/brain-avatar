@@ -9,15 +9,42 @@ export interface Route {
 
 const lc = (m: string) => m.toLowerCase();
 
+/** Heavy tiers (deep MoE / dense 12B+). Used both to PICK them for deep/vision work
+ *  and to keep them OUT of the fast tool tier. */
+const BIG_RE = /a4b|a3b|moe|1[2-9]b|[2-9][0-9]b/;
+
+/** Embedding models — never chat candidates. */
+const EMBED_RE = /embed|bge|nomic/;
+
+/** Experimental / non-stack builds that must NEVER be auto-selected: community
+ *  fine-tunes, speculative-decode drafts, and oversized one-offs that don't fit the
+ *  24GB box (e.g. `qwen3.6-27b-mtp-pi-tune` — a 27B that fails to load). The validated
+ *  stack is qwen3-8b (tool) + gemma-4-12b (mid/vision) + gemma-4-26b-a4b (deep). These
+ *  are dropped from routing and from the picker; nothing here is a model we run. */
+const DENY_RE = /mtp|pi-?tune|abliterated|uncensored|-draft\b|\bdraft\b|distill/;
+
+/** Drop embeddings and denied experimental builds from any candidate list, so the
+ *  router and the model picker only ever consider models we actually run. Falls back
+ *  to the raw list if filtering would leave nothing (never strand the avatar). */
+export function usableModels(models: string[]): string[] {
+  const kept = models.filter((m) => {
+    const l = lc(m);
+    return !EMBED_RE.test(l) && !DENY_RE.test(l);
+  });
+  return kept.length ? kept : models.filter((m) => !EMBED_RE.test(lc(m)));
+}
+
 /** DEEP model: the 26B-A4B MoE. A *reasoning* model — emits a long think phase, so
  *  it's slow to first token (60–120s) but best at synthesis, long-form writing, and
  *  nuanced analysis. Reserve it for tasks that genuinely need depth. Falls back to
  *  any big dense model, then the fast model. */
 function pickPrimary(models: string[]): string {
+  const ms = usableModels(models);
   return (
-    models.find((m) => /a4b|a3b|moe/.test(lc(m))) ??
-    models.find((m) => /2[4-9]b|3[0-9]b/.test(lc(m))) ??
-    models.find((m) => !/embed/.test(lc(m))) ??
+    ms.find((m) => /a4b|a3b|moe/.test(lc(m))) ??
+    ms.find((m) => /2[4-9]b|3[0-9]b/.test(lc(m))) ??
+    ms.find((m) => !EMBED_RE.test(lc(m))) ??
+    ms[0] ??
     models[0] ??
     ""
   );
@@ -26,15 +53,18 @@ function pickPrimary(models: string[]): string {
 /** FAST model: the tool/JSON tier — qwen3-8b (MLX). Validated for clean structured
  *  tool calls and coherent multi-turn round-trips, and with thinking disabled it
  *  routes tools quickly instead of burning 60–120s like the 26B. Used for tool/action
- *  tasks (email, calendar, files, web, apps, quick answers). The Gemma 4 E-series
- *  (e4b) is kept as a benched challenger; the dense 12B is the heavier fallback. */
+ *  tasks (email, calendar, files, web, apps, quick answers). MUST stay small — a big
+ *  qwen variant (e.g. a 27B fine-tune) is explicitly excluded so it can't hijack the
+ *  fast tier. The Gemma 4 E-series (e4b) is the benched challenger; the dense 12B is
+ *  the heavier fallback. */
 function pickFast(models: string[]): string {
+  const ms = usableModels(models);
   return (
-    models.find((m) => /qwen/.test(lc(m))) ??
-    models.find((m) => /gemma/.test(lc(m)) && /e[0-9]+b/.test(lc(m))) ??
-    models.find((m) => /gemma/.test(lc(m)) && /1[0-9]b/.test(lc(m))) ??
-    models.find((m) => /vl|vision/.test(lc(m))) ??
-    models.find((m) => /(7b|8b|4b|3b|2b|mini)/.test(lc(m))) ??
+    ms.find((m) => /qwen/.test(lc(m)) && !BIG_RE.test(lc(m))) ??
+    ms.find((m) => /gemma/.test(lc(m)) && /e[0-9]+b/.test(lc(m))) ??
+    ms.find((m) => /(7b|8b|4b|3b|2b|mini)/.test(lc(m)) && !BIG_RE.test(lc(m))) ??
+    ms.find((m) => /gemma/.test(lc(m)) && /1[0-9]b/.test(lc(m))) ??
+    ms.find((m) => /vl|vision/.test(lc(m))) ??
     pickPrimary(models)
   );
 }
@@ -44,9 +74,10 @@ function pickFast(models: string[]): string {
  *  explicit vision model FIRST means a request with an image never lands on a
  *  weaker model when a real vision model is available. */
 function pickVision(models: string[]): string {
+  const ms = usableModels(models);
   return (
-    models.find((m) => /vl|vision/.test(lc(m))) ??
-    models.find((m) => /gemma/.test(lc(m)) && /1[0-9]b/.test(lc(m))) ??
+    ms.find((m) => /vl|vision/.test(lc(m))) ??
+    ms.find((m) => /gemma/.test(lc(m)) && /1[0-9]b/.test(lc(m))) ??
     pickFast(models)
   );
 }
