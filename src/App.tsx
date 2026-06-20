@@ -30,6 +30,7 @@ import {
   saveAutomations,
 } from "./lib/automations";
 import { probeModels } from "./lib/llm";
+import { usableModels } from "./lib/router";
 import { useConnection } from "./lib/connection";
 import {
   isMuted,
@@ -152,10 +153,21 @@ export default function App() {
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   // Actively watch the 24GB Mac. On recovery after a drop (sleep/reboot/LM
   // Studio restart) refresh the model picker so the avatar is usable again
-  // without the user reopening Settings.
-  const connState = useConnection(settings, () => {
-    if (settings) probeModels(settings).then(setModels).catch(() => {});
-  });
+  // without the user reopening Settings. The third callback fires on every healthy
+  // poll so a model loaded/unloaded in LM Studio appears in the picker within one
+  // interval — change-detected so it never re-renders (and snaps shut) the open menu.
+  const connState = useConnection(
+    settings,
+    () => {
+      if (settings) probeModels(settings).then(setModels).catch(() => {});
+    },
+    (raw) => {
+      const next = usableModels(raw);
+      setModels((prev) =>
+        prev.length === next.length && prev.every((m, i) => m === next[i]) ? prev : next
+      );
+    }
+  );
   const [showChats, setShowChats] = useState(false);
   const [showAutomations, setShowAutomations] = useState(false);
   const [conversations, setConversations] = useState<ConvSummary[]>([]);

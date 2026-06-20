@@ -24,20 +24,23 @@ const OFFLINE_MAX = 20_000;
  * One health check of the configured endpoints (remote 24GB Mac first, then a
  * local fallback if one is configured). Cheap and safe to run during a
  * generation: `llmProbe` hits the ungated `/models` path, so it never queues
- * behind an in-flight completion.
+ * behind an in-flight completion. Returns the reachable endpoint's loaded models
+ * too, so the caller can keep the model picker current without a second probe.
  */
-export async function pingEndpoints(settings: Settings): Promise<boolean> {
+export async function pingEndpoints(
+  settings: Settings
+): Promise<{ ok: boolean; models: string[] }> {
   if (settings.lm_studio_remote_url) {
     const p = await llmProbe(settings.lm_studio_remote_url, settings.lm_studio_remote_token).catch(
       () => null
     );
-    if (p?.ok) return true;
+    if (p?.ok) return { ok: true, models: p.models };
   }
   if (settings.lm_studio_local_url) {
     const p = await llmProbe(settings.lm_studio_local_url).catch(() => null);
-    if (p?.ok) return true;
+    if (p?.ok) return { ok: true, models: p.models };
   }
-  return false;
+  return { ok: false, models: [] };
 }
 
 /**
@@ -45,11 +48,21 @@ export async function pingEndpoints(settings: Settings): Promise<boolean> {
  * offline→online transition (so the caller can refresh the model picker). The
  * very first successful check (checking→online) does NOT fire `onRecover` — app
  * bootstrap already loads models — only a genuine recovery after a drop does.
+ *
+ * `onModels` (if given) fires on EVERY healthy poll with the endpoint's currently
+ * loaded models, so a model loaded/unloaded in LM Studio while the app is running
+ * shows up in the picker within one poll interval — no reconnect or restart needed.
  */
-export function useConnection(settings: Settings | null, onRecover?: () => void): ConnState {
+export function useConnection(
+  settings: Settings | null,
+  onRecover?: () => void,
+  onModels?: (models: string[]) => void
+): ConnState {
   const [state, setState] = useState<ConnState>("checking");
   const onRecoverRef = useRef(onRecover);
   onRecoverRef.current = onRecover;
+  const onModelsRef = useRef(onModels);
+  onModelsRef.current = onModels;
   const stateRef = useRef<ConnState>("checking");
 
   useEffect(() => {
@@ -59,8 +72,9 @@ export function useConnection(settings: Settings | null, onRecover?: () => void)
     let backoff = OFFLINE_MIN;
 
     const tick = async () => {
-      const ok = await pingEndpoints(settings);
+      const { ok, models } = await pingEndpoints(settings);
       if (cancelled) return;
+      if (ok) onModelsRef.current?.(models);
 
       const prev = stateRef.current;
       const next: ConnState = ok ? "online" : "offline";
