@@ -24,6 +24,7 @@ import {
 } from "./lib/tauri";
 import ChatsView from "./components/Chats";
 import AutomationsView from "./components/Automations";
+import TrainingTracker from "./components/TrainingTracker";
 import {
   deliverAutomation,
   isDue,
@@ -159,6 +160,7 @@ export default function App() {
   });
   const [showChats, setShowChats] = useState(false);
   const [showAutomations, setShowAutomations] = useState(false);
+  const [showTraining, setShowTraining] = useState(false);
   const [conversations, setConversations] = useState<ConvSummary[]>([]);
   const [activeConv, setActiveConv] = useState<string>(() => getConversationId());
   const [convoMode, setConvoMode] = useState<boolean>(
@@ -744,6 +746,7 @@ export default function App() {
         onOpenSettings={() => setShowSettings(true)}
         onOpenChats={openChats}
         onOpenAutomations={() => setShowAutomations(true)}
+        onOpenTraining={() => setShowTraining(true)}
         onNewChat={newChat}
         onMinimize={startPeek}
         peeked={peeked}
@@ -799,6 +802,7 @@ export default function App() {
         syncToken={settings?.sync_token}
         conversationId={activeConv}
       />
+      {showTraining && <TrainingTracker onClose={() => setShowTraining(false)} />}
       {showAutomations && (
         <AutomationsView
           onClose={() => setShowAutomations(false)}

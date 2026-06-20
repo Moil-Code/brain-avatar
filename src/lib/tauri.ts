@@ -209,6 +209,36 @@ export const saveTrajectory = (trajectory: TrajectoryRecord) =>
 export const rateTrajectory = (turnId: string, rating: -1 | 1) =>
   invoke<void>("rate_trajectory", { turnId, rating });
 
+export interface Count {
+  name: string;
+  count: number;
+}
+export interface TrajectoryStats {
+  total: number;
+  by_source: Count[];
+  by_task: Count[];
+  by_tool: Count[];
+  by_day: Count[];
+  ratings: { up: number; down: number; unrated: number };
+  live: number;
+  rated_live: number;
+}
+export interface TrainingRun {
+  started_at: string;
+  mode: string;
+  base_model: string;
+  iters: number;
+  examples: number;
+  eval_before: number | null;
+  eval_after: number | null;
+  adapter_path: string;
+  status: string;
+}
+/** Aggregate the local trajectory corpus (what we'd train on). */
+export const trajectoryStats = () => invoke<TrajectoryStats>("trajectory_stats");
+/** The log of training runs, newest first (when we've trained). */
+export const listTrainingRuns = () => invoke<TrainingRun[]>("list_training_runs");
+
 // --- Local conversation store (durable "recent chats") ---
 export interface ConvSummary {
   id: string;

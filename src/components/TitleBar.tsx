@@ -2,6 +2,7 @@ interface Props {
   onOpenSettings: () => void;
   onOpenChats: () => void;
   onOpenAutomations: () => void;
+  onOpenTraining: () => void;
   onNewChat: () => void;
   onMinimize: () => void;
   peeked: boolean;
@@ -15,6 +16,7 @@ export default function TitleBar({
   onOpenSettings,
   onOpenChats,
   onOpenAutomations,
+  onOpenTraining,
   onNewChat,
   onMinimize,
   peeked,
@@ -57,6 +59,9 @@ export default function TitleBar({
         </button>
         <button className="tb-btn" title="Automations" onClick={onOpenAutomations}>
           ⏰
+        </button>
+        <button className="tb-btn" title="Training tracker" onClick={onOpenTraining}>
+          📈
         </button>
         <button className="tb-btn" title="Settings" onClick={onOpenSettings}>
           ⚙

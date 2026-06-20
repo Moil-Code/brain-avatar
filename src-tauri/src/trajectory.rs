@@ -61,6 +61,200 @@ fn default_source() -> String {
     "live".into()
 }
 
+// ---------------------------------------------------------------------------
+// Stats for the in-app Training tracker. Aggregates the local trajectory shards
+// (what we'd train on) and the training-run log (when we've trained).
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct Count {
+    pub name: String,
+    pub count: u32,
+}
+
+#[derive(Serialize, Default)]
+pub struct Ratings {
+    pub up: u32,
+    pub down: u32,
+    pub unrated: u32,
+}
+
+#[derive(Serialize, Default)]
+pub struct TrajectoryStats {
+    pub total: u32,
+    pub by_source: Vec<Count>,
+    pub by_task: Vec<Count>,
+    pub by_tool: Vec<Count>,
+    pub by_day: Vec<Count>,
+    pub ratings: Ratings,
+    /// Live (real-usage) turns — the highest-value training rows.
+    pub live: u32,
+    /// Live turns that carry a thumbs rating (the KTO-eligible signal).
+    pub rated_live: u32,
+}
+
+/// Slim view of a record — only the fields the tracker aggregates, so a schema
+/// change to the heavy `messages` payload never breaks stats parsing.
+#[derive(Deserialize)]
+struct StatRow {
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    task_type: String,
+    #[serde(default)]
+    tools_used: Vec<String>,
+    #[serde(default)]
+    rating: Option<i8>,
+    #[serde(default)]
+    created_at: String,
+}
+
+fn tally(map: &std::collections::HashMap<String, u32>) -> Vec<Count> {
+    let mut v: Vec<Count> = map
+        .iter()
+        .map(|(k, &count)| Count { name: k.clone(), count })
+        .collect();
+    v.sort_by(|a, b| b.count.cmp(&a.count).then(a.name.cmp(&b.name)));
+    v
+}
+
+/// Aggregate the local trajectory corpus for the Training tracker. Empty-safe:
+/// returns zeroes when no trajectories have been captured yet.
+#[tauri::command]
+pub fn trajectory_stats(app: AppHandle) -> Result<TrajectoryStats, String> {
+    use std::collections::HashMap;
+    let dir = traj_dir(&app)?;
+    let mut s = TrajectoryStats::default();
+    let (mut src, mut task, mut tool, mut day): (
+        HashMap<String, u32>,
+        HashMap<String, u32>,
+        HashMap<String, u32>,
+        HashMap<String, u32>,
+    ) = Default::default();
+
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(s); // dir not created yet → no data
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in raw.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(r) = serde_json::from_str::<StatRow>(line) else {
+                continue; // skip a malformed line rather than fail the whole view
+            };
+            s.total += 1;
+            let source = if r.source.is_empty() { "live".to_string() } else { r.source };
+            *src.entry(source.clone()).or_default() += 1;
+            if !r.task_type.is_empty() {
+                *task.entry(r.task_type).or_default() += 1;
+            }
+            for t in &r.tools_used {
+                *tool.entry(t.clone()).or_default() += 1;
+            }
+            if r.created_at.len() >= 10 {
+                *day.entry(r.created_at[..10].to_string()).or_default() += 1;
+            }
+            let is_live = source == "live";
+            if is_live {
+                s.live += 1;
+            }
+            match r.rating {
+                Some(1) => {
+                    s.ratings.up += 1;
+                    if is_live {
+                        s.rated_live += 1;
+                    }
+                }
+                Some(-1) => {
+                    s.ratings.down += 1;
+                    if is_live {
+                        s.rated_live += 1;
+                    }
+                }
+                _ => s.ratings.unrated += 1,
+            }
+        }
+    }
+
+    s.by_source = tally(&src);
+    s.by_task = tally(&task);
+    s.by_tool = tally(&tool);
+    // by_day sorted chronologically (ascending) for a growth timeline.
+    let mut days = tally(&day);
+    days.sort_by(|a, b| a.name.cmp(&b.name));
+    s.by_day = days;
+    Ok(s)
+}
+
+/// One training run, as appended by train.sh to training-runs.jsonl. All fields
+/// optional so a partial/streaming write never breaks the list.
+#[derive(Serialize, Deserialize, Default)]
+pub struct TrainingRun {
+    #[serde(default)]
+    pub started_at: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub base_model: String,
+    #[serde(default)]
+    pub iters: u32,
+    #[serde(default)]
+    pub examples: u32,
+    #[serde(default)]
+    pub eval_before: Option<f32>,
+    #[serde(default)]
+    pub eval_after: Option<f32>,
+    #[serde(default)]
+    pub adapter_path: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+fn runs_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("training-runs.jsonl"))
+}
+
+/// The log of training runs (newest first) for the "when we train" timeline.
+#[tauri::command]
+pub fn list_training_runs(app: AppHandle) -> Result<Vec<TrainingRun>, String> {
+    let path = runs_path(&app)?;
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return Ok(vec![]);
+    };
+    let mut runs: Vec<TrainingRun> = raw
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<TrainingRun>(l).ok())
+        .collect();
+    runs.reverse(); // newest first
+    Ok(runs)
+}
+
+/// Append a training run to the log. train.sh calls this path via the file directly;
+/// this command lets the app (or a future "log run" action) record one too.
+#[tauri::command]
+pub fn log_training_run(app: AppHandle, run: TrainingRun) -> Result<(), String> {
+    let path = runs_path(&app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let line = serde_json::to_string(&run).map_err(|e| e.to_string())?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    writeln!(f, "{line}").map_err(|e| e.to_string())
+}
+
 fn traj_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()

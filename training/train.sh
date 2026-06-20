@@ -66,6 +66,14 @@ else
   echo "skip: set LMSTUDIO_URL and MODEL (serving the fused model) to run the gate."
 fi
 
+# Log the run so the in-app Training tracker can show it ("when we train").
+RUNS_LOG="${HOME}/Library/Application Support/com.moil.brainavatar/training-runs.jsonl"
+EXAMPLES=$(grep -c . "${DATA_DIR}/train.jsonl" 2>/dev/null || echo 0)
+mkdir -p "$(dirname "${RUNS_LOG}")"
+printf '{"started_at":"%s","mode":"%s","base_model":"%s","iters":%s,"examples":%s,"adapter_path":"%s","status":"done"}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${MODE}" "${BASE_MODEL}" "${ITERS}" "${EXAMPLES}" "${FUSED_DIR}" \
+  >> "${RUNS_LOG}"
+
 echo
 echo "Done. Fused model: ${FUSED_DIR}"
 echo "Next: load it in LM Studio, A/B it against the base on real traffic, and only"
