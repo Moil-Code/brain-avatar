@@ -10,6 +10,10 @@ import {
   createReminder,
   createTeamsMeeting,
   emailDetails,
+  listAttachments,
+  readAttachment,
+  replyEmail,
+  emailAction,
   fetchDailyDigest,
   fetchUrl,
   generateImage,
@@ -102,6 +106,14 @@ function toolStepLabel(name: string, a: any): string {
       return "Checking your Teams chats";
     case "email_details":
       return a.query ? `Opening the “${a.query}” email` : "Opening the email";
+    case "list_attachments":
+      return "Checking the email's attachments";
+    case "read_attachment":
+      return a.name ? `Reading the attachment “${a.name}”` : "Reading the attachment";
+    case "reply_email":
+      return "Preparing the reply";
+    case "email_action":
+      return a.action ? `Email: ${String(a.action).replace(/_/g, " ")}` : "Updating the email";
     case "brain_page":
       return `Looking up ${a.name ?? a.query ?? "your brain"}`;
     case "brain_search":
@@ -672,6 +684,84 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "list_attachments",
+      description:
+        "List the attachments on a specific email (name, type, size). Identify the email with a " +
+        "natural-language query — the sender's name, subject, or a keyword (e.g. 'Monica Davidson'). " +
+        "Use when an email mentions a document, or read_emails/email_details showed a 📎.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Sender, subject, or keyword identifying the email" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_attachment",
+      description:
+        "Read the TEXT of an email attachment (Word, PDF, RTF, HTML, or text). This is how you read " +
+        "the actual content when it lives in an attached document, not the email body. Identify the " +
+        "email with `query` (sender/subject/keyword); optionally pass `name` to pick a specific " +
+        "attachment (substring is fine) — otherwise the first readable document is read. Often the " +
+        "real details (a program, proposal, contract) are in the attachment, so reach for this.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Sender, subject, or keyword identifying the email" },
+          name: { type: "string", description: "Optional: which attachment to read (name substring)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reply_email",
+      description:
+        "Reply IN-THREAD to an email (keeps the conversation, unlike send_email which starts a new " +
+        "one). Identify the email with `query` (sender/subject/keyword); `body` is your reply text; " +
+        "set reply_all=true to reply to everyone. ALWAYS confirm the recipient and wording with " +
+        "Andres before calling.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Sender, subject, or keyword identifying the email" },
+          body: { type: "string", description: "The reply message text" },
+          reply_all: { type: "boolean", description: "Reply to all recipients (default false)" },
+        },
+        required: ["query", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "email_action",
+      description:
+        "Triage an email: mark_read, mark_unread, flag, unflag, archive, or delete (delete = move to " +
+        "Deleted Items). Identify the email with `query` (sender/subject/keyword). Confirm with Andres " +
+        "before archive/delete. (Mutating actions may need the Mail.ReadWrite scope; it'll say so if not.)",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Sender, subject, or keyword identifying the email" },
+          action: {
+            type: "string",
+            description: "mark_read | mark_unread | flag | unflag | archive | delete",
+          },
+        },
+        required: ["query", "action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "send_email",
       description:
         "Send an email from Andres' Microsoft 365 account. CONFIRM recipients, subject, and body " +
@@ -911,6 +1001,21 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
         return await readTeams(args.count);
       case "email_details":
         return await emailDetails(String(args.query ?? ""));
+      case "list_attachments":
+        return await listAttachments(String(args.query ?? ""));
+      case "read_attachment":
+        return await readAttachment(
+          String(args.query ?? ""),
+          args.name ? String(args.name) : undefined
+        );
+      case "reply_email":
+        return await replyEmail(
+          String(args.query ?? ""),
+          String(args.body ?? ""),
+          typeof args.reply_all === "boolean" ? args.reply_all : undefined
+        );
+      case "email_action":
+        return await emailAction(String(args.query ?? ""), String(args.action ?? ""));
       case "send_email":
         return await sendEmail(
           Array.isArray(args.to) ? args.to : [String(args.to ?? "")],

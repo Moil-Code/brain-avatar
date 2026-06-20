@@ -125,6 +125,14 @@ export const sendEmail = (to: string[], subject: string, body: string, cc?: stri
 export const readEmails = (count?: number) => invoke<string>("read_emails", { count });
 export const readTeams = (count?: number) => invoke<string>("read_teams", { count });
 export const emailDetails = (query: string) => invoke<string>("email_details", { query });
+export const listAttachments = (query: string) =>
+  invoke<string>("list_attachments", { query });
+export const readAttachment = (query: string, name?: string) =>
+  invoke<string>("read_attachment", { query, name });
+export const replyEmail = (query: string, body: string, replyAll?: boolean) =>
+  invoke<string>("reply_email", { query, body, replyAll });
+export const emailAction = (query: string, action: string) =>
+  invoke<string>("email_action", { query, action });
 export const xBookmarks = (count?: number) => invoke<string>("x_bookmarks", { count });
 export const generateImage = (prompt: string, size?: string, steps?: number) =>
   invoke<string>("generate_image", { prompt, size, steps });

@@ -1082,7 +1082,7 @@ pub async fn read_emails_core(
     // INBOX ONLY. /me/messages spans every folder (Sent, Deleted, …) so Andres'
     // own sent mail leaks in; /me/mailFolders/inbox/messages is the actual inbox.
     let url = format!(
-        "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$top={n}&$select=subject,from,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime%20desc"
+        "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$top={n}&$select=subject,from,receivedDateTime,bodyPreview,isRead,hasAttachments&$orderby=receivedDateTime%20desc"
     );
     let stdout = match graph_get(&m365, &url).await {
         Ok(s) => s,
@@ -1110,6 +1110,7 @@ pub async fn read_emails_core(
             .unwrap_or("");
         let date = m.get("receivedDateTime").and_then(|v| v.as_str()).unwrap_or("");
         let unread = !m.get("isRead").and_then(|v| v.as_bool()).unwrap_or(true);
+        let has_att = m.get("hasAttachments").and_then(|v| v.as_bool()).unwrap_or(false);
         let preview: String = m
             .get("bodyPreview")
             .and_then(|v| v.as_str())
@@ -1118,8 +1119,9 @@ pub async fn read_emails_core(
             .take(220)
             .collect();
         out.push_str(&format!(
-            "• {}From: {fname} <{faddr}> — {subj}  ({date})\n  {}\n\n",
+            "• {}{}From: {fname} <{faddr}> — {subj}  ({date})\n  {}\n\n",
             if unread { "[UNREAD] " } else { "" },
+            if has_att { "📎 " } else { "" },
             preview.replace('\n', " ")
         ));
     }
@@ -1145,34 +1147,13 @@ pub async fn email_details_core(
     settings: &Settings,
     query: String,
 ) -> Result<String, String> {
-    let m365 = settings.m365_path.clone();
-    let q = query.replace('"', "").replace('\\', "").trim().to_string();
-
-    // Who am I? Used to drop self-sent "Brain Briefing" mails, which quote the whole
-    // inbox and otherwise outrank real correspondence in a keyword search.
-    let owner = owner_address(&m365).await.unwrap_or_default().to_lowercase();
-
-    // 1) Sender-scoped search FIRST: "the email from X" must match the SENDER, not
-    //    whatever briefing most recently mentioned X.
-    let from_msgs = match search_messages(&m365, &format!("from:{q}"), 10).await {
-        Ok(v) => v,
+    let candidates = match find_messages_by_query(settings, &query).await {
+        Ok(c) => c,
         Err(e) => return Ok(permission_hint(&e)),
     };
-    // 2) Fallback: general keyword search, dropping self-sent briefings.
-    let mut candidates = from_msgs;
-    if candidates.is_empty() {
-        let general = search_messages(&m365, &q, 20).await.unwrap_or_default();
-        let non_self: Vec<Value> = general
-            .iter()
-            .filter(|m| from_addr_of(m).to_lowercase() != owner)
-            .cloned()
-            .collect();
-        candidates = if non_self.is_empty() { general } else { non_self };
-    }
     if candidates.is_empty() {
         return Ok(format!("No email found matching \"{query}\"."));
     }
-    candidates.sort_by(|a, b| received_of(b).cmp(received_of(a))); // newest first
     let m = &candidates[0];
 
     let subj = m.get("subject").and_then(|v| v.as_str()).unwrap_or("(no subject)");
@@ -1183,6 +1164,15 @@ pub async fn email_details_core(
         .and_then(|b| b.get("content"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    // If the real content is in an attachment (the common case for shared docs),
+    // tell the model so it follows up with read_attachment instead of guessing.
+    let attach_hint = if m.get("hasAttachments").and_then(|v| v.as_bool()).unwrap_or(false) {
+        format!(
+            "\n📎 This email has attachments — call read_attachment (query \"{query}\") to read them.\n"
+        )
+    } else {
+        String::new()
+    };
 
     let links = extract_links(html);
     let links_block = if links.is_empty() {
@@ -1212,18 +1202,316 @@ pub async fn email_details_core(
     }
 
     Ok(format!(
-        "Email: {subj}\nFrom: {fname} <{faddr}>\nDate: {date}\n\n{links_block}\nBody:\n{body_text}\n{alts}"
+        "Email: {subj}\nFrom: {fname} <{faddr}>\nDate: {date}\n{attach_hint}\n{links_block}\nBody:\n{body_text}\n{alts}"
     ))
 }
 
-/// Run a Graph mail `$search` and return the matched messages.
+// ---------------------------------------------------------------------------
+// Email attachments + reply + triage (Phase 1: parity with richer mail agents).
+// All resolve their target message through find_messages_by_query, so the model
+// passes a natural-language `query` (sender/subject), never a raw Graph id.
+// ---------------------------------------------------------------------------
+
+/// List the attachments on the email best matching `query` (name, type, size).
+pub async fn list_attachments_core(settings: &Settings, query: String) -> Result<String, String> {
+    let m365 = &settings.m365_path;
+    let candidates = match find_messages_by_query(settings, &query).await {
+        Ok(c) => c,
+        Err(e) => return Ok(permission_hint(&e)),
+    };
+    let m = match candidates.first() {
+        Some(m) => m,
+        None => return Ok(format!("No email found matching \"{query}\".")),
+    };
+    let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let subj = m.get("subject").and_then(|v| v.as_str()).unwrap_or("(no subject)");
+    if id.is_empty() {
+        return Ok("Couldn't resolve that email's id.".into());
+    }
+    let url = format!(
+        "https://graph.microsoft.com/v1.0/me/messages/{id}/attachments?$select=id,name,contentType,size"
+    );
+    let stdout = match graph_get(m365, &url).await {
+        Ok(s) => s,
+        Err(e) => return Ok(permission_hint(&e)),
+    };
+    let v: Value = serde_json::from_str(&stdout).unwrap_or(Value::Null);
+    let atts = v.get("value").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+    if atts.is_empty() {
+        return Ok(format!("\"{subj}\" has no attachments."));
+    }
+    let mut out = format!("Attachments on \"{subj}\":\n");
+    for a in &atts {
+        let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("(unnamed)");
+        let ct = a.get("contentType").and_then(|v| v.as_str()).unwrap_or("");
+        let kb = a.get("size").and_then(|v| v.as_u64()).unwrap_or(0) / 1024;
+        out.push_str(&format!("• {name}  ({ct}, {kb} KB)\n"));
+    }
+    out.push_str("\nUse read_attachment with the email query and the attachment name to read one.");
+    Ok(out)
+}
+
+/// Read ONE attachment's text from the email matching `query`. `name` picks which
+/// attachment (substring match); omitted = the first readable file attachment.
+/// Runs the bytes through the shared document pipeline (Word/PDF/RTF/HTML/text).
+pub async fn read_attachment_core(
+    settings: &Settings,
+    query: String,
+    name: Option<String>,
+) -> Result<String, String> {
+    let m365 = &settings.m365_path;
+    let candidates = match find_messages_by_query(settings, &query).await {
+        Ok(c) => c,
+        Err(e) => return Ok(permission_hint(&e)),
+    };
+    let m = match candidates.first() {
+        Some(m) => m,
+        None => return Ok(format!("No email found matching \"{query}\".")),
+    };
+    let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    if id.is_empty() {
+        return Ok("Couldn't resolve that email's id.".into());
+    }
+    // Fetch attachments WITH contentBytes (one call; fine for typical documents).
+    let url = format!("https://graph.microsoft.com/v1.0/me/messages/{id}/attachments");
+    let stdout = match graph_get(m365, &url).await {
+        Ok(s) => s,
+        Err(e) => return Ok(permission_hint(&e)),
+    };
+    let v: Value = serde_json::from_str(&stdout).unwrap_or(Value::Null);
+    let atts = v.get("value").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+    let is_file = |a: &Value| {
+        a.get("@odata.type")
+            .and_then(|t| t.as_str())
+            .map(|t| t.contains("fileAttachment"))
+            .unwrap_or(false)
+            && !a.get("isInline").and_then(|v| v.as_bool()).unwrap_or(false)
+    };
+    let want = name.as_deref().map(|s| s.to_lowercase());
+    let chosen = atts.iter().find(|a| {
+        if !is_file(a) {
+            return false;
+        }
+        match &want {
+            Some(w) => a
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|n| n.to_lowercase().contains(w))
+                .unwrap_or(false),
+            None => true,
+        }
+    });
+    let att = match chosen {
+        Some(a) => a,
+        None if name.is_some() => {
+            return Ok(format!(
+                "No readable attachment named like \"{}\" on that email.",
+                name.unwrap_or_default()
+            ))
+        }
+        None => return Ok("That email has no readable file attachment.".into()),
+    };
+    let att_name = att.get("name").and_then(|v| v.as_str()).unwrap_or("attachment");
+    let bytes_b64 = match att.get("contentBytes").and_then(|v| v.as_str()) {
+        Some(b) => b,
+        None => {
+            return Ok(format!(
+                "\"{att_name}\" can't be read as a document (it may be an inline item or a link)."
+            ))
+        }
+    };
+    match crate::files::extract_bytes_text(att_name, bytes_b64, 15000).await {
+        Ok(text) => Ok(format!("Attachment \"{att_name}\":\n\n{text}")),
+        Err(e) => Ok(format!("Couldn't read \"{att_name}\": {e}")),
+    }
+}
+
+/// Reply (or reply-all) in-thread to the email matching `query`. Sends from the
+/// signed-in mailbox. Confirm the recipient/content with Andres before calling.
+pub async fn reply_email_core(
+    settings: &Settings,
+    query: String,
+    body: String,
+    reply_all: Option<bool>,
+) -> Result<String, String> {
+    let candidates = match find_messages_by_query(settings, &query).await {
+        Ok(c) => c,
+        Err(e) => return Ok(permission_hint(&e)),
+    };
+    let m = match candidates.first() {
+        Some(m) => m,
+        None => return Ok(format!("No email found matching \"{query}\".")),
+    };
+    let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let subj = m.get("subject").and_then(|v| v.as_str()).unwrap_or("(no subject)");
+    let (fname, _) = from_name_addr(m);
+    if id.is_empty() {
+        return Ok("Couldn't resolve that email's id.".into());
+    }
+    let action = if reply_all.unwrap_or(false) { "replyAll" } else { "reply" };
+    let url = format!("https://graph.microsoft.com/v1.0/me/messages/{id}/{action}");
+    let payload = json!({ "comment": body });
+    match graph_write(
+        &settings.m365_path,
+        &settings.m365_app_id,
+        "post",
+        &url,
+        Some(payload.to_string()),
+    )
+    .await
+    {
+        Ok(_) => Ok(format!("Replied to {fname} on \"{subj}\".")),
+        Err(e) => Ok(permission_hint(&e)),
+    }
+}
+
+/// Triage the email matching `query`: mark_read, mark_unread, flag, unflag,
+/// archive, or delete (delete = move to Deleted Items). Mutating actions need the
+/// Mail.ReadWrite scope; a permission error explains how to grant it.
+pub async fn email_action_core(
+    settings: &Settings,
+    query: String,
+    action: String,
+) -> Result<String, String> {
+    let candidates = match find_messages_by_query(settings, &query).await {
+        Ok(c) => c,
+        Err(e) => return Ok(permission_hint(&e)),
+    };
+    let m = match candidates.first() {
+        Some(m) => m,
+        None => return Ok(format!("No email found matching \"{query}\".")),
+    };
+    let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let subj = m.get("subject").and_then(|v| v.as_str()).unwrap_or("(no subject)");
+    if id.is_empty() {
+        return Ok("Couldn't resolve that email's id.".into());
+    }
+    let base = format!("https://graph.microsoft.com/v1.0/me/messages/{id}");
+    let act = action.trim().to_lowercase();
+    let (method, url, payload): (&str, String, Option<String>) = match act.as_str() {
+        "mark_read" | "read" => ("patch", base.clone(), Some(json!({ "isRead": true }).to_string())),
+        "mark_unread" | "unread" => {
+            ("patch", base.clone(), Some(json!({ "isRead": false }).to_string()))
+        }
+        "flag" => (
+            "patch",
+            base.clone(),
+            Some(json!({ "flag": { "flagStatus": "flagged" } }).to_string()),
+        ),
+        "unflag" => (
+            "patch",
+            base.clone(),
+            Some(json!({ "flag": { "flagStatus": "notFlagged" } }).to_string()),
+        ),
+        "archive" => (
+            "post",
+            format!("{base}/move"),
+            Some(json!({ "destinationId": "archive" }).to_string()),
+        ),
+        "delete" | "trash" => (
+            "post",
+            format!("{base}/move"),
+            Some(json!({ "destinationId": "deleteditems" }).to_string()),
+        ),
+        other => {
+            return Ok(format!(
+                "Unknown email action '{other}'. Use: mark_read, mark_unread, flag, unflag, archive, delete."
+            ))
+        }
+    };
+    match graph_write(&settings.m365_path, &settings.m365_app_id, method, &url, payload).await {
+        Ok(_) => Ok(format!("Done — {act} on \"{subj}\".")),
+        Err(e) => Ok(permission_hint(&e)),
+    }
+}
+
+#[tauri::command]
+pub async fn list_attachments(
+    query: String,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/mail/attachments", json!({ "query": query })).await;
+    }
+    list_attachments_core(&s, query).await
+}
+
+#[tauri::command]
+pub async fn read_attachment(
+    query: String,
+    name: Option<String>,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/mail/attachment", json!({ "query": query, "name": name })).await;
+    }
+    read_attachment_core(&s, query, name).await
+}
+
+#[tauri::command]
+pub async fn reply_email(
+    query: String,
+    body: String,
+    reply_all: Option<bool>,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/mail/reply", json!({ "query": query, "body": body, "reply_all": reply_all })).await;
+    }
+    reply_email_core(&s, query, body, reply_all).await
+}
+
+#[tauri::command]
+pub async fn email_action(
+    query: String,
+    action: String,
+    state: State<'_, SettingsState>,
+) -> Result<String, String> {
+    let s = { state.0.lock().unwrap().clone() };
+    if use_daemon(&s) {
+        return proxy(&s, "/mail/action", json!({ "query": query, "action": action })).await;
+    }
+    email_action_core(&s, query, action).await
+}
+
+/// Run a Graph mail `$search` and return the matched messages. Includes `id` and
+/// `hasAttachments` so callers can act on a specific message (attachments, reply,
+/// triage) without the model juggling opaque ids.
 async fn search_messages(m365: &str, search: &str, top: u32) -> Result<Vec<Value>, String> {
     let url = format!(
-        "https://graph.microsoft.com/v1.0/me/messages?$search=\"{search}\"&$top={top}&$select=subject,from,receivedDateTime,body,webLink"
+        "https://graph.microsoft.com/v1.0/me/messages?$search=\"{search}\"&$top={top}&$select=id,subject,from,receivedDateTime,body,webLink,hasAttachments"
     );
     let stdout = graph_get(m365, &url).await?;
     let v: Value = serde_json::from_str(&stdout).unwrap_or(Value::Null);
     Ok(v.get("value").and_then(|a| a.as_array()).cloned().unwrap_or_default())
+}
+
+/// Find the messages best matching a natural-language `query` (sender, subject, or
+/// keyword), newest first — the same ranking email_details uses: sender-scoped
+/// search first, then a general keyword search with the user's own self-sent
+/// "briefing" mail filtered out. Returns [] when nothing matches. The attachment,
+/// reply, and triage tools all resolve their target email through this, so the model
+/// just says "the email from Monica" instead of passing a raw Graph id.
+async fn find_messages_by_query(settings: &Settings, query: &str) -> Result<Vec<Value>, String> {
+    let m365 = &settings.m365_path;
+    let q = query.replace('"', "").replace('\\', "").trim().to_string();
+    let owner = owner_address(m365).await.unwrap_or_default().to_lowercase();
+    let from_msgs = search_messages(m365, &format!("from:{q}"), 10).await?;
+    let mut candidates = from_msgs;
+    if candidates.is_empty() {
+        let general = search_messages(m365, &q, 20).await.unwrap_or_default();
+        let non_self: Vec<Value> = general
+            .iter()
+            .filter(|m| from_addr_of(m).to_lowercase() != owner)
+            .cloned()
+            .collect();
+        candidates = if non_self.is_empty() { general } else { non_self };
+    }
+    candidates.sort_by(|a, b| received_of(b).cmp(received_of(a))); // newest first
+    Ok(candidates)
 }
 
 /// The signed-in mailbox owner's address (to identify self-sent mail).

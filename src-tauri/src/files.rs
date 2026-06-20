@@ -196,15 +196,16 @@ async fn extract_text(path: &str, cap: usize) -> Result<String, String> {
     Ok(format!("{body}{note}"))
 }
 
-/// Extract text from an uploaded attachment delivered as base64 bytes. Writes to a
-/// temp file (preserving the extension so the right converter runs), extracts, and
-/// cleans up. Used for the chat doc-upload affordance. Images are handled in JS.
-#[tauri::command]
-pub async fn extract_doc_text(name: String, base64: String) -> Result<String, String> {
+/// The shared document pipeline (Phase 2): decode base64 bytes, write them to a
+/// temp file (preserving the extension so the right converter runs), extract
+/// readable text capped at `cap` chars, and clean up. Reused by BOTH the chat
+/// doc-upload affordance and email attachments, so every "read this document"
+/// path — uploads, attachments, future connectors — behaves identically.
+pub async fn extract_bytes_text(name: &str, base64: &str, cap: usize) -> Result<String, String> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64.trim())
-        .map_err(|e| format!("bad attachment data: {e}"))?;
+        .map_err(|e| format!("bad document data: {e}"))?;
     let safe: String = name
         .chars()
         .map(|c| if c == '/' || c == '\\' { '_' } else { c })
@@ -213,9 +214,16 @@ pub async fn extract_doc_text(name: String, base64: String) -> Result<String, St
     tmp.push(format!("brain-attach-{}-{}", std::process::id(), safe));
     std::fs::write(&tmp, &bytes).map_err(|e| format!("temp write failed: {e}"))?;
     let path = tmp.to_string_lossy().to_string();
-    let res = extract_text(&path, 20000).await;
+    let res = extract_text(&path, cap).await;
     let _ = std::fs::remove_file(&tmp);
     res
+}
+
+/// Extract text from an uploaded attachment delivered as base64 bytes (chat
+/// doc-upload affordance). Thin wrapper over the shared `extract_bytes_text`.
+#[tauri::command]
+pub async fn extract_doc_text(name: String, base64: String) -> Result<String, String> {
+    extract_bytes_text(&name, &base64, 20000).await
 }
 
 /// Open a file or folder in its default application.
