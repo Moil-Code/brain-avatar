@@ -50,6 +50,10 @@ pub struct Trajectory {
     /// KTO label: -1/1 once the user rates the turn; None until then.
     #[serde(default)]
     pub rating: Option<i8>,
+    /// Optional free-text feedback the user typed alongside the thumb — the
+    /// highest-signal training data ("wrong tool", "made up the proof", "perfect").
+    #[serde(default)]
+    pub note: Option<String>,
     /// Provenance so the exporter can mix/weight sources: "live" (real usage),
     /// "synthetic" (generated), "distilled" (teacher model). Live capture omits it
     /// → defaults to "live".
@@ -366,10 +370,24 @@ pub fn save_trajectory(app: AppHandle, trajectory: Trajectory) -> Result<(), Str
 /// place. Best-effort: an unknown turn_id is a silent no-op (the turn may predate
 /// capture, or sync may not have flushed yet).
 #[tauri::command]
-pub fn rate_trajectory(app: AppHandle, turn_id: String, rating: i8) -> Result<(), String> {
+pub fn rate_trajectory(
+    app: AppHandle,
+    turn_id: String,
+    rating: i8,
+    note: Option<String>,
+) -> Result<(), String> {
     if rating != -1 && rating != 1 {
         return Err("rating must be -1 or 1".into());
     }
+    // Treat blank/whitespace as no note so we never overwrite an existing one with "".
+    let note = note.and_then(|n| {
+        let t = n.trim().to_string();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    });
     let dir = traj_dir(&app)?;
     let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
@@ -392,6 +410,9 @@ pub fn rate_trajectory(app: AppHandle, turn_id: String, rating: i8) -> Result<()
             match serde_json::from_str::<Trajectory>(line) {
                 Ok(mut t) if t.turn_id == turn_id => {
                     t.rating = Some(rating);
+                    if note.is_some() {
+                        t.note = note.clone();
+                    }
                     out.push_str(&serde_json::to_string(&t).map_err(|e| e.to_string())?);
                     out.push('\n');
                     hit = true;

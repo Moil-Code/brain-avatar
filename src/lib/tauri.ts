@@ -245,8 +245,8 @@ export interface TrajectoryRecord {
 export const saveTrajectory = (trajectory: TrajectoryRecord) =>
   invoke<void>("save_trajectory", { trajectory });
 /** Attach a thumbs rating (-1/1) to an already-captured turn (the KTO label). */
-export const rateTrajectory = (turnId: string, rating: -1 | 1) =>
-  invoke<void>("rate_trajectory", { turnId, rating });
+export const rateTrajectory = (turnId: string, rating: -1 | 1, note?: string) =>
+  invoke<void>("rate_trajectory", { turnId, rating, note: note ?? null });
 
 export interface Count {
   name: string;

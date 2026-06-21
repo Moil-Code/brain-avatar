@@ -111,39 +111,55 @@ export default function ChatPanel({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attaching, setAttaching] = useState(false);
   const [ratings, setRatings] = useState<Record<string, -1 | 1>>({});
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [noteFor, setNoteFor] = useState<string | null>(null); // message with the note box open
+  const [noteDraft, setNoteDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Hydrate ratings from localStorage so they survive page reload.
+  // Hydrate ratings + notes from localStorage so they survive page reload.
   useEffect(() => {
     try {
-      const stored = JSON.parse(localStorage.getItem("msg-ratings") ?? "{}");
-      setRatings(stored);
+      setRatings(JSON.parse(localStorage.getItem("msg-ratings") ?? "{}"));
+      setNotes(JSON.parse(localStorage.getItem("msg-notes") ?? "{}"));
     } catch { /* ignore */ }
   }, []);
 
-  const handleRate = async (messageId: string, rating: -1 | 1) => {
-    setRatings((r) => ({ ...r, [messageId]: rating }));
-    // Persist locally so ratings survive page reload.
-    try {
-      const stored = JSON.parse(localStorage.getItem("msg-ratings") ?? "{}");
-      localStorage.setItem("msg-ratings", JSON.stringify({ ...stored, [messageId]: rating }));
-    } catch { /* ignore */ }
-    // Label the on-device training corpus (the KTO preference signal). Local-only,
-    // works without any cloud sync; messageId is the captured turn's turn_id.
-    rateTrajectory(messageId, rating).catch(() => {});
-    // Also sync to cloud if configured (optional).
+  // Persist a rating (+ optional note) to the on-device training corpus (the KTO
+  // signal) and, if configured, the cloud. Local-only works without any sync.
+  const persist = async (messageId: string, rating: -1 | 1, note?: string) => {
+    rateTrajectory(messageId, rating, note).catch(() => {});
     if (!syncApiUrl || !conversationId) return;
     try {
       await fetch(`${syncApiUrl}/api/feedback`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${syncToken ?? ""}`,
-        },
-        body: JSON.stringify({ conversationId, messageId, rating }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${syncToken ?? ""}` },
+        body: JSON.stringify({ conversationId, messageId, rating, note: note ?? null }),
       });
     } catch { /* best-effort */ }
+  };
+
+  const handleRate = (messageId: string, rating: -1 | 1) => {
+    setRatings((r) => ({ ...r, [messageId]: rating }));
+    try {
+      const stored = JSON.parse(localStorage.getItem("msg-ratings") ?? "{}");
+      localStorage.setItem("msg-ratings", JSON.stringify({ ...stored, [messageId]: rating }));
+    } catch { /* ignore */ }
+    void persist(messageId, rating, notes[messageId]);
+    // Open the note box so the user can add specifics right after the thumb.
+    setNoteDraft(notes[messageId] ?? "");
+    setNoteFor(messageId);
+  };
+
+  const saveNote = (messageId: string) => {
+    const note = noteDraft.trim();
+    setNotes((n) => ({ ...n, [messageId]: note }));
+    try {
+      const stored = JSON.parse(localStorage.getItem("msg-notes") ?? "{}");
+      localStorage.setItem("msg-notes", JSON.stringify({ ...stored, [messageId]: note }));
+    } catch { /* ignore */ }
+    void persist(messageId, ratings[messageId] ?? 1, note);
+    setNoteFor(null);
   };
 
   useEffect(() => {
@@ -238,7 +254,7 @@ export default function ChatPanel({
               </div>
             )}
             {m.role === "assistant" && !m.pending && (
-              <div className="msg-feedback">
+              <div className={`msg-feedback${noteFor === m.id || notes[m.id] ? " fb-open" : ""}`}>
                 <button
                   className={`fb-btn${ratings[m.id] === 1 ? " fb-active" : ""}`}
                   title="Good response"
@@ -253,6 +269,54 @@ export default function ChatPanel({
                 >
                   👎
                 </button>
+                {(ratings[m.id] || notes[m.id]) && noteFor !== m.id && (
+                  <button
+                    className="fb-note-btn"
+                    title="Add specific feedback"
+                    onClick={() => {
+                      setNoteDraft(notes[m.id] ?? "");
+                      setNoteFor(m.id);
+                    }}
+                  >
+                    💬 {notes[m.id] ? "edit note" : "add note"}
+                  </button>
+                )}
+                {notes[m.id] && noteFor !== m.id && (
+                  <span className="fb-note-text" title={notes[m.id]}>
+                    “{notes[m.id]}”
+                  </span>
+                )}
+                {noteFor === m.id && (
+                  <div className="fb-note-box">
+                    <textarea
+                      className="fb-note-input"
+                      autoFocus
+                      rows={2}
+                      placeholder={
+                        ratings[m.id] === -1
+                          ? "What was wrong? (e.g. wrong tool, made up the proof)"
+                          : "What worked well? (optional)"
+                      }
+                      value={noteDraft}
+                      onChange={(e) => setNoteDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                          e.preventDefault();
+                          saveNote(m.id);
+                        }
+                        if (e.key === "Escape") setNoteFor(null);
+                      }}
+                    />
+                    <div className="fb-note-actions">
+                      <button className="fb-note-save" onClick={() => saveNote(m.id)}>
+                        Save
+                      </button>
+                      <button className="fb-note-cancel" onClick={() => setNoteFor(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
