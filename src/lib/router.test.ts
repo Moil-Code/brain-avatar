@@ -36,12 +36,14 @@ describe("routeTask model selection", () => {
     expect(r.taskType).toBe("action");
   });
 
-  it("routes a deep task to the 26B MoE, NOT the experimental 27B", async () => {
+  it("routes a deep task to the interactive 12B tier, NOT the empty-content 26B or the experimental 27B", async () => {
+    // The 26B-A4B returns empty content for bounded interactive asks and can't
+    // co-reside on 24GB, so the interactive deep tier is the dense 12B (audit 2026-06-21).
     const r = await routeTask({
       userText: "analyze this strategy and write a thorough report",
       endpoint: ep(LOADED),
     });
-    expect(r.modelId).toBe("gemma-4-26b-a4b-it-qat");
+    expect(r.modelId).toBe("google/gemma-4-12b-qat");
     expect(r.taskType).toBe("deep");
   });
 

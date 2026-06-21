@@ -34,15 +34,23 @@ export function usableModels(models: string[]): string[] {
   return kept.length ? kept : models.filter((m) => !EMBED_RE.test(lc(m)));
 }
 
-/** DEEP model: the 26B-A4B MoE. A *reasoning* model — emits a long think phase, so
- *  it's slow to first token (60–120s) but best at synthesis, long-form writing, and
- *  nuanced analysis. Reserve it for tasks that genuinely need depth. Falls back to
- *  any big dense model, then the fast model. */
+/** PRIMARY (deep) model for INTERACTIVE turns. Prefer the dense Gemma 12B because on
+ *  the 24GB box it's the heaviest model that can stay resident ALONGSIDE the qwen3-8b
+ *  tool tier — so tools (video/email/calendar) and synthesis both work without a
+ *  model swap. The 26B-A4B MoE is the strong second, not last: it's the highest-quality
+ *  synthesis model and solid in practice, just slow (a *reasoning* model — give it
+ *  max_tokens headroom, now 8192, so its think phase doesn't starve the answer; with
+ *  only 4096 it spent the whole budget reasoning and returned empty content). Its
+ *  catch is residency: a loaded 26B leaves <9.5GB free on 24GB, so the 8B tool tier
+ *  can't load beside it — which is the only reason the 12B is preferred for the agentic
+ *  default. When the 26B is the loaded model, deep work still uses it. */
 function pickPrimary(models: string[]): string {
   const ms = usableModels(models);
   return (
-    ms.find((m) => /a4b|a3b|moe/.test(lc(m))) ??
-    ms.find((m) => /2[4-9]b|3[0-9]b/.test(lc(m))) ??
+    ms.find((m) => /gemma/.test(lc(m)) && /1[0-9]b/.test(lc(m))) ?? // dense 12B — co-resides with the 8B tool tier
+    ms.find((m) => /a4b|a3b|moe/.test(lc(m))) ?? // 26B MoE — strong second: best synthesis, slow, needs the 8192 headroom
+    ms.find((m) => /2[4-9]b|3[0-9]b/.test(lc(m))) ?? // any other big dense
+    ms.find((m) => /qwen/.test(lc(m)) && !BIG_RE.test(lc(m))) ?? // qwen3-8b last-ditch
     ms.find((m) => !EMBED_RE.test(lc(m))) ??
     ms[0] ??
     models[0] ??

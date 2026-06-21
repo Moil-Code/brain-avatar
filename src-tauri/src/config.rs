@@ -89,7 +89,11 @@ impl Default for Settings {
             // use whatever is loaded rather than requesting a fixed id. Set a
             // specific id in Settings to override.
             model: String::new(),
-            max_tokens: 4096,
+            // 8192, not 4096: a reasoning model spends part of the budget on a
+            // hidden think phase, so a smaller cap can leave nothing for the actual
+            // answer (the 26B returned empty content under 4096). Long reports also
+            // need the headroom. Audit 2026-06-21.
+            max_tokens: 8192,
             groq_api_key: String::new(),
             groq_model: "whisper-large-v3-turbo".into(),
             brave_api_key: String::new(),
