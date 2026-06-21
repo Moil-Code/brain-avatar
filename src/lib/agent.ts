@@ -1663,7 +1663,18 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     const answer = (r.content ?? "").trim();
     onStep?.({ id: "answer", label: "Writing the answer", done: true });
     onToken?.(answer);
-    return { content: answer, tools: [], route: chatRoute };
+    // Capture the fast lane too — trivial turns are still real-usage persona/style
+    // data, and skipping them left the training tracker empty for chatty sessions.
+    return {
+      content: answer,
+      tools: [],
+      route: chatRoute,
+      trajectory: {
+        messages: [...chatMsgs, { role: "assistant", content: answer }],
+        toolEvents: [],
+        rounds: 1,
+      },
+    };
   }
 
   // Routing layer: find the reachable endpoint + its loaded models, classify the
