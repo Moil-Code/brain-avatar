@@ -1,7 +1,7 @@
 {
   "name": "brain-avatar",
   "private": true,
-  "version": "0.1.23",
+  "version": "0.1.24",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "cleanup:apps": "scripts/cleanup-app-duplicates.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
