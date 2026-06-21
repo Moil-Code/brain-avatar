@@ -34,6 +34,13 @@ describe("recoverToolCalls", () => {
       recoverToolCalls("sed -i 's|a|b|g' /Users/x/weekly-operating-brief.sh}")
     ).toHaveLength(0);
   });
+
+  it("does not over-match prose that mentions a tool name without valid JSON args", () => {
+    // Pass 2 requires a real tool name AND a parseable JSON object — explanatory
+    // prose like this must not be mistaken for a call.
+    expect(recoverToolCalls("Call manage_tasks with {the cards} you need.")).toHaveLength(0);
+    expect(recoverToolCalls("The run_shell tool takes a command argument.")).toHaveLength(0);
+  });
 });
 
 describe("looksLikeLeakedToolCall", () => {
