@@ -9,6 +9,17 @@ let llmIdx = 0;
 // Mock the endpoint resolver + router so runAgent never touches the network.
 vi.mock("./llm", () => ({
   resolveBaseEndpoint: vi.fn(async () => ({ baseUrl: "http://x", token: "", models: [] })),
+  // Direct (non-daemon) mode streams via streamChat — drive it from the same scripted
+  // responses, emitting content through onToken so the streaming path is exercised.
+  streamChat: vi.fn(async (opts: any) => {
+    const next = llmScript[llmIdx++] ?? { content: "", tool_calls: [] };
+    if (next.content && opts?.onToken) opts.onToken(next.content);
+    return {
+      content: next.content ?? "",
+      toolCalls: Array.isArray(next.tool_calls) ? next.tool_calls : [],
+      finishReason: null,
+    };
+  }),
 }));
 vi.mock("./router", () => ({
   routeTask: vi.fn(async () => ({ modelId: "qwen3-8b", taskType: "deep", enhanced: "", routed: false })),
@@ -59,7 +70,7 @@ vi.mock("./tauri", () => ({
 import { runAgent } from "./agent";
 import { brainPage, llmComplete } from "./tauri"; // mocked wrappers, for call-count assertions
 import { isTrivialChat, missingInput } from "./router"; // mocked, for the short-circuit tests
-import { resolveBaseEndpoint } from "./llm"; // mocked, to supply loaded models for the fast lane
+import { resolveBaseEndpoint, streamChat } from "./llm"; // mocked: models for the fast lane + streaming path
 
 const settings = { system_prompt: "you are brain", max_tokens: 4096 } as any;
 
@@ -419,6 +430,7 @@ describe("missing-input handling — ask first, don't grind", () => {
     } as any);
     expect(res.content).toMatch(/paste the video link/i);
     // The whole point: it did NOT spin up the slow model loop or a board.
+    expect(streamChat).not.toHaveBeenCalled();
     expect(llmComplete).not.toHaveBeenCalled();
     expect(res.tools).toHaveLength(0);
     expect(store).toBeNull();
@@ -463,10 +475,10 @@ describe("trivial-turn fast lane — no tools, one round", () => {
     expect(res.content).toMatch(/doing great/i);
     expect(res.tools).toHaveLength(0);
     expect(store).toBeNull(); // no task board spun up
-    // Exactly one model round, and CRUCIALLY it was called with NO tool schema
-    // (5th arg undefined) — that's the whole prefill saving for non-thinking turns.
-    expect(llmComplete).toHaveBeenCalledTimes(1);
-    expect((llmComplete as any).mock.calls[0][4]).toBeUndefined();
+    // Exactly one model round (streamed in direct mode), and CRUCIALLY with NO tool
+    // schema — that's the whole prefill saving for non-thinking turns.
+    expect(streamChat).toHaveBeenCalledTimes(1);
+    expect((streamChat as any).mock.calls[0][0].tools).toBeUndefined();
   });
 });
 
@@ -492,6 +504,6 @@ describe("self-repair on a tool call leaked as text", () => {
     expect(res.content).not.toMatch(/open_url|tool_call/i); // the leak was never shown
     expect(res.content).toMatch(/found/i); // reached the answer after repair
     expect(res.tools).toContain("brain_search"); // a real tool actually ran
-    expect(llmComplete).toHaveBeenCalledTimes(3); // leak -> repair re-prompt -> answer
+    expect(streamChat).toHaveBeenCalledTimes(3); // leak -> repair re-prompt -> answer
   });
 });

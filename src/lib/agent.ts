@@ -1,4 +1,4 @@
-import { resolveBaseEndpoint } from "./llm";
+import { resolveBaseEndpoint, streamChat } from "./llm";
 import { isTrivialChat, missingInput, routeTask, type Route } from "./router";
 import {
   brainPage,
@@ -1659,11 +1659,47 @@ export function stripToolMarkup(s: string): string {
     .trim();
 }
 
+/** One chat completion. In DIRECT mode (no daemon) we stream via streamChat so the
+ *  UI fills in token-by-token and a long synthesis shows progress instead of a
+ *  spinner; in DAEMON mode (MacBook → brain-daemon relay) we keep the Rust
+ *  `llm_complete` path, which handles the hop and cancellation. Both send the same
+ *  body (max_tokens / tools-aware temp / tool_choice), so model behavior is identical.
+ *  When streaming, content deltas are emitted through `onToken` HERE — callers must
+ *  not re-emit the final answer (they gate that on daemon mode). */
+async function complete(
+  endpoint: { baseUrl: string; token?: string; model: string },
+  messages: ChatMessage[],
+  tools: unknown[] | undefined,
+  maxTokens: number,
+  toolChoice: unknown,
+  daemon: boolean,
+  onToken?: (delta: string) => void,
+  signal?: AbortSignal
+): Promise<{ content: string; tool_calls: ToolCall[] | null }> {
+  if (!daemon) {
+    const r = await streamChat({
+      endpoint: { baseUrl: endpoint.baseUrl, token: endpoint.token, model: endpoint.model },
+      messages,
+      tools,
+      maxTokens,
+      toolChoice,
+      onToken,
+      signal,
+    });
+    return { content: r.content, tool_calls: r.toolCalls.length ? r.toolCalls : null };
+  }
+  return llmComplete(endpoint.baseUrl, endpoint.token, endpoint.model, messages, tools, maxTokens, toolChoice);
+}
+
 /** Run the full tool-calling loop and return the final grounded answer. */
 export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   const { userText, history, settings, onState, onToken, onToolStart, onRoute, onStep, signal } =
     opts;
   onState?.("thinking");
+  // Direct mode streams (live tokens); daemon mode relays through Rust. When
+  // streaming, the answer is emitted token-by-token inside complete(), so the
+  // final-answer onToken calls below are gated to daemon mode to avoid double text.
+  const daemon = !!settings.brain_daemon_url?.trim();
 
   const attachments = opts.attachments ?? [];
   const images = attachments.filter((a) => a.kind === "image" && a.dataUrl);
@@ -1711,10 +1747,19 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       ...history.slice(-12),
       { role: "user", content: userText },
     ];
-    const r = await llmComplete(base.baseUrl, base.token, picked, chatMsgs, undefined, settings.max_tokens);
+    const r = await complete(
+      { baseUrl: base.baseUrl, token: base.token, model: picked },
+      chatMsgs,
+      undefined,
+      settings.max_tokens,
+      undefined,
+      daemon,
+      onToken,
+      signal
+    );
     const answer = (r.content ?? "").trim();
     onStep?.({ id: "answer", label: "Writing the answer", done: true });
-    onToken?.(answer);
+    if (daemon) onToken?.(answer); // direct mode already streamed it
     // Capture the fast lane too — trivial turns are still real-usage persona/style
     // data, and skipping them left the training tracker empty for chatty sessions.
     return {
@@ -1907,24 +1952,27 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     const toolChoice: unknown = forceDecompose ? "required" : undefined;
     let res;
     try {
-      res = await llmComplete(
-        endpoint.baseUrl,
-        endpoint.token,
-        endpoint.model,
+      res = await complete(
+        endpoint,
         messages,
         toolDefs,
         settings.max_tokens,
-        toolChoice
+        toolChoice,
+        daemon,
+        onToken,
+        signal
       );
     } catch (e) {
       if (forceDecompose) {
-        res = await llmComplete(
-          endpoint.baseUrl,
-          endpoint.token,
-          endpoint.model,
+        res = await complete(
+          endpoint,
           messages,
           toolDefs,
-          settings.max_tokens
+          settings.max_tokens,
+          undefined,
+          daemon,
+          onToken,
+          signal
         );
       } else {
         throw e;
@@ -2008,7 +2056,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       }
       const answer = stripToolMarkup(content.trim());
       onStep?.({ id: "answer", label: "Writing the answer", done: true });
-      onToken?.(answer);
+      if (daemon) onToken?.(answer); // direct mode already streamed this round's content
       return {
         content: answer,
         tools: toolsUsed,
@@ -2190,16 +2238,18 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   }
 
   // Exhausted tool rounds — make one final answer attempt without tools.
-  const final = await llmComplete(
-    endpoint.baseUrl,
-    endpoint.token,
-    endpoint.model,
+  const final = await complete(
+    endpoint,
     messages,
     undefined,
-    settings.max_tokens
+    settings.max_tokens,
+    undefined,
+    daemon,
+    onToken,
+    signal
   );
   const answer = stripToolMarkup((final.content ?? "").trim());
-  onToken?.(answer);
+  if (daemon) onToken?.(answer); // direct mode already streamed it
   return {
     content: answer,
     tools: toolsUsed,

@@ -141,25 +141,35 @@ interface StreamOpts {
   endpoint: LlmEndpoint;
   messages: ChatMessage[];
   tools?: unknown[];
+  maxTokens?: number;
+  /** OpenAI tool_choice override; defaults to "auto" when tools are present. */
+  toolChoice?: unknown;
   onToken?: (delta: string) => void;
   signal?: AbortSignal;
 }
 
-/** Stream one chat completion, accumulating content + any tool calls. */
+/** Stream one chat completion, accumulating content + any tool calls. Mirrors the
+ *  Rust `llm_complete` body (max_tokens, tools-aware temperature, tool_choice) so it
+ *  can replace the blocking path without changing model behavior — the only
+ *  difference is `stream: true` + per-token `onToken`. */
 export async function streamChat(opts: StreamOpts): Promise<StreamResult> {
-  const { endpoint, messages, tools, onToken, signal } = opts;
+  const { endpoint, messages, tools, maxTokens, toolChoice, onToken, signal } = opts;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (endpoint.token) headers.Authorization = `Bearer ${endpoint.token}`;
 
+  const hasTools = Array.isArray(tools) && tools.length > 0;
   const body: Record<string, unknown> = {
     model: endpoint.model,
     messages,
     stream: true,
-    temperature: 0.4,
+    // Low temp when tools are offered keeps small models from narrating instead of
+    // emitting the call (matches llm.rs); warmer for plain prose answers.
+    temperature: hasTools ? 0.1 : 0.4,
+    max_tokens: maxTokens ?? 4096,
   };
-  if (tools && tools.length) {
+  if (hasTools) {
     body.tools = tools;
-    body.tool_choice = "auto";
+    body.tool_choice = toolChoice ?? "auto";
   }
 
   const resp = await fetch(`${endpoint.baseUrl.replace(/\/$/, "")}/chat/completions`, {
