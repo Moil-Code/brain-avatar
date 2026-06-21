@@ -208,6 +208,7 @@ pub fn run() {
             trajectory::trajectory_stats,
             trajectory::list_training_runs,
             trajectory::log_training_run,
+            trajectory::training_readiness,
             tts::tts_speak,
             tts::tts_stop,
             tts::list_voices,

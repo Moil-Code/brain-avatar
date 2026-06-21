@@ -47,6 +47,15 @@ data exists, so the fine-tune doesn't overfit to templated phrasing.
   confirm-before-send, grounding-refusal). Scale it by enlarging the entity pools in
   `synthesize.ts`.
 
+## When does training run? (notify-when-ready)
+
+Capture is automatic; **training is a manual command you run** — Brain never trains
+itself. To tell you *when* it's worth running, the app checks on launch whether
+enough **new** real data has accumulated since your last run (≥50 new live turns or
+≥15 new rated turns) and fires a macOS notification — once per training "epoch", so
+it won't nag. The 📈 tracker shows the same signal live (new-since-last-train + last
+trained date). When it pings, run `training/train.sh` on the Mini.
+
 ## Two training modes
 
 - **SFT** (`--mode sft`): supervised on gold trajectories — keeps only clean runs

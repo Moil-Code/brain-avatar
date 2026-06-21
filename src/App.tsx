@@ -16,10 +16,12 @@ import {
   getSettings,
   getTaskBoard,
   listConversations,
+  notify,
   pushChat,
   replaceConversation,
   saveMessage,
   saveTrajectory,
+  trainingReadiness,
   type ConvSummary,
 } from "./lib/tauri";
 import ChatsView from "./components/Chats";
@@ -268,6 +270,22 @@ export default function App() {
     // The periodic/focus refresh only sets a found update (never clears) so it
     // can't wipe a banner the user is mid-install on.
     checkForUpdate().then(setUpdate);
+    // Notify-when-ready: on launch, if enough new real data has accumulated since
+    // the last training run, ping once per training epoch. Never trains on its own.
+    trainingReadiness()
+      .then((r) => {
+        if (!r.ready) return;
+        const epoch = r.last_trained ?? "never";
+        if (localStorage.getItem("training-notified-epoch") === epoch) return;
+        localStorage.setItem("training-notified-epoch", epoch);
+        const detail =
+          r.new_rated >= r.rated_threshold ? `${r.new_rated} new rated turns` : `${r.new_live} new turns`;
+        notify(
+          "Brain is ready to train 🧠📈",
+          `${detail} captured since your last run. Open 📈 and run training/train.sh on the Mac Mini.`
+        ).catch(() => {});
+      })
+      .catch(() => {});
     const refreshUpdate = () => checkForUpdate().then((u) => u && setUpdate(u));
     const UPDATE_POLL_MS = 3 * 60 * 60 * 1000; // 3h
     const updateTimer = window.setInterval(refreshUpdate, UPDATE_POLL_MS);

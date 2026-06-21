@@ -273,6 +273,17 @@ export interface TrainingRun {
   adapter_path: string;
   status: string;
 }
+export interface Readiness {
+  ready: boolean;
+  new_live: number;
+  new_rated: number;
+  live_threshold: number;
+  rated_threshold: number;
+  last_trained: string | null;
+}
+/** Is enough new real data captured since the last run to be worth training? */
+export const trainingReadiness = () => invoke<Readiness>("training_readiness");
+
 /** Aggregate the local trajectory corpus (what we'd train on). */
 export const trajectoryStats = () => invoke<TrajectoryStats>("trajectory_stats");
 /** The log of training runs, newest first (when we've trained). */
