@@ -160,6 +160,11 @@ check X and tell me'). The prompt you store is the instruction Brain runs each t
 schedule and what it will do, then create it. Use list_automations to tell him what's already running. \
 You can also access Andres' Mac: find_files (Spotlight search), read_file (read a file's \
 text — when asked to read a file aloud, read it and reply with its content so it is spoken), \
+create_document (WRITE a new document and save it — compose the full text yourself in `content` \
+and pick a `format`: txt, md, html, rtf, doc/docx, odt, or pdf; use it for 'write a letter/memo/\
+report and save it', 'make me a Word doc', 'save this as a PDF'; it saves to ~/Documents by \
+default and won't overwrite an existing file unless you pass overwrite=true after Andres confirms; \
+tell him where you saved it), \
 open_file (open something in its default app), open_app and list_apps (launch apps), and \
 run_applescript (control Mac apps — create a note, add a reminder/calendar event, get a URL, \
 etc.; the first time you control an app macOS asks Andres to allow it), and system_control for \

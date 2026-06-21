@@ -27,6 +27,7 @@ import {
   readEmails,
   readTeams,
   readFile,
+  createDocument,
   runAppleScript,
   systemControl,
   sendImessage,
@@ -670,6 +671,36 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "create_document",
+      description:
+        "Create/write a NEW document on Andres' Mac and save it to disk. Use when he asks to " +
+        "'write a letter/memo/report and save it', 'make a Word doc', 'create a document', 'save " +
+        "this as a PDF/docx', etc. You write the full text yourself in `content` (Markdown or plain " +
+        "text). Choose `format`: txt, md, html, rtf, doc, docx, odt, or pdf (default md). `filename` " +
+        "is the base name (no path needed). Saves to ~/Documents unless `folder` is given. If a file " +
+        "with that name already exists it returns a heads-up instead of overwriting — only pass " +
+        "overwrite=true after Andres confirms he wants it replaced. Set open_after=true to open it " +
+        "after saving. Tell Andres where it was saved.",
+      parameters: {
+        type: "object",
+        properties: {
+          content: { type: "string", description: "The full document text you compose (Markdown or plain text)" },
+          filename: { type: "string", description: "Base file name, e.g. 'Letter to Maria' (no folder path)" },
+          format: {
+            type: "string",
+            description: "txt | md | html | rtf | doc | docx | odt | pdf (default md)",
+          },
+          folder: { type: "string", description: "Optional destination folder (default ~/Documents)" },
+          overwrite: { type: "boolean", description: "Set true ONLY after Andres confirms replacing an existing file" },
+          open_after: { type: "boolean", description: "Set true to open the document after saving" },
+        },
+        required: ["content", "filename"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "open_file",
       description:
         "Open a file or folder in its default macOS app (e.g. open a PDF, doc, image, or app). " +
@@ -1274,6 +1305,15 @@ async function executeTool(
         return await findFiles(String(args.query ?? ""), args.scope ? String(args.scope) : undefined);
       case "read_file":
         return await readFile(String(args.path ?? ""), args.max_chars);
+      case "create_document":
+        return await createDocument({
+          content: String(args.content ?? ""),
+          filename: String(args.filename ?? ""),
+          format: args.format != null ? String(args.format) : undefined,
+          folder: args.folder != null ? String(args.folder) : undefined,
+          overwrite: typeof args.overwrite === "boolean" ? args.overwrite : undefined,
+          openAfter: typeof args.open_after === "boolean" ? args.open_after : undefined,
+        });
       case "open_file":
         return await openFileCmd(String(args.path ?? ""));
       case "open_app":
