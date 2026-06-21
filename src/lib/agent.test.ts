@@ -12,9 +12,10 @@ vi.mock("./llm", () => ({
 }));
 vi.mock("./router", () => ({
   routeTask: vi.fn(async () => ({ modelId: "qwen3-8b", taskType: "deep", enhanced: "", routed: false })),
-  // Default: never short-circuit, so the existing board tests run unchanged. The
-  // preflight test below overrides this for one case.
+  // Defaults: never short-circuit, so the existing board tests run unchanged. The
+  // missing-input and fast-lane tests below override these per-case.
   missingInput: vi.fn(() => null),
+  isTrivialChat: vi.fn(() => false),
 }));
 
 // Mock the Tauri bridge: scripted llmComplete, an in-memory board that mimics the
@@ -57,7 +58,8 @@ vi.mock("./tauri", () => ({
 
 import { runAgent } from "./agent";
 import { brainPage, llmComplete } from "./tauri"; // mocked wrappers, for call-count assertions
-import { missingInput } from "./router"; // mocked, for the preflight short-circuit test
+import { isTrivialChat, missingInput } from "./router"; // mocked, for the short-circuit tests
+import { resolveBaseEndpoint } from "./llm"; // mocked, to supply loaded models for the fast lane
 
 const settings = { system_prompt: "you are brain", max_tokens: 4096 } as any;
 
@@ -438,5 +440,32 @@ describe("missing-input handling — ask first, don't grind", () => {
     // No domain tool ran and no board was persisted around the unanswerable ask.
     expect(brainPage).not.toHaveBeenCalled();
     expect(store).toBeNull();
+  });
+});
+
+describe("trivial-turn fast lane — no tools, one round", () => {
+  it("answers a greeting with a single NO-TOOLS completion and no board", async () => {
+    (isTrivialChat as any).mockReturnValueOnce(true);
+    (resolveBaseEndpoint as any).mockResolvedValueOnce({
+      baseUrl: "http://x",
+      token: "",
+      models: ["qwen3-8b"],
+    });
+    llmScript = [{ content: "Hey! Doing great — what can I help with?", tool_calls: [] }];
+
+    const res = await runAgent({
+      userText: "hey how are you",
+      history: [],
+      settings,
+      conversationId: "fl1",
+    } as any);
+
+    expect(res.content).toMatch(/doing great/i);
+    expect(res.tools).toHaveLength(0);
+    expect(store).toBeNull(); // no task board spun up
+    // Exactly one model round, and CRUCIALLY it was called with NO tool schema
+    // (5th arg undefined) — that's the whole prefill saving for non-thinking turns.
+    expect(llmComplete).toHaveBeenCalledTimes(1);
+    expect((llmComplete as any).mock.calls[0][4]).toBeUndefined();
   });
 });
