@@ -84,4 +84,7 @@ timeout 30 git push origin main || echo "(push failed/skipped — release still 
 gh release create "v$VER" --repo "$REPO" --title "Brain Avatar v$VER" --notes "Update $VER" "/tmp/Brain.Avatar.app.tar.gz"
 gh release upload "v$VER" /tmp/latest.json --repo "$REPO"
 
+# Drop the build artifact + any mounted DMG so they don't pile up in Launchpad.
+"$ROOT/scripts/cleanup-app-duplicates.sh" || echo "(app cleanup skipped)"
+
 echo "✅ Published v$VER. Every Brain Avatar auto-updates on next launch."
