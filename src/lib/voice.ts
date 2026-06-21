@@ -1,4 +1,5 @@
 import { transcribeAudio, ttsSpeak, ttsStop } from "./tauri";
+import { isMobile } from "./platform";
 
 function pickMime(): string {
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
@@ -236,7 +237,39 @@ export function setMuted(value: boolean): void {
     /* noop */
   }
   // Silence anything mid-sentence the instant mute is turned on.
-  if (value) ttsStop().catch(() => {});
+  if (value) stopSpeaking();
+}
+
+/** iOS has no macOS `say` / neural sidecar, so the iPhone build speaks through the
+ *  webview's built-in SpeechSynthesis. Resolves onEnd even on error so hands-free
+ *  convo mode keeps flowing. */
+function speakWeb(
+  text: string,
+  opts: { onStart?: () => void; onEnd?: () => void }
+): void {
+  try {
+    const synth = window.speechSynthesis;
+    if (!synth) {
+      opts.onEnd?.();
+      return;
+    }
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.0;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      opts.onEnd?.();
+    };
+    u.onend = finish;
+    u.onerror = finish;
+    opts.onStart?.();
+    synth.speak(u);
+  } catch (e) {
+    console.error("web tts failed", e);
+    opts.onEnd?.();
+  }
 }
 
 export function speak(
@@ -249,6 +282,10 @@ export function speak(
     opts.onEnd?.();
     return;
   }
+  if (isMobile) {
+    speakWeb(text, opts);
+    return;
+  }
   opts.onStart?.();
   ttsSpeak(text)
     .catch((e) => console.error("tts_speak failed", e))
@@ -256,8 +293,24 @@ export function speak(
 }
 
 export function stopSpeaking(): void {
+  if (isMobile) {
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {
+      /* noop */
+    }
+    return;
+  }
   ttsStop().catch(() => {});
 }
 
-/** No-op retained for API compatibility (native TTS needs no voice warm-up). */
-export function primeVoices(): void {}
+/** Native TTS needs no warm-up; iOS SpeechSynthesis loads its voice list lazily,
+ *  so we nudge it once at boot so the first spoken reply isn't silent. */
+export function primeVoices(): void {
+  if (!isMobile) return;
+  try {
+    window.speechSynthesis?.getVoices();
+  } catch {
+    /* noop */
+  }
+}
