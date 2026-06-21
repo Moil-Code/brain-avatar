@@ -255,6 +255,84 @@ pub fn log_training_run(app: AppHandle, run: TrainingRun) -> Result<(), String> 
     writeln!(f, "{line}").map_err(|e| e.to_string())
 }
 
+// Notify-when-ready thresholds: training is worth a run once this much NEW real
+// data has accumulated since the last training run (either bar trips it).
+const READY_NEW_LIVE: u32 = 50;
+const READY_NEW_RATED: u32 = 15;
+
+#[derive(Serialize, Default)]
+pub struct Readiness {
+    /// True when there's enough new real data to make a training run worthwhile.
+    pub ready: bool,
+    /// Live turns captured since the last training run (all live if never trained).
+    pub new_live: u32,
+    /// Of those, how many carry a thumbs rating (the KTO signal).
+    pub new_rated: u32,
+    pub live_threshold: u32,
+    pub rated_threshold: u32,
+    /// started_at of the most recent training run, or None if never trained.
+    pub last_trained: Option<String>,
+}
+
+/// Is it worth training yet? Counts live (and rated-live) trajectories captured
+/// SINCE the most recent training run. The app calls this on startup and notifies
+/// when `ready` flips true (notify-when-ready — it never trains on its own).
+#[tauri::command]
+pub fn training_readiness(app: AppHandle) -> Result<Readiness, String> {
+    // Most recent run timestamp = the high-water mark we count "new" data after.
+    let last_trained: Option<String> = list_training_runs(app.clone())?
+        .into_iter()
+        .map(|r| r.started_at)
+        .filter(|s| !s.is_empty())
+        .max();
+
+    let dir = traj_dir(&app)?;
+    let mut new_live = 0u32;
+    let mut new_rated = 0u32;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in raw.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Ok(r) = serde_json::from_str::<StatRow>(line) else {
+                    continue;
+                };
+                let is_live = r.source.is_empty() || r.source == "live";
+                if !is_live {
+                    continue;
+                }
+                // ISO-8601 timestamps compare correctly lexicographically.
+                if let Some(ref since) = last_trained {
+                    if r.created_at.as_str() <= since.as_str() {
+                        continue;
+                    }
+                }
+                new_live += 1;
+                if r.rating.is_some() {
+                    new_rated += 1;
+                }
+            }
+        }
+    }
+
+    Ok(Readiness {
+        ready: new_live >= READY_NEW_LIVE || new_rated >= READY_NEW_RATED,
+        new_live,
+        new_rated,
+        live_threshold: READY_NEW_LIVE,
+        rated_threshold: READY_NEW_RATED,
+        last_trained,
+    })
+}
+
 fn traj_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()

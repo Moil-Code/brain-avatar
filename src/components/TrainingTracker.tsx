@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import {
   listTrainingRuns,
+  trainingReadiness,
   trajectoryStats,
   type Count,
+  type Readiness,
   type TrainingRun,
   type TrajectoryStats,
 } from "../lib/tauri";
@@ -75,25 +77,37 @@ function pctText(v: number | null): string {
 export default function TrainingTracker({ onClose }: Props) {
   const [stats, setStats] = useState<TrajectoryStats | null>(null);
   const [runs, setRuns] = useState<TrainingRun[]>([]);
+  const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let alive = true;
-    Promise.all([trajectoryStats().catch(() => null), listTrainingRuns().catch(() => [])])
-      .then(([s, r]) => {
-        if (!alive) return;
-        setStats(s);
-        setRuns(r);
-        setLoading(false);
-      });
+    Promise.all([
+      trajectoryStats().catch(() => null),
+      listTrainingRuns().catch(() => []),
+      trainingReadiness().catch(() => null),
+    ]).then(([s, r, rd]) => {
+      if (!alive) return;
+      setStats(s);
+      setRuns(r);
+      setReadiness(rd);
+      setLoading(false);
+    });
     return () => {
       alive = false;
     };
   }, []);
 
   const live = stats?.live ?? 0;
-  const ready = live >= TRAIN_READY_LIVE;
-  const livePct = Math.min(100, Math.round((live / TRAIN_READY_LIVE) * 100));
+  // Readiness is incremental — new real data SINCE the last training run (this is
+  // what fires the notification). Fall back to total-live for a never-trained box.
+  const newLive = readiness?.new_live ?? live;
+  const target = readiness?.live_threshold ?? TRAIN_READY_LIVE;
+  const ready = readiness?.ready ?? live >= TRAIN_READY_LIVE;
+  const livePct = Math.min(100, Math.round((newLive / target) * 100));
+  const lastTrained = readiness?.last_trained
+    ? readiness.last_trained.slice(0, 10)
+    : "never trained";
 
   return (
     <div className="settings">
@@ -120,7 +134,8 @@ export default function TrainingTracker({ onClose }: Props) {
                 />
               </div>
               <p className="settings-hint">
-                {live} / {TRAIN_READY_LIVE} real-usage turns captured.{" "}
+                {newLive} / {target} new turns since last training ({readiness?.new_rated ?? 0} rated) ·
+                last trained: {lastTrained}.{" "}
                 {ready
                   ? "Run training/train.sh on the Mac Mini to fine-tune qwen3-8b."
                   : "Keep using Brain and 👍/👎 answers — or cold-start now on synthetic + distilled data."}
