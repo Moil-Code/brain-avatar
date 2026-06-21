@@ -1563,31 +1563,83 @@ async function applyBoardUpdate(
   }
 }
 
+/** Built-in tool names — the allowlist for salvaging degraded tool-call leaks.
+ *  We only reconstruct a call for a name the model could actually invoke; a
+ *  hallucinated name (e.g. `open_url`) is never turned into a real call. */
+const BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set(
+  TOOL_DEFS.map((d) => d.function.name)
+);
+
+/** A real tool name used as a bare pseudo-call: `fetch_url(`, `run_shell,`, … */
+const TOOL_NAME_CALL_RE = new RegExp(
+  `\\b(?:${[...BUILTIN_TOOL_NAMES].join("|")})\\s*[,(:{]`
+);
+
+/** Heuristic: does this content look like a tool call the model wrote as TEXT
+ *  (leaked markup, a pseudo-call for a real tool, or a bare shell command)
+ *  rather than a genuine prose answer? Triggers ONE self-repair re-prompt
+ *  instead of surfacing the dangling text. */
+export function looksLikeLeakedToolCall(content: string): boolean {
+  if (!content) return false;
+  if (/<\|?tool[_a-z]*\|?>|<\/?tool_call/i.test(content)) return true;
+  if (TOOL_NAME_CALL_RE.test(content)) return true;
+  // A shell command emitted as text, usually with a trailing `}` from the
+  // leaked call wrapper (e.g. `sed -i '…' file}`).
+  if (/\b(sed|grep|awk|rm|mv|cp|cat|ls|git|curl|chmod|mkdir|echo)\b[^\n]*\}\s*$/m.test(content))
+    return true;
+  return false;
+}
+
 /** Recover tool calls a model emitted as TEXT instead of in the structured
  *  `tool_calls` field. Some models/templates (notably the 26B reasoning model, or
  *  any model whose tool-call parser LM Studio doesn't recognize) leak
- *  `<tool_call>{json}</tool_call>` into `content`. We parse the well-formed JSON
- *  blocks back into real calls so the action still runs instead of being shown as
- *  garbage. Malformed/freeform leaks are NOT recovered (too risky) — they're just
- *  stripped from the displayed answer by stripToolMarkup. */
+ *  `<tool_call>{json}</tool_call>` — or a garbled variant — into `content`.
+ *  Pass 1 parses well-formed blocks (any tool name). Pass 2 salvages a
+ *  `knownTool{json}` leak (real tool name + valid JSON args, garbled wrapper).
+ *  Freeform leaks with no name (bare `sed …}`) or a hallucinated name are NOT
+ *  recovered (too risky to auto-execute) — they go to the self-repair re-prompt
+ *  / stripToolMarkup. */
 export function recoverToolCalls(content: string): ToolCall[] {
-  if (!content || !content.includes("<tool_call")) return [];
+  if (!content) return [];
   const out: ToolCall[] = [];
-  const re = /<tool_call[^>]*>\s*(\{[\s\S]*?\})\s*<\/tool_call>/g;
+  const push = (name: unknown, args: unknown) => {
+    if (!name || typeof name !== "string") return;
+    out.push({
+      id: `recovered-${out.length}-${Date.now().toString(36)}`,
+      type: "function",
+      function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args ?? {}) },
+    });
+  };
+
+  // Pass 1: well-formed <tool_call>{json}</tool_call> blocks (any tool name).
+  if (content.includes("<tool_call")) {
+    const re = /<tool_call[^>]*>\s*(\{[\s\S]*?\})\s*<\/tool_call>/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(content)) !== null) {
+      try {
+        const obj = JSON.parse(m[1]);
+        push(
+          obj.name ?? obj.function?.name,
+          obj.arguments ?? obj.parameters ?? obj.function?.arguments ?? {}
+        );
+      } catch {
+        /* not valid JSON — leave it for stripToolMarkup */
+      }
+    }
+  }
+  if (out.length) return out;
+
+  // Pass 2: a KNOWN tool name immediately followed by a valid JSON argument
+  // object, with a missing/garbled wrapper (e.g. `fetch_url{"url":"…"}`). Known
+  // names only — never fabricate a call for an unknown/hallucinated name.
+  const named = /\b([a-z][a-z0-9_]{1,40})\s*(\{[\s\S]*?\})/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(content)) !== null) {
+  while ((m = named.exec(content)) !== null) {
+    if (!BUILTIN_TOOL_NAMES.has(m[1])) continue;
     try {
-      const obj = JSON.parse(m[1]);
-      const name = obj.name ?? obj.function?.name;
-      if (!name || typeof name !== "string") continue;
-      const args = obj.arguments ?? obj.parameters ?? obj.function?.arguments ?? {};
-      out.push({
-        id: `recovered-${out.length}-${Date.now().toString(36)}`,
-        type: "function",
-        function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args) },
-      });
+      push(m[1], JSON.parse(m[2]));
     } catch {
-      /* not valid JSON — leave it for stripToolMarkup */
+      /* not valid JSON — leave for self-repair */
     }
   }
   return out;
@@ -1827,6 +1879,8 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   // poisons history (it few-shot-teaches more narrating). On a no-tool reply that
   // reads as an unexecuted plan, nudge ONCE to force a real call (or the board).
   let nudged = false;
+  // One-shot self-repair when a tool call leaks as text we can't safely rebuild.
+  let repaired = false;
   // tool_choice "required" isn't always honored by LM Studio, so bound how many
   // times we re-prompt for the initial decomposition before giving up.
   let decomposeRetries = 0;
@@ -1931,6 +1985,24 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
           content:
             `The board still has ${open} open card(s). Continue: take the in_progress card, do its ` +
             `work with a tool, then update the board. Do not reply until every card is done or blocked.`,
+        });
+        continue;
+      }
+      // Self-repair: the model wrote a tool call as TEXT (leaked markup, a
+      // pseudo-call for a real tool, or a bare shell command) that we couldn't
+      // safely reconstruct. Rather than surface the dangling text and stop, ask
+      // it ONCE to re-emit a proper structured call. Catches `open_url,url:…}`
+      // (→ a real web tool) and `sed …}` (→ run_shell) — audit 2026-06-21.
+      if (!repaired && looksLikeLeakedToolCall(content)) {
+        repaired = true;
+        messages.push({
+          role: "system",
+          content:
+            "Your last reply was a tool call written as plain text, so nothing ran. " +
+            "Re-issue it as a real structured tool call (the tool_calls field), not prose. " +
+            'Use an actual tool name — e.g. run_shell (with a "command" argument) to run a ' +
+            "shell command, fetch_url or browser_control to open a URL, web_search to search. " +
+            "If no tool is genuinely needed, answer directly with no tool-call markup.",
         });
         continue;
       }
