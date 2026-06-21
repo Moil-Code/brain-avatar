@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { missingInput, routeTask, usableModels } from "./router";
+import { isTrivialChat, missingInput, routeTask, usableModels } from "./router";
 
 // The validated stack plus the junk that LM Studio sometimes also advertises:
 // an experimental 27B qwen fine-tune that fails to load on the 24GB box, and an
@@ -133,5 +133,59 @@ describe("missingInput preflight", () => {
     const q = missingInput("summarize this link for me");
     expect(q).toBeTruthy();
     expect(q).toMatch(/link|url/i);
+  });
+});
+
+describe("isTrivialChat fast-lane detector", () => {
+  it("fires on pure greetings, thanks, acknowledgements, and sign-offs", () => {
+    for (const t of [
+      "hey",
+      "hi there",
+      "hello brain",
+      "hey how are you",
+      "how are you doing today",
+      "good morning!",
+      "good morning brain, how are you?",
+      "thanks",
+      "thank you so much",
+      "thanks buddy",
+      "ok cool",
+      "got it, thanks",
+      "perfect",
+      "sounds good",
+      "lol",
+      "haha nice",
+      "see you later",
+      "good night",
+    ]) {
+      expect(isTrivialChat(t), t).toBe(true);
+    }
+  });
+
+  it("does NOT fire on anything actionable (tools must stay available)", () => {
+    for (const t of [
+      "hey can you check my email",
+      "hi, what's on my calendar today",
+      "how do I reset my password",
+      "thanks, also send it to Maria",
+      "good morning, summarize my inbox",
+      "ok do the thing we discussed",
+      "what's up with the Johnson deal",
+      "tell me about Buda HIVE",
+      "summarize this video",
+    ]) {
+      expect(isTrivialChat(t), t).toBe(false);
+    }
+  });
+
+  it("does NOT fire on affirmative continuations (those advance work, not chit-chat)", () => {
+    for (const t of ["yes", "yeah", "sure", "go ahead", "continue", "keep going", "proceed", "next"]) {
+      expect(isTrivialChat(t), t).toBe(false);
+    }
+  });
+
+  it("ignores empty / whitespace input", () => {
+    expect(isTrivialChat("")).toBe(false);
+    expect(isTrivialChat("   ")).toBe(false);
   });
 });

@@ -153,6 +153,71 @@ export function missingInput(
     : "Sure — send me the link (a URL) and I'll take a look.";
 }
 
+// --- Trivial-turn fast lane -------------------------------------------------
+// Pure social turns — greetings, thanks, acknowledgements, sign-offs — need no
+// tools and no task board. Detecting them lets runAgent skip the ~31-tool schema
+// prefill, MCP discovery, and the whole decomposition loop, so "hey how are you"
+// doesn't pay the full agent tax. (FunctionGemma was evaluated for this dispatch
+// role and rejected: it's explicitly NOT a dialogue model and needs per-toolset
+// fine-tuning that fights our runtime-dynamic MCP tools — a deterministic gate is
+// simpler and carries zero accuracy risk.)
+//
+// HIGH precision is the priority: a false positive would strip tools off a real
+// request. So the ENTIRE normalized message must be social — it must START with a
+// greeting/affirmation core and contain only cores + harmless fillers. Affirmative
+// CONTINUATIONS ("yes", "sure", "go ahead", "continue") are deliberately excluded:
+// those advance work, they aren't chit-chat.
+const CHAT_CORES = [
+  "good morning", "good afternoon", "good evening", "good day", "good night", "goodnight",
+  "how are", "how is", "how's", "hows", "how have", "how you", "how goes",
+  "how's it going", "hows it going", "what's up", "whats up", "whatcha",
+  "thank you", "thanks", "thank", "thx", "ty", "cheers", "appreciate", "appreciated",
+  "got it", "sounds good", "sounds great", "makes sense", "fair enough",
+  "no worries", "no problem", "all good", "see you", "see ya", "talk later",
+  "talk to you later", "take care", "good to know",
+  "hi", "hello", "hey", "heya", "hiya", "yo", "howdy", "hola", "greetings",
+  "sup", "wassup", "whatsup", "mornin", "evenin",
+  "ok", "okay", "kk", "cool", "nice", "great", "awesome", "perfect", "sweet",
+  "wonderful", "excellent", "fantastic", "np", "bye", "goodbye", "later", "night",
+  "lol", "lmao", "haha", "hahaha", "hehe", "ha",
+];
+// Connective words allowed AFTER a core ("hey there", "thanks so much", "how are
+// you doing today"). Kept free of any action verb so a request can never sneak in.
+const CHAT_FILLERS = [
+  "there", "buddy", "man", "dude", "friend", "pal", "brain", "jarvis", "again",
+  "today", "tonight", "please", "you", "it", "ya", "things", "doing", "going",
+  "been", "everything", "goes", "so", "much", "a", "lot", "my", "and",
+];
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const coreAlt = CHAT_CORES.slice()
+  .sort((a, b) => b.length - a.length)
+  .map(escapeRe)
+  .join("|");
+const fillAlt = CHAT_FILLERS.map(escapeRe).join("|");
+const TRIVIAL_CHAT_RE = new RegExp(
+  `^(?:${coreAlt})(?:\\s+(?:${coreAlt}|${fillAlt}))*$`,
+  "i"
+);
+
+/**
+ * True only when the WHOLE message is social small-talk that needs no tool — a
+ * greeting, thanks, acknowledgement, or sign-off. Conservative by design: short
+ * (≤6 words), must start with a social core, and may only carry harmless fillers.
+ * Anything actionable ("hey can you check my email", "how do I reset my password",
+ * "thanks, also send it") falls through to the normal tool path.
+ */
+export function isTrivialChat(text: string): boolean {
+  const t = (text ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s']/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) return false;
+  if (t.split(" ").length > 6) return false;
+  return TRIVIAL_CHAT_RE.test(t);
+}
+
 /**
  * The routing layer: pick the best LOADED model for the request. No network call —
  * routing is a local heuristic (default → fast tool tier qwen3-8b; deep work → 26B;

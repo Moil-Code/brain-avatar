@@ -1,5 +1,5 @@
 import { resolveBaseEndpoint } from "./llm";
-import { missingInput, routeTask, type Route } from "./router";
+import { isTrivialChat, missingInput, routeTask, type Route } from "./router";
 import {
   brainPage,
   brainSearch,
@@ -1639,10 +1639,36 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     };
   }
 
+  const base = await resolveBaseEndpoint(settings);
+
+  // Trivial-turn fast lane. A pure greeting/acknowledgement ("hey how are you",
+  // "thanks!") needs no tools and no board, so skip the ~31-tool schema prefill,
+  // MCP discovery, and the whole decomposition loop: one no-tools completion on the
+  // fast tier. This is the non-thinking-task speedup — such turns shouldn't pay the
+  // full agent tax. Guarded to text-only turns (an attachment may want vision) and
+  // skipped if no model is loaded (the normal path surfaces the unreachable error).
+  if (!hasImage && attachments.length === 0 && base.models.length > 0 && isTrivialChat(userText)) {
+    const picked = opts.modelOverride ?? (await routeTask({ userText, endpoint: base })).modelId;
+    const chatRoute: Route = { modelId: picked, taskType: "chat", enhanced: userText, routed: false };
+    onRoute?.(chatRoute);
+    const shortM = picked.split("/").pop() ?? picked;
+    onStep?.({ id: "route", label: `Using ${shortM}`, done: true });
+    onStep?.({ id: "answer", label: "Writing the answer", done: false });
+    const chatMsgs: ChatMessage[] = [
+      { role: "system", content: settings.system_prompt },
+      ...history.slice(-12),
+      { role: "user", content: userText },
+    ];
+    const r = await llmComplete(base.baseUrl, base.token, picked, chatMsgs, undefined, settings.max_tokens);
+    const answer = (r.content ?? "").trim();
+    onStep?.({ id: "answer", label: "Writing the answer", done: true });
+    onToken?.(answer);
+    return { content: answer, tools: [], route: chatRoute };
+  }
+
   // Routing layer: find the reachable endpoint + its loaded models, classify the
   // task, pick the best model, and rewrite the request into a sharper instruction.
   // A model picked from the menu (modelOverride) bypasses routing entirely.
-  const base = await resolveBaseEndpoint(settings);
   const route: Route = opts.modelOverride
     ? { modelId: opts.modelOverride, taskType: "manual", enhanced: userText, routed: true }
     : await routeTask({ userText, endpoint: base, hasImage });
