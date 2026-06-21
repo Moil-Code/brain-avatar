@@ -9,6 +9,7 @@ mod shell;
 mod task_board;
 mod video;
 pub mod tools;
+mod trajectory;
 mod tts;
 pub mod voice;
 
@@ -202,6 +203,11 @@ pub fn run() {
             task_board::set_task_board,
             task_board::list_task_boards,
             task_board::clear_task_board,
+            trajectory::save_trajectory,
+            trajectory::rate_trajectory,
+            trajectory::trajectory_stats,
+            trajectory::list_training_runs,
+            trajectory::log_training_run,
             tts::tts_speak,
             tts::tts_stop,
             tts::list_voices,

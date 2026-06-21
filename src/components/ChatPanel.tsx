@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { extractDocText } from "../lib/tauri";
+import { extractDocText, rateTrajectory } from "../lib/tauri";
 import { renderMarkdown } from "../lib/markdown";
 import { ErrorBoundary } from "./ErrorBoundary";
 import TaskBoard from "./TaskBoard";
@@ -129,6 +129,9 @@ export default function ChatPanel({
       const stored = JSON.parse(localStorage.getItem("msg-ratings") ?? "{}");
       localStorage.setItem("msg-ratings", JSON.stringify({ ...stored, [messageId]: rating }));
     } catch { /* ignore */ }
+    // Label the on-device training corpus (the KTO preference signal). Local-only,
+    // works without any cloud sync; messageId is the captured turn's turn_id.
+    rateTrajectory(messageId, rating).catch(() => {});
     // Also sync to cloud if configured (optional).
     if (!syncApiUrl || !conversationId) return;
     try {

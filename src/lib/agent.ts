@@ -1413,10 +1413,30 @@ export interface RunAgentOpts {
   signal?: AbortSignal;
 }
 
+/** One tool the model invoked, with the raw args it emitted and whether the
+ *  executor accepted it — the structured tool-use signal for training capture. */
+export interface ToolEvent {
+  round: number;
+  name: string;
+  arguments: string;
+  ok: boolean;
+}
+
+/** Everything a training export needs from one turn: the exact messages the model
+ *  saw, the tool calls it chose, and how many rounds it took. Captured locally by
+ *  the caller (App.tsx → save_trajectory); never synced. */
+export interface Trajectory {
+  messages: unknown[];
+  toolEvents: ToolEvent[];
+  rounds: number;
+}
+
 export interface RunAgentResult {
   content: string;
   tools: string[];
   route?: Route;
+  /** The full turn trajectory for the on-device training corpus. */
+  trajectory?: Trajectory;
 }
 
 /** Ensure exactly one card is in_progress while work remains: if none is and a
@@ -1687,6 +1707,9 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   ];
 
   const toolsUsed: string[] = [];
+  // Structured tool-use log for the local training corpus: one entry per tool call
+  // the model made, with the raw args and whether the executor accepted it.
+  const toolEvents: ToolEvent[] = [];
 
   // Merge any MCP server tools into the set offered to the model this turn.
   const mcpDefs = await loadMcpTools();
@@ -1877,7 +1900,12 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       const answer = stripToolMarkup(content.trim());
       onStep?.({ id: "answer", label: "Writing the answer", done: true });
       onToken?.(answer);
-      return { content: answer, tools: toolsUsed, route };
+      return {
+        content: answer,
+        tools: toolsUsed,
+        route,
+        trajectory: { messages, toolEvents, rounds: round + 1 },
+      };
     }
 
     // Clarify-and-stop. If the model asked for a missing input, surface that
@@ -1978,6 +2006,12 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         toolsSinceBoardUpdate.add(tc.function.name);
         toolsRanThisRound.push(tc.function.name);
       }
+      toolEvents.push({
+        round,
+        name: tc.function.name,
+        arguments: tc.function.arguments ?? "",
+        ok: !toolFailed,
+      });
       onStep?.({ id: stepId, label, done: true });
       messages.push({
         role: "tool",
@@ -2009,6 +2043,12 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         maxRounds = Math.min(MAX_ROUNDS_CAP, Math.max(maxRounds, 4 + 3 * board.tasks.length));
         reinjectBoard();
       }
+      toolEvents.push({
+        round,
+        name: "manage_tasks",
+        arguments: tc.function.arguments ?? "",
+        ok: !!result.board,
+      });
       onStep?.({ id: stepId, label: "Updating the task board", done: true });
       messages.push({
         role: "tool",
@@ -2051,5 +2091,10 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   );
   const answer = stripToolMarkup((final.content ?? "").trim());
   onToken?.(answer);
-  return { content: answer, tools: toolsUsed, route };
+  return {
+    content: answer,
+    tools: toolsUsed,
+    route,
+    trajectory: { messages, toolEvents, rounds: maxRounds },
+  };
 }

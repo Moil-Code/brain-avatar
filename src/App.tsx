@@ -19,10 +19,12 @@ import {
   pushChat,
   replaceConversation,
   saveMessage,
+  saveTrajectory,
   type ConvSummary,
 } from "./lib/tauri";
 import ChatsView from "./components/Chats";
 import AutomationsView from "./components/Automations";
+import TrainingTracker from "./components/TrainingTracker";
 import {
   deliverAutomation,
   isDue,
@@ -158,6 +160,7 @@ export default function App() {
   });
   const [showChats, setShowChats] = useState(false);
   const [showAutomations, setShowAutomations] = useState(false);
+  const [showTraining, setShowTraining] = useState(false);
   const [conversations, setConversations] = useState<ConvSummary[]>([]);
   const [activeConv, setActiveConv] = useState<string>(() => getConversationId());
   const [convoMode, setConvoMode] = useState<boolean>(
@@ -370,6 +373,28 @@ export default function App() {
         pushChat(activeConv, "", "assistant", answer).catch(() => {});
         saveMessage(activeConv, "user", text, userMsg.id).catch(() => {});
         saveMessage(activeConv, "assistant", answer, botId).catch(() => {});
+
+        // Capture the full turn for the on-device training corpus (local-only;
+        // never synced). botId is the join key the thumbs rating later updates.
+        if (result.trajectory) {
+          saveTrajectory({
+            schema_version: 1,
+            conversation_id: activeConv,
+            turn_id: botId,
+            created_at: new Date().toISOString(),
+            model_id: result.route?.modelId ?? "",
+            task_type: result.route?.taskType ?? "",
+            routed: result.route?.routed ?? false,
+            user: text,
+            messages: result.trajectory.messages,
+            tool_events: result.trajectory.toolEvents,
+            tools_used: result.tools ?? [],
+            rounds: result.trajectory.rounds,
+            final_answer: answer,
+            rating: null,
+            source: "live",
+          }).catch(() => {});
+        }
 
         speak(answer, {
           onStart: () => setAvatarState("speaking"),
@@ -733,6 +758,7 @@ export default function App() {
         onOpenSettings={() => setShowSettings(true)}
         onOpenChats={openChats}
         onOpenAutomations={() => setShowAutomations(true)}
+        onOpenTraining={() => setShowTraining(true)}
         onNewChat={newChat}
         onMinimize={startPeek}
         peeked={peeked}
@@ -788,6 +814,7 @@ export default function App() {
         syncToken={settings?.sync_token}
         conversationId={activeConv}
       />
+      {showTraining && <TrainingTracker onClose={() => setShowTraining(false)} />}
       {showAutomations && (
         <AutomationsView
           onClose={() => setShowAutomations(false)}

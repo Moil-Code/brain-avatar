@@ -220,6 +220,64 @@ export const fetchConversations = (limit?: number) =>
 export const fetchDailyDigest = (date?: string) =>
   invoke<string>("fetch_daily_digest", { date: date ?? "" });
 
+// --- On-device training corpus (local-only; never synced) ---
+/** One captured turn appended to the daily trajectory shard. Mirrors the Rust
+ *  `Trajectory` struct (src-tauri/src/trajectory.rs). */
+export interface TrajectoryRecord {
+  schema_version: number;
+  conversation_id: string;
+  turn_id: string;
+  created_at: string;
+  model_id: string;
+  task_type: string;
+  routed: boolean;
+  user: string;
+  messages: unknown[];
+  tool_events: { round: number; name: string; arguments: string; ok: boolean }[];
+  tools_used: string[];
+  rounds: number;
+  final_answer: string;
+  rating: number | null;
+  /** Provenance: "live" | "synthetic" | "distilled". Live capture sends "live". */
+  source: string;
+}
+/** Append one completed turn to today's local training shard. Best-effort. */
+export const saveTrajectory = (trajectory: TrajectoryRecord) =>
+  invoke<void>("save_trajectory", { trajectory });
+/** Attach a thumbs rating (-1/1) to an already-captured turn (the KTO label). */
+export const rateTrajectory = (turnId: string, rating: -1 | 1) =>
+  invoke<void>("rate_trajectory", { turnId, rating });
+
+export interface Count {
+  name: string;
+  count: number;
+}
+export interface TrajectoryStats {
+  total: number;
+  by_source: Count[];
+  by_task: Count[];
+  by_tool: Count[];
+  by_day: Count[];
+  ratings: { up: number; down: number; unrated: number };
+  live: number;
+  rated_live: number;
+}
+export interface TrainingRun {
+  started_at: string;
+  mode: string;
+  base_model: string;
+  iters: number;
+  examples: number;
+  eval_before: number | null;
+  eval_after: number | null;
+  adapter_path: string;
+  status: string;
+}
+/** Aggregate the local trajectory corpus (what we'd train on). */
+export const trajectoryStats = () => invoke<TrajectoryStats>("trajectory_stats");
+/** The log of training runs, newest first (when we've trained). */
+export const listTrainingRuns = () => invoke<TrainingRun[]>("list_training_runs");
+
 // --- Local conversation store (durable "recent chats") ---
 export interface ConvSummary {
   id: string;
