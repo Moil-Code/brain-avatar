@@ -65,7 +65,9 @@ trained date). When it pings, run `training/train.sh` on the Mini.
   (all tool calls ok, not thumbed-down). The main behavioral fine-tune.
 - **KTO** (`--mode kto`): preference tuning from thumbs. Emits `{prompt, completion,
   label}` (unpaired binary) — the correct shape for 👍/👎 (not DPO, which needs
-  matched pairs). Run after SFT, once enough rated turns exist.
+  matched pairs). Run after SFT, once enough rated turns exist. Also writes
+  `kto_config.json` with class-balancing weights + an anti-sycophancy guardrail for the
+  Mac-side run (and flags when you only have one thumbs class so far).
 
 ## Quick start (offline, no model)
 
@@ -143,4 +145,6 @@ for the full gap analysis, research citations, and phased plan.
   structured identifiers today (best practice: on-device Presidio = regex + NER).
 - **Deeper eval** — multi-turn / state-based (τ-bench-style) cases (refusal/irrelevance
   + arg-value checks are done).
+- **Run the trainer** — the actual LoRA SFT + KTO passes on the Mac Mini (GPU-bound;
+  `train.sh` + the emitted `kto_config.json` weights).
 - **Guarded KTO** — class weighting (1:1–4:3) + an SFT anchor against sycophancy.

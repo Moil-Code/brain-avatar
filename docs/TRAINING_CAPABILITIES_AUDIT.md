@@ -118,7 +118,7 @@ Findings below are from primary sources (papers / official docs), verified live.
 | G3 | ◐ **mostly done** — JSON-validity + arg-value (reasoning PR), refusal/irrelevance + multi-tool accept (round 2); **multi-turn still pending** | 🟠 med | med | §2.6 |
 | G4 | **Redaction structured-only** — no NER name redaction | 🟠 med (privacy) | med | §2.7 |
 | G5 | ✅ **done (round 1)** — corpus dedup pass (exact default, near opt-in) | 🟡 low | med | §2.4 |
-| G6 | **KTO unguarded** — no class weighting / sycophancy guard | 🟡 low | low | §2.5 |
+| G6 | ✅ **done (round 4)** — export emits KTO class weights + sycophancy guard (`kto_config.json`) | 🟡 low | low | §2.5 |
 | G7 | **No derived outcome labels** beyond `ok` (next-turn correction, confirm-honored) | 🟡 low | med | plan §0.2 |
 | G8 | **No implicit preference signals** (re-ask = weak negative, etc.) | 🟡 low | med | plan §0.3 |
 
@@ -231,3 +231,16 @@ Recurring research-backed rounds; one scoped, offline-validated improvement each
   encoded (OpenAI/Qwen convention) to match our captured trajectories.
 - **Validation:** selftest 32/32; SFT `train.jsonl` carries the 14-tool array;
   eval/distill lint 14 tools; `tsc` clean; vitest 66/66.
+
+### Round 4 — 2026-06-22 — guarded KTO config (G6)
+- **`training/kto.ts`** (new): `ktoWeights(nPos,nNeg)` up-weights the minority class so the
+  weighted desirable:undesirable ratio hits TRL's balanced band; `KTO_GUARD` text.
+- **`export.ts`** (kto mode): writes `kto_config.json` (counts, balancing weights, ratio,
+  guard) for the Mac-side run, and logs it. When only one preference class is present it
+  **says so** rather than emitting a bogus balance — a useful signal that real 👎 are
+  needed before KTO is worthwhile.
+- **Why:** thumbs are unpaired/imbalanced → KTO not DPO, with class weighting
+  (https://huggingface.co/docs/trl/main/en/kto_trainer) and a sycophancy/over-optimization
+  guard (https://arxiv.org/abs/2310.13548, https://arxiv.org/abs/2406.02900).
+- **Validation:** selftest 36/36; `kto_config.json` emitted (synthetic-only corpus flagged
+  as single-class, as expected); `tsc` clean; vitest 66/66.

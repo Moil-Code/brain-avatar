@@ -24,6 +24,7 @@ import { redactRecord } from "./redact.ts";
 import { withThink } from "./reasoning.ts";
 import { dedup, recordSignature, type DedupMode } from "./dedup.ts";
 import { TOOL_DEFS } from "./tool_defs.ts";
+import { ktoWeights, KTO_GUARD } from "./kto.ts";
 
 function arg(name: string, def: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -206,5 +207,18 @@ const withReasoning = [...train, ...valid].filter((r) =>
 console.log(`mode=${mode}  live=${live.length}  distilled=${distilled.length}  synthetic=${synth.length}  kept=${kept.length}`);
 console.log(`→ ${join(outDir, "train.jsonl")}  (${train.length} train, ${valid.length} valid)`);
 console.log(`dedup=${dedupMode}  removed=${dropped}  ·  reasoning=${reasoningMode}  examples-with-<think>=${withReasoning}  ·  tools=${withTools ? "on" : "off"}`);
+
+// KTO: emit balancing weights + the anti-sycophancy guardrail for the Mac-side run.
+if (mode === "kto") {
+  const labels = [...train, ...valid].map((r) => (r as { label?: boolean }).label);
+  const nPos = labels.filter((l) => l === true).length;
+  const nNeg = labels.filter((l) => l === false).length;
+  const cfg = { ...ktoWeights(nPos, nNeg), guard: KTO_GUARD };
+  writeFileSync(join(outDir, "kto_config.json"), JSON.stringify(cfg, null, 2) + "\n");
+  console.log(
+    `kto weights: desirable=${cfg.desirable_weight} undesirable=${cfg.undesirable_weight} ` +
+      `(n_pos=${nPos}, n_neg=${nNeg}, ratio=${cfg.ratio})${cfg.note ? ` — ${cfg.note}` : ""}`
+  );
+}
 if (!sys) console.log("note: training/system_prompt.txt absent — kept each record's own system message.");
 if (live.length === 0) console.log(`note: no live data at ${liveDir} — corpus is synthetic-only for now.`);

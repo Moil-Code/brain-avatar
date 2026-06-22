@@ -13,6 +13,7 @@ import { redactText, redactRecord } from "./redact.ts";
 import { mockToolResult } from "./mockenv.ts";
 import { splitReasoning, withThink } from "./reasoning.ts";
 import { dedup, jaccard, recordSignature } from "./dedup.ts";
+import { ktoWeights } from "./kto.ts";
 
 let n = 0;
 const check = (name: string, fn: () => void) => {
@@ -263,6 +264,46 @@ check("export: tool schemas attached by default; --tools off omits them", () => 
   const on = run("on");
   assert.ok(on.includes('"tools"') && on.includes("brain_page") && on.includes("parameters"), "tools schema present by default");
   assert.ok(!run("off").includes('"tools"'), "tools omitted with --tools off");
+});
+
+// --- KTO class weighting (sycophancy/imbalance guard) ------------------------
+check("kto weights: balanced classes stay 1:1", () => {
+  const w = ktoWeights(10, 10);
+  assert.equal(w.desirable_weight, 1);
+  assert.equal(w.undesirable_weight, 1);
+  assert.equal(w.ratio, 1);
+});
+check("kto weights: rarer thumbs-down gets up-weighted to balance", () => {
+  const w = ktoWeights(90, 10);
+  assert.equal(w.desirable_weight, 1);
+  assert.ok(w.undesirable_weight > 1, "undesirables up-weighted");
+  assert.equal(w.ratio, 1, "balanced after weighting");
+});
+check("kto weights: one-class corpus is flagged, not silently balanced", () => {
+  const w = ktoWeights(5, 0);
+  assert.ok(w.note && /one preference class/.test(w.note));
+});
+check("export kto: writes balancing weights + guard config", () => {
+  const kt = "/tmp/_kto_selftest";
+  execSync(`rm -rf ${kt} && mkdir -p ${kt}`, { stdio: "ignore" });
+  const neg: TrajectoryRecord = {
+    ...goldRec, turn_id: "tNeg", user: "who is Sam?", rating: -1, tool_events: [], tools_used: [],
+    final_answer: "Sam is in sales.",
+    messages: [
+      { role: "system", content: "sys" },
+      { role: "user", content: "who is Sam?" },
+      { role: "assistant", content: "Sam is in sales." },
+    ],
+  };
+  writeFileSync(`${kt}/distilled.jsonl`, [JSON.stringify(goldRec), JSON.stringify(neg)].join("\n") + "\n");
+  execSync(
+    `node --experimental-strip-types training/export.ts --live ${kt}/nolive --synth ${kt}/nosynth.jsonl --distill ${kt}/distilled.jsonl --out ${kt}/out --mode kto`,
+    { stdio: "ignore" }
+  );
+  const cfg = JSON.parse(readFileSync(`${kt}/out/kto_config.json`, "utf8"));
+  assert.equal(cfg.n_pos, 1, "one thumbs-up");
+  assert.equal(cfg.n_neg, 1, "one thumbs-down");
+  assert.ok(typeof cfg.guard === "string" && cfg.guard.length > 0, "guard note present");
 });
 
 console.log(`\n1..${n}\nall ${n} checks passed`);
