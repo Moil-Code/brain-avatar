@@ -22,6 +22,7 @@ import {
   findFiles,
   listApps,
   llmComplete,
+  llmStream,
   openApp,
   openFileCmd,
   readEmails,
@@ -1699,6 +1700,35 @@ export function stripToolMarkup(s: string): string {
     .trim();
 }
 
+/** Streaming completion with a safe fallback. Forwards content deltas to `onToken`
+ *  as the model generates, so the answer prints and is spoken in step rather than
+ *  all at once. On any NON-cancel failure it falls back to the proven non-streaming
+ *  llmComplete (emitting the whole answer once via onToken), so behavior never
+ *  regresses. A Stop (cancel/abort) is propagated, not retried. Returns the same
+ *  {content, tool_calls} shape as llmComplete, so callers are unchanged. */
+async function streamComplete(
+  baseUrl: string,
+  token: string | undefined,
+  model: string,
+  messages: unknown,
+  tools: unknown,
+  maxTokens: number | undefined,
+  toolChoice: unknown,
+  onToken?: (delta: string) => void
+): Promise<{ content: string; tool_calls: ToolCall[] | null }> {
+  try {
+    return await llmStream(baseUrl, token, model, messages, tools, maxTokens, toolChoice, (d) =>
+      onToken?.(d)
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/cancel|abort/i.test(msg)) throw e; // Stop must not silently re-run the request
+    const res = await llmComplete(baseUrl, token, model, messages, tools, maxTokens, toolChoice);
+    if (res.content) onToken?.(res.content);
+    return res;
+  }
+}
+
 /** Run the full tool-calling loop and return the final grounded answer. */
 export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   const { userText, history, settings, onState, onToken, onToolStart, onRoute, onStep, signal } =
@@ -1751,10 +1781,19 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       ...history.slice(-12),
       { role: "user", content: userText },
     ];
-    const r = await llmComplete(base.baseUrl, base.token, picked, chatMsgs, undefined, settings.max_tokens);
+    const r = await streamComplete(
+      base.baseUrl,
+      base.token,
+      picked,
+      chatMsgs,
+      undefined,
+      settings.max_tokens,
+      undefined,
+      onToken
+    );
     const answer = (r.content ?? "").trim();
     onStep?.({ id: "answer", label: "Writing the answer", done: true });
-    onToken?.(answer);
+    // (no onToken(answer) here — streamComplete already emitted the content)
     // Capture the fast lane too — trivial turns are still real-usage persona/style
     // data, and skipping them left the training tracker empty for chatty sessions.
     return {
@@ -1947,24 +1986,27 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     const toolChoice: unknown = forceDecompose ? "required" : undefined;
     let res;
     try {
-      res = await llmComplete(
+      res = await streamComplete(
         endpoint.baseUrl,
         endpoint.token,
         endpoint.model,
         messages,
         toolDefs,
         settings.max_tokens,
-        toolChoice
+        toolChoice,
+        onToken
       );
     } catch (e) {
       if (forceDecompose) {
-        res = await llmComplete(
+        res = await streamComplete(
           endpoint.baseUrl,
           endpoint.token,
           endpoint.model,
           messages,
           toolDefs,
-          settings.max_tokens
+          settings.max_tokens,
+          undefined,
+          onToken
         );
       } else {
         throw e;
@@ -2048,7 +2090,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       }
       const answer = stripToolMarkup(content.trim());
       onStep?.({ id: "answer", label: "Writing the answer", done: true });
-      onToken?.(answer);
+      // streamComplete already emitted this round's content token-by-token.
       return {
         content: answer,
         tools: toolsUsed,
@@ -2230,16 +2272,18 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   }
 
   // Exhausted tool rounds — make one final answer attempt without tools.
-  const final = await llmComplete(
+  const final = await streamComplete(
     endpoint.baseUrl,
     endpoint.token,
     endpoint.model,
     messages,
     undefined,
-    settings.max_tokens
+    settings.max_tokens,
+    undefined,
+    onToken
   );
   const answer = stripToolMarkup((final.content ?? "").trim());
-  onToken?.(answer);
+  // streamComplete already emitted the content token-by-token.
   return {
     content: answer,
     tools: toolsUsed,

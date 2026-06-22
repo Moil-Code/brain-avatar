@@ -42,6 +42,9 @@ import {
   primeVoices,
   setMuted as setMutedFlag,
   speak,
+  speechStreamEnd,
+  speechStreamPush,
+  speechStreamStart,
   startRecording,
   stopSpeaking,
   transcriptIsJunk,
@@ -379,6 +382,16 @@ export default function App() {
       setBusy(true);
       setAvatarState("thinking");
       stopSpeaking();
+      // Speak the answer sentence-by-sentence as it streams in (fed from onToken
+      // below), so the voice keeps pace with the text instead of waiting for the
+      // whole answer. onIdle fires when the last sentence finishes.
+      speechStreamStart({
+        onStart: () => setAvatarState("speaking"),
+        onIdle: () => {
+          setAvatarState("idle");
+          if (isActive()) autoListenRef.current(); // hands-free only on the visible chat
+        },
+      });
 
       const ac = new AbortController();
       abortRef.current = ac;
@@ -413,6 +426,7 @@ export default function App() {
           onToken: (delta) => {
             run.streamed += delta;
             if (isActive()) patchMessage(botId, { content: run.streamed });
+            speechStreamPush(delta); // speak each sentence as it completes (any chat)
           },
           onToolStart: (name) => {
             if (!run.tools.includes(name)) run.tools = [...run.tools, name];
@@ -466,17 +480,13 @@ export default function App() {
           }).catch(() => {});
         }
 
-        // Speak the answer even if the user has moved to another chat — generation
-        // is single-flight, so answers are produced one at a time and never overlap.
-        speak(answer, {
-          onStart: () => setAvatarState("speaking"),
-          onEnd: () => {
-            setAvatarState("idle");
-            // Hands-free back-and-forth only continues the chat on screen.
-            if (isActive()) autoListenRef.current();
-          },
-        });
+        // Flush the trailing partial sentence; the streamer's onIdle (set above)
+        // drops the avatar to idle and resumes convo-mode. Speech runs even if the
+        // user moved to another chat (generation is single-flight, so answers never
+        // overlap); when muted it just fires onIdle with no audio.
+        speechStreamEnd();
       } catch (e) {
+        stopSpeaking(); // halt any partial streamed speech
         const msg = e instanceof Error ? e.message : String(e);
         if (isActive()) {
           if (msg.toLowerCase().includes("abort") || msg.toLowerCase().includes("cancel")) {

@@ -235,8 +235,13 @@ export function setMuted(value: boolean): void {
   } catch {
     /* noop */
   }
-  // Silence anything mid-sentence the instant mute is turned on.
-  if (value) ttsStop().catch(() => {});
+  // Silence anything mid-sentence the instant mute is turned on — both a one-shot
+  // utterance and an in-progress streamed answer (clear its queue so it can't resume).
+  if (value) {
+    sQueue = [];
+    sBuf = "";
+    ttsStop().catch(() => {});
+  }
 }
 
 export function speak(
@@ -251,13 +256,145 @@ export function speak(
     opts.onEnd?.();
     return;
   }
+  // A one-shot utterance (manual 🔊 replay, automation delivery) takes over: drop
+  // any streamed-answer queue so it doesn't resume on top of this.
+  sQueue = [];
+  sBuf = "";
   opts.onStart?.();
   ttsSpeak(text)
     .catch((e) => console.error("tts_speak failed", e))
     .finally(() => opts.onEnd?.());
 }
 
+// --- Streaming speech --------------------------------------------------------
+// Speak an answer sentence-by-sentence AS IT STREAMS in, so the voice keeps pace
+// with the text instead of waiting for the whole answer to finish generating.
+
+/** Split an accumulating buffer into complete speakable chunks (sentences / lines)
+ *  plus the leftover tail. With `final`, the remaining tail becomes a last chunk.
+ *  A boundary is sentence-ending punctuation (`. ! ? …`, plus any closing quote or
+ *  bracket) followed by whitespace/end, or a line break. Decimals like "3.5" don't
+ *  split (no space after the dot). Pure + exported for tests. */
+export function splitSpeechChunks(
+  buf: string,
+  final: boolean
+): { chunks: string[]; rest: string } {
+  const chunks: string[] = [];
+  const isEnder = (c: string) => c === "." || c === "!" || c === "?" || c === "…";
+  let cut = 0; // start of the current pending chunk
+  for (let k = 0; k < buf.length; k++) {
+    const c = buf[k];
+    if (c === "\n") {
+      const seg = buf.slice(cut, k).trim();
+      if (seg) chunks.push(seg);
+      cut = k + 1;
+      continue;
+    }
+    if (isEnder(c)) {
+      // Absorb trailing closing quotes/brackets and runs of enders ("?!", "…").
+      let j = k + 1;
+      while (
+        j < buf.length &&
+        (buf[j] === '"' || buf[j] === "'" || buf[j] === ")" || buf[j] === "]" || isEnder(buf[j]))
+      ) {
+        j++;
+      }
+      const next = buf[j];
+      if ((next === undefined && final) || next === " " || next === "\n" || next === "\t") {
+        const seg = buf.slice(cut, j).trim();
+        if (seg) chunks.push(seg);
+        cut = j;
+      }
+      k = j - 1; // skip what we inspected
+    }
+  }
+  let rest = buf.slice(cut);
+  if (final) {
+    const seg = rest.trim();
+    if (seg) chunks.push(seg);
+    rest = "";
+  }
+  return { chunks, rest };
+}
+
+let sBuf = ""; // text received but not yet split into a complete chunk
+let sQueue: string[] = []; // sentences waiting to be spoken, in order
+let sSpeaking = false; // a chunk's ttsSpeak is currently in flight
+let sEnded = false; // no more text is coming (the turn finished)
+let sStarted = false; // onStart has fired for this stream
+let sOnStart: (() => void) | undefined;
+let sOnIdle: (() => void) | undefined;
+
+function streamReset(): void {
+  sBuf = "";
+  sQueue = [];
+  sSpeaking = false;
+  sEnded = false;
+  sStarted = false;
+  sOnStart = undefined;
+  sOnIdle = undefined;
+}
+
+/** Speak the next queued chunk; chains itself until the queue drains. */
+function streamPump(): void {
+  if (sSpeaking) return;
+  // Muted mid-stream: drain silently but still let the flow continue (convo mode).
+  if (muted) {
+    sQueue = [];
+    sBuf = "";
+    if (sEnded) sOnIdle?.();
+    return;
+  }
+  const next = sQueue.shift();
+  if (next === undefined) {
+    if (sEnded) sOnIdle?.();
+    return;
+  }
+  sSpeaking = true;
+  if (!sStarted) {
+    sStarted = true;
+    sOnStart?.();
+  }
+  ttsSpeak(next)
+    .catch((e) => console.error("tts_speak failed", e))
+    .finally(() => {
+      sSpeaking = false;
+      streamPump();
+    });
+}
+
+/** Begin a streamed utterance. `onStart` fires when the first chunk starts
+ *  speaking; `onIdle` fires once everything queued has finished (or right away
+ *  when muted) — used to drop the avatar back to idle and resume convo-mode. */
+export function speechStreamStart(opts: { onStart?: () => void; onIdle?: () => void } = {}): void {
+  streamReset();
+  sOnStart = opts.onStart;
+  sOnIdle = opts.onIdle;
+}
+
+/** Feed streamed answer text; complete sentences are spoken as they form. */
+export function speechStreamPush(delta: string): void {
+  if (!delta || muted) return;
+  sBuf += delta;
+  const { chunks, rest } = splitSpeechChunks(sBuf, false);
+  sBuf = rest;
+  if (chunks.length) {
+    sQueue.push(...chunks);
+    streamPump();
+  }
+}
+
+/** No more text is coming: speak the trailing partial sentence, then signal idle. */
+export function speechStreamEnd(): void {
+  sEnded = true;
+  const { chunks } = splitSpeechChunks(sBuf, true);
+  sBuf = "";
+  if (chunks.length) sQueue.push(...chunks);
+  streamPump();
+}
+
 export function stopSpeaking(): void {
+  streamReset();
   ttsStop().catch(() => {});
 }
 
