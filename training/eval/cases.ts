@@ -36,6 +36,9 @@ export interface EvalCase {
   user: string;
   /** Tool the model SHOULD call first (by name). */
   expectFirstTool?: string;
+  /** Any ONE of these is an acceptable first tool (use when >1 choice is correct,
+   *  e.g. brain_page vs brain_search for a contextual lookup). */
+  expectOneOfFirstTool?: string[];
   /** Tools that MUST NOT appear (e.g. send_email before a confirm). */
   forbidTools?: string[];
   /** True ⇒ the gold turn makes NO tool call (it asks/answers directly). */
@@ -94,6 +97,17 @@ export const CASES: EvalCase[] = [
     forbidTools: ["create_automation"],
     expectNoToolCall: true,
   },
+  // irrelevance / refusal — must NOT reach for a tool on smalltalk or meta-questions
+  // (BFCL's "irrelevance" category: knowing when not to call a tool).
+  { id: "smalltalk-thanks", user: "thanks, that's all for now", expectNoToolCall: true },
+  { id: "smalltalk-greet", user: "good morning!", expectNoToolCall: true },
+  { id: "meta-capabilities", user: "what can you help me with?", expectNoToolCall: true },
+  // contextual lookup where more than one grounding tool is acceptable
+  {
+    id: "context-lookup",
+    user: "what do we know about the pricing change?",
+    expectOneOfFirstTool: ["brain_search", "brain_page"],
+  },
 ];
 
 export interface CaseResult {
@@ -115,6 +129,12 @@ export function scoreCase(c: EvalCase, msg: ChatMessage): CaseResult {
   if (c.expectFirstTool) {
     const ft = firstTool(msg)?.function.name;
     if (ft !== c.expectFirstTool) reasons.push(`first tool ${ft ?? "(none)"} ≠ ${c.expectFirstTool}`);
+  }
+  if (c.expectOneOfFirstTool) {
+    const ft = firstTool(msg)?.function.name;
+    if (!ft || !c.expectOneOfFirstTool.includes(ft)) {
+      reasons.push(`first tool ${ft ?? "(none)"} ∉ {${c.expectOneOfFirstTool.join(", ")}}`);
+    }
   }
   if (c.expectNoToolCall && calls.length > 0) {
     reasons.push(`expected no tool call, got ${names.join(",")}`);

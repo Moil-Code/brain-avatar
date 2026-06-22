@@ -230,6 +230,23 @@ check("export: duplicate trajectory dropped by default; --dedup off keeps both",
   assert.equal(run("off"), 2, "off keeps the duplicate");
 });
 
+// --- eval: irrelevance/refusal + multi-tool acceptance -----------------------
+check("scorer: irrelevance — tool call on smalltalk fails, direct answer passes", () => {
+  const c: EvalCase = { id: "s", user: "good morning!", expectNoToolCall: true };
+  assert.equal(scoreCase(c, callMsg("brain_search", "{}")).pass, false);
+  assert.equal(scoreCase(c, asst(undefined, "Morning!")).pass, true);
+});
+check("scorer: expectOneOfFirstTool accepts any listed tool", () => {
+  const c: EvalCase = { id: "c", user: "u", expectOneOfFirstTool: ["brain_search", "brain_page"] };
+  assert.equal(scoreCase(c, callMsg("brain_page", "{}")).pass, true);
+  assert.equal(scoreCase(c, callMsg("web_search", "{}")).pass, false);
+});
+check("synth: chitchat records make no tool call", () => {
+  const chit = recs.filter((r) => r.task_type === "trivial_chat");
+  assert.ok(chit.length > 0, "has chitchat records");
+  for (const r of chit) assert.equal(r.tool_events.length, 0, "no tools on smalltalk");
+});
+
 console.log(`\n1..${n}\nall ${n} checks passed`);
 
 function readJsonl(p: string): TrajectoryRecord[] {

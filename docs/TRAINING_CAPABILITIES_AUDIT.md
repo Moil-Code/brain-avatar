@@ -115,7 +115,7 @@ Findings below are from primary sources (papers / official docs), verified live.
 |---|---|---|---|---|
 | G1 | **Teacher reasoning discarded** (and `<think>` could leak into distilled answers) | 🔴 high | low | §2.1, §2.2 |
 | G2 | **Tool schemas omitted** from exported examples | 🟠 med | low | §2.3 |
-| G3 | **Eval shallow** — first-tool only; no JSON-validity / arg-value / refusal / multi-turn | 🟠 med | med | §2.6 |
+| G3 | ◐ **mostly done** — JSON-validity + arg-value (reasoning PR), refusal/irrelevance + multi-tool accept (round 2); **multi-turn still pending** | 🟠 med | med | §2.6 |
 | G4 | **Redaction structured-only** — no NER name redaction | 🟠 med (privacy) | med | §2.7 |
 | G5 | ✅ **done (round 1)** — corpus dedup pass (exact default, near opt-in) | 🟡 low | med | §2.4 |
 | G6 | **KTO unguarded** — no class weighting / sycophancy guard | 🟡 low | low | §2.5 |
@@ -203,3 +203,15 @@ Recurring research-backed rounds; one scoped, offline-validated improvement each
 - **Validation:** selftest 28/28; full pipeline (synth 135 → sft/kto, `dedup` exact &
   near both removed 0 on the current synthetic set — non-disruptive); `tsc` clean;
   vitest 66/66.
+
+### Round 2 — 2026-06-22 — eval irrelevance/refusal + training coverage (G3)
+- **`eval/cases.ts`**: +3 irrelevance/refusal cases (smalltalk, greeting, meta — gold is
+  NO tool call) + a multi-acceptable-tool case via new `expectOneOfFirstTool`. Suite now
+  15 cases.
+- **`synthesize.ts`**: new `chitchat` generator (task `trivial_chat`) so the model is
+  *trained* to answer smalltalk directly, not just *graded* on it (139 synth total).
+- **Why:** "knowing when NOT to call a tool" is a first-class BFCL category (irrelevance /
+  live_irrelevance) — https://gorilla.cs.berkeley.edu/blogs/8_berkeley_function_calling_leaderboard.html.
+  Train + eval the behavior together so the gate and the data agree.
+- **Validation:** selftest 31/31; eval lint 15 cases; synth 139; `tsc` clean; vitest 66/66.
+  (Multi-turn / state-based eval — τ-bench style — still pending.)
