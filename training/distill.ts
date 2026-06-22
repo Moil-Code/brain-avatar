@@ -1,5 +1,5 @@
 // Teacher distillation — have the deep 26B (the best LOCAL model) generate gold
-// trajectories for the fast tier to learn from. On-device, no cloud.
+// trajectories for the student model to learn from. On-device, no cloud.
 //
 // For each seed task we run a bounded tool loop against an OpenAI-compatible
 // endpoint (LM Studio serving the 26B), executing each tool the teacher picks via

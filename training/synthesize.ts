@@ -63,7 +63,7 @@ function record(o: BuildOpts): TrajectoryRecord {
     conversation_id: nextId("conv"),
     turn_id: nextId("turn"),
     created_at: ts(),
-    model_id: "qwen3-8b",
+    model_id: "gemma-4-12b",
     task_type: o.task,
     routed: true,
     user: o.user,
