@@ -24,14 +24,19 @@ the why.
 | File | What it does | Runs |
 |---|---|---|
 | `types.ts` | Shared trajectory + example types (mirrors `trajectory.rs`) | — |
+| `reasoning.ts` | Splits a model's chain-of-thought from its clean answer (`<think>` / harmony / `reasoning_content`) and re-emits it as a `<think>` block for reasoning SFT | imported by distill/export |
+| `tool_defs.ts` | Canonical `TOOL_DEFS` (14 tools, real param schemas) shared by export, eval, and distill | imported widely |
 | `synthesize.ts` | Generates ~135 gold trajectories (13 scenarios × entity pool × phrasings) for each documented failure mode against a mock tool env; `source:"synthetic"` | `node --experimental-strip-types training/synthesize.ts` |
 | `mockenv.ts` | Deterministic, side-effect-free mock tool results (shared by distillation) | imported by distill |
-| `distill.ts` | Teacher distillation: the 26B produces gold trajectories over seed tasks (mock tools, no side effects); `source:"distilled"` | `LMSTUDIO_URL=… MODEL=<26B> node --experimental-strip-types training/distill.ts` |
-| `redact.ts` | Deterministic structured-PII scrubber (emails, tokens, paths, creds) | imported by export |
-| `export.ts` | Fuse live+synthetic → redact → normalize system prompt → filter → train/valid split, in `sft` or `kto` mode | `node --experimental-strip-types training/export.ts --mode sft` |
-| `eval/cases.ts` | Frozen eval suite + pure `scoreCase` (first-tool / no-narration / confirm-before-send) | — |
+| `distill.ts` | Teacher distillation: the 26B produces gold trajectories over seed tasks (mock tools, no side effects), **capturing its reasoning**; `source:"distilled"` | `LMSTUDIO_URL=… MODEL=<26B> node --experimental-strip-types training/distill.ts` |
+| `redact.ts` | Deterministic structured-PII scrubber (emails, tokens, paths, creds) — covers reasoning traces too | imported by export |
+| `kto.ts` | KTO class-balancing weights + anti-sycophancy guardrail (writes `kto_config.json`) | imported by export |
+| `outcomes.ts` | Derived outcome labels — flags turns the user corrected on the next turn | imported by export |
+| `dedup.ts` | Deterministic, offline dedup of duplicate/near-duplicate trajectories (exact + shingle-Jaccard) — model-collapse guard | imported by export |
+| `export.ts` | Fuse live+synthetic → redact → normalize system prompt → **dedup** → filter (gold/safety/correction) → train/valid split; flags: `--reasoning`, `--dedup`, `--tools`, `--redact-names` | `node --experimental-strip-types training/export.ts --mode sft` |
+| `eval/cases.ts` | Frozen eval suite + pure `scoreCase` (first-tool / valid+correct JSON args / no-narration / confirm-before-send) | — |
 | `eval/run.ts` | Scores a model via an OpenAI-compatible endpoint; gates adapters | `LMSTUDIO_URL=… MODEL=… node --experimental-strip-types training/eval/run.ts` |
-| `selftest.ts` | Offline checks for scorer, redactor, generator invariants | `node --experimental-strip-types training/selftest.ts` |
+| `selftest.ts` | Offline checks for scorer, redactor, generator invariants, reasoning split/fold + exporter gold-filtering | `node --experimental-strip-types training/selftest.ts` |
 | `train.sh` | End-to-end on the Mac: export → `mlx_lm.lora` → `mlx_lm.fuse` → eval gate | `BASE_MODEL=… bash training/train.sh` |
 | `system_prompt.txt` | Canonical system prompt every example is normalized to (keep in sync with `config.rs`) | — |
 
@@ -63,7 +68,9 @@ trained date). When it pings, run `training/train.sh` on the Mini.
   (all tool calls ok, not thumbed-down). The main behavioral fine-tune.
 - **KTO** (`--mode kto`): preference tuning from thumbs. Emits `{prompt, completion,
   label}` (unpaired binary) — the correct shape for 👍/👎 (not DPO, which needs
-  matched pairs). Run after SFT, once enough rated turns exist.
+  matched pairs). Run after SFT, once enough rated turns exist. Also writes
+  `kto_config.json` with class-balancing weights + an anti-sycophancy guardrail for the
+  Mac-side run (and flags when you only have one thumbs class so far).
 
 ## Quick start (offline, no model)
 
@@ -167,11 +174,29 @@ The tracker reads `~/Library/Application Support/com.moil.brainavatar/` —
 trained, appended by `train.sh`). It's empty until you use the app a bit; run
 `train.sh` once and a run row appears.
 
+## Reasoning capture (teacher CoT)
+
+Distillation now keeps the 26B teacher's **chain-of-thought** on each turn
+(`reasoning.ts` splits it from the clean answer; redaction scrubs it). It's stored
+but **not folded into the fast-tier SFT by default** — the production fast tier runs
+with thinking disabled, so its training data stays reasoning-free (train/inference
+consistency). To train a reasoning-capable target on the teacher's CoT:
+
+```bash
+node --experimental-strip-types training/export.ts --mode sft --reasoning distilled
+```
+
+`--reasoning all` folds reasoning wherever captured; `none` (default) withholds it.
+
 ## Deliberate follow-ups (not yet done)
 
-- **Name-level anonymization** needs an NER pass; `redact.ts` only catches
-  structured identifiers today.
-- **Teacher distillation** (`source:"distilled"`) — have the 26B generate gold
-  trajectories for sampled tasks; same schema, fed through the same exporter.
-- **Tool schemas in examples** — the exporter omits the `tools` array for now;
-  attach `TOOL_DEFS` if eval shows the model needs the signatures during training.
+See [`../docs/TRAINING_CAPABILITIES_AUDIT.md`](../docs/TRAINING_CAPABILITIES_AUDIT.md)
+for the full gap analysis, research citations, and phased plan.
+
+- **Full contextual NER** — `--redact-names <file>` scrubs a denylist today; reliable
+  context-aware person/location redaction needs an on-device Presidio pass (regex + spaCy NER).
+- **Deeper eval** — multi-turn / state-based (τ-bench-style) cases (refusal/irrelevance
+  + arg-value checks are done).
+- **Run the trainer** — the actual LoRA SFT + KTO passes on the Mac Mini (GPU-bound;
+  `train.sh` + the emitted `kto_config.json` weights).
+- **Guarded KTO** — class weighting (1:1–4:3) + an SFT anchor against sycophancy.
