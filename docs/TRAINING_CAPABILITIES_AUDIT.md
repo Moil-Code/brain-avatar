@@ -117,7 +117,7 @@ Findings below are from primary sources (papers / official docs), verified live.
 | G2 | **Tool schemas omitted** from exported examples | 🟠 med | low | §2.3 |
 | G3 | **Eval shallow** — first-tool only; no JSON-validity / arg-value / refusal / multi-turn | 🟠 med | med | §2.6 |
 | G4 | **Redaction structured-only** — no NER name redaction | 🟠 med (privacy) | med | §2.7 |
-| G5 | **No semantic dedup** — templated synthetic phrasings risk redundancy/collapse | 🟡 low | med | §2.4 |
+| G5 | ✅ **done (round 1)** — corpus dedup pass (exact default, near opt-in) | 🟡 low | med | §2.4 |
 | G6 | **KTO unguarded** — no class weighting / sycophancy guard | 🟡 low | low | §2.5 |
 | G7 | **No derived outcome labels** beyond `ok` (next-turn correction, confirm-honored) | 🟡 low | med | plan §0.2 |
 | G8 | **No implicit preference signals** (re-ask = weak negative, etc.) | 🟡 low | med | plan §0.3 |
@@ -180,5 +180,26 @@ Leave the default (`none`) when fine-tuning the production fast tier (thinking-d
 
 ### Deliberate next steps (not in this pass)
 G2 (attach real `tools` schemas — needs production tool signatures, not the eval stubs),
-G4 (NER redaction), G5 (semantic dedup), G6 (KTO class weighting + sycophancy guard),
-G8 (implicit signals), and Phase B's refusal/multi-turn/AST eval.
+G4 (NER redaction), G6 (KTO class weighting + sycophancy guard), G8 (implicit signals),
+and Phase B's refusal/multi-turn/AST eval.
+
+---
+
+## 6. Improvement-loop log
+
+Recurring research-backed rounds; one scoped, offline-validated improvement each.
+
+### Round 1 — 2026-06-22 — corpus dedup (G5)
+- **`training/dedup.ts`** (new): deterministic, embedding-free SemDeDup approximation —
+  `exact` (identical signature) and `near` (3-shingle Jaccard ≥ threshold) modes.
+- **`export.ts`**: `--dedup off|exact|near` (**default `exact`**) + `--dedup-threshold`
+  (default 0.9), applied to the filtered corpus before the train/valid split; logs the
+  removed count. Signature = user ask + ordered tool sequence + final answer.
+- **Why dedup / Jaccard-shingle (vs. embedding SemDeDup):** duplicated/recursive data
+  is a primary driver of model collapse (Shumailov et al., *Nature* 2024,
+  https://www.nature.com/articles/s41586-024-07566-y); SemDeDup removes ~50% of
+  near-dupes with minimal loss (https://arxiv.org/abs/2303.09540). We use a lexical
+  shingle-Jaccard proxy to stay **offline/embedding-free** (no model needed at export).
+- **Validation:** selftest 28/28; full pipeline (synth 135 → sft/kto, `dedup` exact &
+  near both removed 0 on the current synthetic set — non-disruptive); `tsc` clean;
+  vitest 66/66.

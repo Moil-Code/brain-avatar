@@ -28,7 +28,8 @@ the why.
 | `mockenv.ts` | Deterministic, side-effect-free mock tool results (shared by distillation) | imported by distill |
 | `distill.ts` | Teacher distillation: the 26B produces gold trajectories over seed tasks (mock tools, no side effects), **capturing its reasoning**; `source:"distilled"` | `LMSTUDIO_URL=… MODEL=<26B> node --experimental-strip-types training/distill.ts` |
 | `redact.ts` | Deterministic structured-PII scrubber (emails, tokens, paths, creds) — covers reasoning traces too | imported by export |
-| `export.ts` | Fuse live+synthetic → redact → normalize system prompt → filter → train/valid split, in `sft` or `kto` mode; `--reasoning none\|distilled\|all` folds in teacher CoT | `node --experimental-strip-types training/export.ts --mode sft` |
+| `dedup.ts` | Deterministic, offline dedup of duplicate/near-duplicate trajectories (exact + shingle-Jaccard) — model-collapse guard | imported by export |
+| `export.ts` | Fuse live+synthetic → redact → normalize system prompt → **dedup** → filter → train/valid split, in `sft` or `kto` mode; `--reasoning none\|distilled\|all`, `--dedup off\|exact\|near` | `node --experimental-strip-types training/export.ts --mode sft` |
 | `eval/cases.ts` | Frozen eval suite + pure `scoreCase` (first-tool / valid+correct JSON args / no-narration / confirm-before-send) | — |
 | `eval/run.ts` | Scores a model via an OpenAI-compatible endpoint; gates adapters | `LMSTUDIO_URL=… MODEL=… node --experimental-strip-types training/eval/run.ts` |
 | `selftest.ts` | Offline checks for scorer, redactor, generator invariants, reasoning split/fold + exporter gold-filtering | `node --experimental-strip-types training/selftest.ts` |
@@ -141,6 +142,5 @@ for the full gap analysis, research citations, and phased plan.
   structured identifiers today (best practice: on-device Presidio = regex + NER).
 - **Tool schemas in examples** — the exporter omits the `tools` array for now;
   attach real production `TOOL_DEFS` (not the eval stubs) so the model sees signatures.
-- **Semantic dedup** of near-duplicate (templated) trajectories before training.
 - **Deeper eval** — refusal/irrelevance + multi-turn (BFCL/τ-bench-style) cases.
 - **Guarded KTO** — class weighting (1:1–4:3) + an SFT anchor against sycophancy.

@@ -22,6 +22,7 @@ import { join } from "node:path";
 import type { ChatMessage, MlxExample, TrajectoryRecord } from "./types.ts";
 import { redactRecord } from "./redact.ts";
 import { withThink } from "./reasoning.ts";
+import { dedup, recordSignature, type DedupMode } from "./dedup.ts";
 
 function arg(name: string, def: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -50,6 +51,11 @@ const maxSynthRatio = Number(arg("max-synth-ratio", "0.6"));
 //   distilled — only from teacher-distilled trajectories (where CoT is high quality)
 //   all       — wherever a reasoning trace was captured
 const reasoningMode = arg("reasoning", "none");
+// De-duplicate the corpus before training. `exact` (default) drops identical
+// signatures — always safe and protects the growing live corpus; `near` also drops
+// high-overlap (Jaccard ≥ threshold) trajectories; `off` keeps everything.
+const dedupMode = arg("dedup", "exact") as DedupMode;
+const dedupThreshold = Number(arg("dedup-threshold", "0.9"));
 
 // --- load ---------------------------------------------------------------------
 function loadJsonl(path: string): TrajectoryRecord[] {
@@ -161,7 +167,15 @@ if (live.length > 0 && generatedCount > 0) {
 }
 
 const corpus = [...live, ...distilled, ...synth];
-const kept = mode === "kto" ? corpus.filter((r) => r.rating !== null) : corpus.filter(isGold);
+const filtered = mode === "kto" ? corpus.filter((r) => r.rating !== null) : corpus.filter(isGold);
+
+// Drop duplicate trajectories (by user + tool sequence + final answer) before split.
+const { kept, removed: dropped } = dedup(
+  filtered,
+  (r) => recordSignature(r.user, r.tool_events.map((e) => e.name), r.final_answer),
+  dedupMode,
+  dedupThreshold
+);
 
 const train: unknown[] = [];
 const valid: unknown[] = [];
@@ -184,6 +198,6 @@ const withReasoning = [...train, ...valid].filter((r) =>
 
 console.log(`mode=${mode}  live=${live.length}  distilled=${distilled.length}  synthetic=${synth.length}  kept=${kept.length}`);
 console.log(`→ ${join(outDir, "train.jsonl")}  (${train.length} train, ${valid.length} valid)`);
-console.log(`reasoning=${reasoningMode}  examples-with-<think>=${withReasoning}`);
+console.log(`dedup=${dedupMode}  removed=${dropped}  ·  reasoning=${reasoningMode}  examples-with-<think>=${withReasoning}`);
 if (!sys) console.log("note: training/system_prompt.txt absent — kept each record's own system message.");
 if (live.length === 0) console.log(`note: no live data at ${liveDir} — corpus is synthetic-only for now.`);

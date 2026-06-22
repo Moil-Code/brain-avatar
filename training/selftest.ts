@@ -12,6 +12,7 @@ import { scoreCase, type EvalCase } from "./eval/cases.ts";
 import { redactText, redactRecord } from "./redact.ts";
 import { mockToolResult } from "./mockenv.ts";
 import { splitReasoning, withThink } from "./reasoning.ts";
+import { dedup, jaccard, recordSignature } from "./dedup.ts";
 
 let n = 0;
 const check = (name: string, fn: () => void) => {
@@ -189,6 +190,44 @@ check("export: --reasoning none (default) withholds reasoning", () => {
   assert.equal(none.rows.length, 1);
   assert.ok(!none.raw.includes("<think>"), "no think block by default");
   assert.ok(!none.raw.includes('"reasoning"'), "no raw reasoning field by default");
+});
+
+// --- corpus dedup (model-collapse guard) -------------------------------------
+check("dedup: jaccard identical=1, disjoint=0", () => {
+  assert.equal(jaccard(new Set(["a b c"]), new Set(["a b c"])), 1);
+  assert.equal(jaccard(new Set(["a b c"]), new Set(["x y z"])), 0);
+});
+check("dedup: exact drops identical signatures, keeps distinct", () => {
+  const sig = (s: string) => recordSignature(s, ["brain_page"], "answer");
+  const items = ["who is Jordan?", "who is Jordan?", "who is Sam?"];
+  const r = dedup(items, sig, "exact");
+  assert.equal(r.kept.length, 2);
+  assert.equal(r.removed, 1);
+});
+check("dedup: near drops high-overlap, off keeps everything", () => {
+  const a = "pull Jordan's latest and summarize the Q3 roadmap for the team";
+  const b = "pull Jordan's latest and summarize the Q3 roadmap for the group"; // ~1 token diff
+  const c = "turn the volume down";
+  const sig = (s: string) => s;
+  assert.equal(dedup([a, b, c], sig, "near", 0.8).kept.length, 2, "near collapses a≈b");
+  assert.equal(dedup([a, b, c], sig, "off").kept.length, 3, "off keeps all");
+});
+check("export: duplicate trajectory dropped by default; --dedup off keeps both", () => {
+  const ded = "/tmp/_dedup_selftest";
+  execSync(`rm -rf ${ded} && mkdir -p ${ded}`, { stdio: "ignore" });
+  const dup: TrajectoryRecord = { ...goldRec, turn_id: "tDup" }; // same signature as goldRec
+  writeFileSync(`${ded}/distilled.jsonl`, [JSON.stringify(goldRec), JSON.stringify(dup)].join("\n") + "\n");
+  const run = (dedupArg: string) => {
+    const out = `${ded}/out_${dedupArg}`;
+    execSync(
+      `node --experimental-strip-types training/export.ts --live ${ded}/nolive --synth ${ded}/nosynth.jsonl --distill ${ded}/distilled.jsonl --out ${out} --mode sft --dedup ${dedupArg}`,
+      { stdio: "ignore" }
+    );
+    const raw = readFileSync(`${out}/train.jsonl`, "utf8") + readFileSync(`${out}/valid.jsonl`, "utf8");
+    return raw.split("\n").filter((l) => l.trim()).length;
+  };
+  assert.equal(run("exact"), 1, "exact dedup removes the duplicate");
+  assert.equal(run("off"), 2, "off keeps the duplicate");
 });
 
 console.log(`\n1..${n}\nall ${n} checks passed`);
