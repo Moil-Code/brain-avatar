@@ -216,6 +216,7 @@ pub fn run() {
             files::find_files,
             files::read_file,
             files::extract_doc_text,
+            files::create_document,
             files::open_file,
             files::open_app,
             files::list_apps,
