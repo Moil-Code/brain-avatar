@@ -22,6 +22,22 @@ fn speak_helper() -> Option<std::path::PathBuf> {
     p.exists().then_some(p)
 }
 
+/// The local Kokoro TTS wrapper (~/.kokoro-tts/kokoro-say), if installed. Kokoro is an
+/// open-source neural voice that runs fully on-device — far more natural than `say`.
+/// Reads text from stdin + takes the voice id as $1, exactly like the other backends.
+fn kokoro_say() -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(&std::env::var("HOME").ok()?).join(".kokoro-tts/kokoro-say");
+    p.exists().then_some(p)
+}
+
+/// Kokoro voice ids look like `af_heart`, `am_michael`, `bf_emma` — two lowercase
+/// letters, underscore, name. macOS voices ("Zoe (Premium)", "Samantha") never match,
+/// so this cleanly selects the Kokoro backend without a separate engine setting.
+fn is_kokoro_voice(v: &str) -> bool {
+    let b = v.trim().as_bytes();
+    b.len() >= 4 && b[2] == b'_' && b[0].is_ascii_lowercase() && b[1].is_ascii_lowercase()
+}
+
 /// Speak text using macOS `say`, which can use the high-quality Enhanced/Premium
 /// voices (downloaded free in System Settings) that the webview cannot reach.
 /// Interrupts any in-progress speech first. Resolves when speech finishes.
@@ -44,20 +60,33 @@ pub async fn tts_speak(
         return Ok(());
     }
 
-    // Prefer the neural helper (Premium voices); fall back to `say`. Both read the
-    // text from stdin, so only the program + voice flag differ.
-    let mut cmd = match speak_helper() {
-        Some(h) => {
-            let mut c = Command::new(h);
-            c.arg(voice.trim()); // "" => helper uses the default voice
-            c
-        }
-        None => {
-            let mut c = Command::new("/usr/bin/say");
-            if !voice.trim().is_empty() {
-                c.arg("-v").arg(&voice);
+    // Backend order: local Kokoro (open-source neural) when a Kokoro voice is selected
+    // and installed → Premium-voice helper → legacy `say`. All three read text from
+    // stdin and take the voice as an arg, so only the program differs.
+    let mut cmd = if is_kokoro_voice(&voice) {
+        match kokoro_say() {
+            Some(k) => {
+                let mut c = Command::new(k);
+                c.arg(voice.trim());
+                c
             }
-            c
+            // Kokoro voice requested but wrapper missing — don't crash; use say default.
+            None => Command::new("/usr/bin/say"),
+        }
+    } else {
+        match speak_helper() {
+            Some(h) => {
+                let mut c = Command::new(h);
+                c.arg(voice.trim()); // "" => helper uses the default voice
+                c
+            }
+            None => {
+                let mut c = Command::new("/usr/bin/say");
+                if !voice.trim().is_empty() {
+                    c.arg("-v").arg(&voice);
+                }
+                c
+            }
         }
     };
     cmd.stdin(Stdio::piped());
@@ -112,7 +141,17 @@ pub fn open_voice_download() -> Result<(), String> {
 /// Settings voice picker.
 #[tauri::command]
 pub async fn list_voices() -> Vec<String> {
-    // Prefer the neural helper's list (Premium/Enhanced voices, quality-labelled,
+    let mut voices: Vec<String> = Vec::new();
+    // Local Kokoro (open-source neural) voices first when installed — the most natural,
+    // and selecting one routes through the Kokoro backend (is_kokoro_voice).
+    if kokoro_say().is_some() {
+        voices.extend(
+            ["af_heart", "af_bella", "am_michael", "am_fenrir", "bf_emma", "bm_george"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+    }
+    // Then the neural helper's list (Premium/Enhanced macOS voices, quality-labelled,
     // best first). Fall back to `say -v ?` if the helper isn't bundled.
     if let Some(h) = speak_helper() {
         if let Ok(o) = Command::new(&h).arg("--list").output().await {
@@ -122,15 +161,15 @@ pub async fn list_voices() -> Vec<String> {
                 .filter(|l| !l.is_empty())
                 .collect();
             if !names.is_empty() {
-                return names;
+                voices.extend(names);
+                return voices;
             }
         }
     }
-    let out = Command::new("/usr/bin/say").arg("-v").arg("?").output().await;
-    match out {
-        Ok(o) => parse_voices(&String::from_utf8_lossy(&o.stdout)),
-        Err(_) => vec![],
+    if let Ok(o) = Command::new("/usr/bin/say").arg("-v").arg("?").output().await {
+        voices.extend(parse_voices(&String::from_utf8_lossy(&o.stdout)));
     }
+    voices
 }
 
 fn parse_voices(s: &str) -> Vec<String> {
@@ -147,4 +186,18 @@ fn parse_voices(s: &str) -> Vec<String> {
             Some(toks[..loc].join(" "))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tts_tests {
+    use super::is_kokoro_voice;
+    #[test]
+    fn detects_kokoro_ids_only() {
+        for v in ["af_heart", "am_michael", "bf_emma", "bm_george"] {
+            assert!(is_kokoro_voice(v), "{v} should be Kokoro");
+        }
+        for v in ["Zoe (Premium)", "Samantha", "Daniel", "", "Ava (Premium)"] {
+            assert!(!is_kokoro_voice(v), "{v} should NOT be Kokoro");
+        }
+    }
 }
