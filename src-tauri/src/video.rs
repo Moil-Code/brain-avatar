@@ -47,7 +47,11 @@ async fn run(program: &str, args: &[&str], to: Duration) -> Result<String, Strin
     }
 }
 
-/// Is `program` runnable? (cheap presence check before the real work.)
+/// Is `program` installed/runnable? Presence = it SPAWNS, not that it exits 0.
+/// `ffmpeg --version` exits 8 (ffmpeg's flag is `-version`, single dash) yet runs
+/// perfectly — so the old `status.success()` check reported ffmpeg as "not installed"
+/// no matter what (PATH, reinstalls, restarts were all red herrings). A failed spawn
+/// (binary truly missing) returns Err → false; any successful spawn → true.
 async fn have(program: &str) -> bool {
     Command::new(resolve_bin(program))
         .arg("--version")
@@ -55,8 +59,7 @@ async fn have(program: &str) -> bool {
         .kill_on_drop(true)
         .output()
         .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok()
 }
 
 fn expand_home(p: &str) -> String {
