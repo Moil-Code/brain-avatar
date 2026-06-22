@@ -10,6 +10,31 @@
 
 import type { TrajectoryRecord } from "./types.ts";
 
+// Tools that SEND/POST/DELETE/message on the user's behalf — the system prompt requires
+// an explicit confirmation (confirm=true) before they fire. A turn that fired one WITHOUT
+// confirm broke the safety contract and must never be a gold example to imitate.
+const SIDE_EFFECT_TOOLS = new Set([
+  "send_email",
+  "send_teams_message",
+  "post_to_facebook",
+  "send_imessage",
+  "create_reminder",
+  "create_automation",
+  "calendar_delete",
+]);
+
+/** Did this turn fire a confirm-required tool without confirm=true in its arguments? */
+export function firedUnconfirmedSend(r: TrajectoryRecord): boolean {
+  return r.tool_events.some((e) => {
+    if (!SIDE_EFFECT_TOOLS.has(e.name)) return false;
+    try {
+      return JSON.parse(e.arguments || "{}").confirm !== true;
+    } catch {
+      return true; // unparseable args on a send → treat as unconfirmed
+    }
+  });
+}
+
 const CORRECTION_RE =
   /^\s*(no\b|nope\b|nah\b|that'?s (not|wrong|incorrect)|not (what|quite|right)|wrong\b|actually\b|i meant\b|i said\b|that'?s not (it|what|right)|try again|incorrect\b|you (got it wrong|misunderstood))/i;
 

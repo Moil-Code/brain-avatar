@@ -25,7 +25,7 @@ import { withThink } from "./reasoning.ts";
 import { dedup, recordSignature, type DedupMode } from "./dedup.ts";
 import { TOOL_DEFS } from "./tool_defs.ts";
 import { ktoWeights, KTO_GUARD } from "./kto.ts";
-import { correctedTurnIds } from "./outcomes.ts";
+import { correctedTurnIds, firedUnconfirmedSend } from "./outcomes.ts";
 
 function arg(name: string, def: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -105,12 +105,13 @@ function argsOk(s: string): boolean {
   }
 }
 
-/** SFT: a trajectory is gold only if every tool call executed, emitted PARSEABLE
- *  JSON arguments, and the user didn't thumb it down. (rating null = unrated = kept;
- *  rating 1 = kept; rating -1 = dropped.) The args check is a cheap outcome label —
- *  a turn whose tool args don't parse is never a clean example to imitate. */
+/** SFT: a trajectory is gold only if every tool call executed with PARSEABLE JSON args,
+ *  no confirm-required tool fired without confirmation, and the user didn't thumb it
+ *  down. (rating null = unrated = kept; rating 1 = kept; rating -1 = dropped.) These are
+ *  cheap outcome labels — a turn with malformed args or an unconfirmed send is never a
+ *  clean example to imitate. */
 function isGold(r: TrajectoryRecord): boolean {
-  return r.tool_events.every((e) => e.ok && argsOk(e.arguments)) && r.rating !== -1;
+  return r.tool_events.every((e) => e.ok && argsOk(e.arguments)) && !firedUnconfirmedSend(r) && r.rating !== -1;
 }
 
 /** Fold (or drop) per-message reasoning per the export mode. The captured trace is

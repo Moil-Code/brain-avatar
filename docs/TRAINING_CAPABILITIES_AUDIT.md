@@ -119,7 +119,7 @@ Findings below are from primary sources (papers / official docs), verified live.
 | G4 | **Redaction structured-only** — no NER name redaction | 🟠 med (privacy) | med | §2.7 |
 | G5 | ✅ **done (round 1)** — corpus dedup pass (exact default, near opt-in) | 🟡 low | med | §2.4 |
 | G6 | ✅ **done (round 4)** — export emits KTO class weights + sycophancy guard (`kto_config.json`) | 🟡 low | low | §2.5 |
-| G7 | ◐ **mostly done** — JSON-args-valid (round 1) + next-turn-correction drop (round 5); confirm-honored still pending | 🟡 low | med | plan §0.2 |
+| G7 | ✅ **done** — JSON-args-valid (round 1), next-turn-correction (round 5), confirm-honored (round 7) | 🟡 low | med | plan §0.2 |
 | G8 | **No implicit preference signals** (re-ask = weak negative, etc.) | 🟡 low | med | plan §0.3 |
 
 ---
@@ -188,11 +188,22 @@ Leave the default (`none`) when fine-tuning the production fast tier (thinking-d
   safety property is inherently multi-turn (https://arxiv.org/abs/2406.12045).
 - **Validation:** selftest 40/40; eval lint 15 + 2 multi-turn cases; `tsc` clean; vitest 66/66.
 
-### Remaining backlog (after round 6)
-G4 (NER redaction — full version needs on-device **Presidio**, a Python dep we can't
-validate in this TS/Node session; a dependency-free denylist redactor is tractable),
-G8 (implicit signals → KTO), confirm-honored outcome label, and **Phase D — the actual
-LoRA SFT + KTO runs, which are GPU-bound (Mac Mini + MLX-LM) and cannot execute here.**
+### Round 7 — 2026-06-22 — confirm-before-send safety filter (G7 complete)
+- **`outcomes.ts`**: `firedUnconfirmedSend()` — a turn that fired a confirm-required tool
+  (`send_email`, `post_to_facebook`, `create_reminder`, …) without `confirm=true` broke the
+  safety contract.
+- **`export.ts`**: `isGold` now also excludes those turns — the confirm-before-send rule is
+  enforced in the *training data*, not just the prompt + eval.
+- **Why:** confirm-before-send is the product's hard safety gate; SFT must never imitate an
+  unconfirmed send.
+- **Validation:** selftest 42/42; synthetic corpus unaffected (kept=139); `tsc` clean; vitest 66/66.
+
+### Remaining backlog (after round 7)
+G4 (full NER redaction — needs on-device **Presidio**, a Python dep we can't validate in
+this TS/Node session; a dependency-free denylist redactor is tractable → round 8),
+G8 (implicit signals → KTO — deferred: noisy auto-labels need the GPU loop to prove they
+don't hurt), and **Phase D — the actual LoRA SFT + KTO runs, GPU-bound (Mac Mini +
+MLX-LM), which cannot execute here.**
 
 ---
 

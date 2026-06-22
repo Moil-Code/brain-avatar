@@ -14,7 +14,7 @@ import { mockToolResult } from "./mockenv.ts";
 import { splitReasoning, withThink } from "./reasoning.ts";
 import { dedup, jaccard, recordSignature } from "./dedup.ts";
 import { ktoWeights } from "./kto.ts";
-import { looksLikeCorrection, correctedTurnIds } from "./outcomes.ts";
+import { looksLikeCorrection, correctedTurnIds, firedUnconfirmedSend } from "./outcomes.ts";
 
 let n = 0;
 const check = (name: string, fn: () => void) => {
@@ -358,6 +358,37 @@ check("scorer: multi-turn passes only when EVERY turn passes", () => {
   const sentEarly = [callMsg("send_email", "{}"), callMsg("send_email", "{}")];
   assert.equal(scoreMultiTurn(c, good).pass, true);
   assert.equal(scoreMultiTurn(c, sentEarly).pass, false, "sending on turn 1 fails the case");
+});
+
+// --- confirm-before-send safety filter (G7) ----------------------------------
+check("safety: unconfirmed send flagged; confirmed send / non-send are fine", () => {
+  const mk = (name: string, args: string) =>
+    ({ ...goldRec, tool_events: [{ round: 0, name, arguments: args, ok: true }] }) as TrajectoryRecord;
+  assert.equal(firedUnconfirmedSend(mk("send_email", '{"to":"x","body":"y"}')), true);
+  assert.equal(firedUnconfirmedSend(mk("send_email", '{"to":"x","body":"y","confirm":true}')), false);
+  assert.equal(firedUnconfirmedSend(mk("brain_page", '{"name":"X"}')), false);
+});
+check("export sft: drops a turn that sent without confirmation", () => {
+  const sf = "/tmp/_safety_selftest";
+  execSync(`rm -rf ${sf} && mkdir -p ${sf}`, { stdio: "ignore" });
+  const unsafe: TrajectoryRecord = {
+    ...goldRec, turn_id: "tUnsafe", user: "email Sam", final_answer: "Sent.",
+    tool_events: [{ round: 0, name: "send_email", arguments: '{"to":"Sam","body":"hi"}', ok: true }],
+    messages: [
+      { role: "system", content: "s" },
+      { role: "user", content: "email Sam" },
+      { role: "assistant", content: "", tool_calls: [{ id: "x", type: "function", function: { name: "send_email", arguments: '{"to":"Sam","body":"hi"}' } }] },
+      { role: "tool", tool_call_id: "x", name: "send_email", content: "ok" },
+      { role: "assistant", content: "Sent." },
+    ],
+  };
+  writeFileSync(`${sf}/distilled.jsonl`, [JSON.stringify(goldRec), JSON.stringify(unsafe)].join("\n") + "\n");
+  execSync(
+    `node --experimental-strip-types training/export.ts --live ${sf}/nolive --synth ${sf}/nosynth.jsonl --distill ${sf}/distilled.jsonl --out ${sf}/out --mode sft --dedup off`,
+    { stdio: "ignore" }
+  );
+  const raw = readFileSync(`${sf}/out/train.jsonl`, "utf8") + readFileSync(`${sf}/out/valid.jsonl`, "utf8");
+  assert.equal(raw.split("\n").filter((l) => l.trim()).length, 1, "unconfirmed send dropped, gold kept");
 });
 
 console.log(`\n1..${n}\nall ${n} checks passed`);
