@@ -1,7 +1,7 @@
 {
   "name": "brain-avatar",
   "private": true,
-  "version": "0.1.23",
+  "version": "0.1.32",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +10,7 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
+    "cleanup:apps": "scripts/cleanup-app-duplicates.sh",
     "ios:init": "tauri ios init --config src-tauri/tauri.ios.conf.json",
     "ios:dev": "tauri ios dev --config src-tauri/tauri.ios.conf.json",
     "ios:build": "tauri ios build --config src-tauri/tauri.ios.conf.json"

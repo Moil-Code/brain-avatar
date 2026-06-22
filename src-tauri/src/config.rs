@@ -89,7 +89,11 @@ impl Default for Settings {
             // use whatever is loaded rather than requesting a fixed id. Set a
             // specific id in Settings to override.
             model: String::new(),
-            max_tokens: 4096,
+            // 8192, not 4096: a reasoning model spends part of the budget on a
+            // hidden think phase, so a smaller cap can leave nothing for the actual
+            // answer (the 26B returned empty content under 4096). Long reports also
+            // need the headroom. Audit 2026-06-21.
+            max_tokens: 8192,
             groq_api_key: String::new(),
             groq_model: "whisper-large-v3-turbo".into(),
             brave_api_key: String::new(),
@@ -160,6 +164,11 @@ check X and tell me'). The prompt you store is the instruction Brain runs each t
 schedule and what it will do, then create it. Use list_automations to tell him what's already running. \
 You can also access Andres' Mac: find_files (Spotlight search), read_file (read a file's \
 text — when asked to read a file aloud, read it and reply with its content so it is spoken), \
+create_document (WRITE a new document and save it — compose the full text yourself in `content` \
+and pick a `format`: txt, md, html, rtf, doc/docx, odt, or pdf; use it for 'write a letter/memo/\
+report and save it', 'make me a Word doc', 'save this as a PDF'; it saves to ~/Documents by \
+default and won't overwrite an existing file unless you pass overwrite=true after Andres confirms; \
+tell him where you saved it), \
 open_file (open something in its default app), open_app and list_apps (launch apps), and \
 run_applescript (control Mac apps — create a note, add a reminder/calendar event, get a URL, \
 etc.; the first time you control an app macOS asks Andres to allow it), and system_control for \
@@ -282,4 +291,49 @@ pub fn augmented_path() -> String {
     ];
     let existing = std::env::var("PATH").unwrap_or_default();
     format!("{}:{}", extra.join(":"), existing)
+}
+
+/// Absolute path to a CLI binary, independent of the launching PATH.
+///
+/// WHY THIS EXISTS: a Dock/Finder-launched `.app` inherits a minimal PATH
+/// (`/usr/bin:/bin:/usr/sbin:/sbin`) with no `/opt/homebrew/bin`. On Unix,
+/// `Command::new("ffmpeg")` resolves the bare name against the *parent's* PATH —
+/// NOT a `.env("PATH", augmented_path())` override, which only sets what the child
+/// sees AFTER it's found. So `augmented_path()` alone never fixed "ffmpeg isn't
+/// installed"; the lookup failed before PATH ever applied. Resolving to a full path
+/// (like `m365_path`) is what actually works. Falls back to the bare name so a tool
+/// in a non-standard dir still gets a chance via the child's augmented PATH.
+pub fn resolve_bin(name: &str) -> String {
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+        let p = format!("{dir}/{name}");
+        if std::path::Path::new(&p).exists() {
+            return p;
+        }
+    }
+    name.to_string()
+}
+
+#[cfg(test)]
+mod resolve_bin_tests {
+    use super::resolve_bin;
+
+    #[test]
+    fn resolves_a_known_tool_to_an_absolute_path() {
+        // `sh` is always in /bin on macOS — must come back as a full path so a
+        // Dock-launched app with a minimal PATH can still spawn it.
+        assert_eq!(resolve_bin("sh"), "/bin/sh");
+    }
+
+    #[test]
+    fn passes_an_absolute_path_through_unchanged() {
+        assert_eq!(resolve_bin("/usr/bin/textutil"), "/usr/bin/textutil");
+    }
+
+    #[test]
+    fn falls_back_to_the_bare_name_when_not_found() {
+        assert_eq!(
+            resolve_bin("definitely-not-a-real-binary-xyz"),
+            "definitely-not-a-real-binary-xyz"
+        );
+    }
 }

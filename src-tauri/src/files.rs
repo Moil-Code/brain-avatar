@@ -1,4 +1,4 @@
-use crate::config::augmented_path;
+use crate::config::{augmented_path, resolve_bin};
 use crate::tools::tool_log;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -10,7 +10,7 @@ const T: Duration = Duration::from_secs(25);
 async fn run(program: &str, args: &[&str]) -> Result<String, String> {
     let out = timeout(
         T,
-        Command::new(program)
+        Command::new(resolve_bin(program))
             .args(args)
             .env("PATH", augmented_path())
             .output(),
@@ -34,7 +34,7 @@ async fn run(program: &str, args: &[&str]) -> Result<String, String> {
 async fn run_lenient(program: &str, args: &[&str]) -> String {
     match timeout(
         T,
-        Command::new(program)
+        Command::new(resolve_bin(program))
             .args(args)
             .env("PATH", augmented_path())
             .output(),
@@ -225,6 +225,147 @@ pub async fn extract_bytes_text(name: &str, base64: &str, cap: usize) -> Result<
 #[tauri::command]
 pub async fn extract_doc_text(name: String, base64: String) -> Result<String, String> {
     extract_bytes_text(&name, &base64, 20000).await
+}
+
+/// Create a document on disk from text/markdown and save it in a chosen format.
+/// The write counterpart to `read_file`: plain formats (txt/md/html) are written
+/// directly; rich formats (rtf/doc/docx/odt) are produced by writing the text to
+/// a temp file and converting it with `textutil`; pdf goes through `cupsfilter`.
+/// Defaults to ~/Documents. Refuses to clobber an existing file unless
+/// `overwrite=true`, so it can never silently destroy something already there.
+#[tauri::command]
+pub async fn create_document(
+    content: String,
+    filename: String,
+    format: Option<String>,
+    folder: Option<String>,
+    overwrite: Option<bool>,
+    open_after: Option<bool>,
+) -> Result<String, String> {
+    let raw_name = filename.trim();
+    if raw_name.is_empty() {
+        return Err("A `filename` is required (e.g. \"Letter to Maria\").".into());
+    }
+
+    // Resolve the target format: an explicit `format`, else the filename's
+    // extension, else default to Markdown.
+    let name_ext = Path::new(raw_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase());
+    let fmt = format
+        .map(|f| f.trim().trim_start_matches('.').to_lowercase())
+        .filter(|f| !f.is_empty())
+        .or_else(|| name_ext.clone())
+        .unwrap_or_else(|| "md".into());
+
+    const SUPPORTED: &[&str] = &[
+        "txt", "md", "markdown", "text", "html", "htm", "rtf", "doc", "docx", "odt", "pdf",
+    ];
+    if !SUPPORTED.contains(&fmt.as_str()) {
+        return Err(format!(
+            "I can't save as .{fmt}. Supported formats: txt, md, html, rtf, doc, docx, odt, pdf."
+        ));
+    }
+
+    // Build a safe stem (strip any path separators and a recognized document
+    // extension the user may have typed), then append the canonical extension —
+    // so "report.txt" saved as pdf becomes "report.pdf", not "report.txt.pdf".
+    let stem = {
+        let base = Path::new(raw_name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(raw_name);
+        let base = match name_ext.as_deref() {
+            Some(e) if SUPPORTED.contains(&e) => base.strip_suffix(&format!(".{e}")).unwrap_or(base),
+            _ => base,
+        };
+        let s: String = base
+            .chars()
+            .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+            .collect();
+        let s = s.trim().to_string();
+        if s.is_empty() {
+            "Untitled".into()
+        } else {
+            s
+        }
+    };
+
+    // Resolve the destination folder (default ~/Documents) and ensure it exists.
+    let dir = expand_home(
+        &folder
+            .filter(|f| !f.trim().is_empty())
+            .unwrap_or_else(|| "~/Documents".into()),
+    );
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return Err(format!("Couldn't create folder {dir}: {e}"));
+    }
+
+    let dest = format!("{}/{stem}.{fmt}", dir.trim_end_matches('/'));
+    if Path::new(&dest).exists() && !overwrite.unwrap_or(false) {
+        return Ok(format!(
+            "A file already exists at {dest}. Confirm with Andres that he wants to replace it, \
+             then call create_document again with overwrite=true (or pick a different filename)."
+        ));
+    }
+
+    // Write it out. Plain formats go straight to disk; rich formats are converted
+    // from a temp source file with the platform tools.
+    match fmt.as_str() {
+        "txt" | "md" | "markdown" | "text" | "html" | "htm" => {
+            std::fs::write(&dest, content.as_bytes())
+                .map_err(|e| format!("Couldn't write {dest}: {e}"))?;
+        }
+        "rtf" | "doc" | "docx" | "odt" => {
+            let mut tmp = std::env::temp_dir();
+            tmp.push(format!("brain-doc-{}-{stem}.txt", std::process::id()));
+            std::fs::write(&tmp, content.as_bytes())
+                .map_err(|e| format!("temp write failed: {e}"))?;
+            let tmp_path = tmp.to_string_lossy().to_string();
+            let res = run(
+                "/usr/bin/textutil",
+                &["-convert", &fmt, "-output", &dest, &tmp_path],
+            )
+            .await;
+            let _ = std::fs::remove_file(&tmp);
+            res?;
+        }
+        "pdf" => {
+            let mut tmp = std::env::temp_dir();
+            tmp.push(format!("brain-doc-{}-{stem}.txt", std::process::id()));
+            std::fs::write(&tmp, content.as_bytes())
+                .map_err(|e| format!("temp write failed: {e}"))?;
+            let tmp_path = tmp.to_string_lossy().to_string();
+            // cupsfilter renders the text to PDF on stdout; capture and write it.
+            let out = timeout(
+                T,
+                Command::new("/usr/sbin/cupsfilter")
+                    .arg(&tmp_path)
+                    .env("PATH", augmented_path())
+                    .output(),
+            )
+            .await
+            .map_err(|_| "PDF conversion timed out".to_string())
+            .and_then(|r| r.map_err(|e| format!("cupsfilter failed: {e}")));
+            let _ = std::fs::remove_file(&tmp);
+            let out = out?;
+            if !out.status.success() || out.stdout.is_empty() {
+                return Err(format!(
+                    "Couldn't generate the PDF ({}). Try saving as docx or rtf instead.",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
+            }
+            std::fs::write(&dest, &out.stdout)
+                .map_err(|e| format!("Couldn't write {dest}: {e}"))?;
+        }
+        _ => unreachable!("format already validated"),
+    }
+
+    if open_after.unwrap_or(false) {
+        let _ = run("/usr/bin/open", &[&dest]).await;
+    }
+    Ok(format!("Created {dest}."))
 }
 
 /// Open a file or folder in its default application.

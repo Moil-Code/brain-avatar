@@ -9,45 +9,40 @@
 // run.ts feeds it real model output from an OpenAI-compatible endpoint.
 
 import type { ChatMessage, ToolCall } from "../types.ts";
+import { TOOL_DEFS } from "../tool_defs.ts";
 
-/** Minimal tool schema for the eval request — names must match production tools. */
-export const TOOLS = [
-  "brain_page",
-  "brain_search",
-  "calendar_events",
-  "web_search",
-  "fetch_url",
-  "send_email",
-  "manage_tasks",
-  "read_emails",
-  "email_details",
-  "find_files",
-  "read_file",
-  "create_reminder",
-  "create_automation",
-  "system_control",
-].map((name) => ({
-  type: "function",
-  function: { name, description: name, parameters: { type: "object", properties: {} } },
-}));
+/** Tool schemas for eval requests — the shared canonical set, so eval, teacher
+ *  distillation, and the exported training data all use identical signatures. */
+export const TOOLS = TOOL_DEFS;
 
 export interface EvalCase {
   id: string;
   user: string;
   /** Tool the model SHOULD call first (by name). */
   expectFirstTool?: string;
+  /** Any ONE of these is an acceptable first tool (use when >1 choice is correct,
+   *  e.g. brain_page vs brain_search for a contextual lookup). */
+  expectOneOfFirstTool?: string[];
   /** Tools that MUST NOT appear (e.g. send_email before a confirm). */
   forbidTools?: string[];
   /** True ⇒ the gold turn makes NO tool call (it asks/answers directly). */
   expectNoToolCall?: boolean;
   /** Substring the final content should contain (e.g. a confirm question "?"). */
   expectContentIncludes?: string;
+  /** Substring the FIRST tool call's JSON arguments must contain (the right value,
+   *  not just the right tool) — e.g. the entity name for a brain_page lookup. */
+  expectArgsInclude?: string;
 }
 
 export const CASES: EvalCase[] = [
-  // brain_page-first on a named entity
-  { id: "who-is", user: "who is Jordan Avery?", expectFirstTool: "brain_page" },
-  { id: "tell-about", user: "tell me about Northwind Logistics", expectFirstTool: "brain_page" },
+  // brain_page-first on a named entity — and with the RIGHT entity in the args
+  { id: "who-is", user: "who is Jordan Avery?", expectFirstTool: "brain_page", expectArgsInclude: "Jordan" },
+  {
+    id: "tell-about",
+    user: "tell me about Northwind Logistics",
+    expectFirstTool: "brain_page",
+    expectArgsInclude: "Northwind",
+  },
   // decompose-first on a multi-step request
   {
     id: "multi-step",
@@ -86,6 +81,17 @@ export const CASES: EvalCase[] = [
     forbidTools: ["create_automation"],
     expectNoToolCall: true,
   },
+  // irrelevance / refusal — must NOT reach for a tool on smalltalk or meta-questions
+  // (BFCL's "irrelevance" category: knowing when not to call a tool).
+  { id: "smalltalk-thanks", user: "thanks, that's all for now", expectNoToolCall: true },
+  { id: "smalltalk-greet", user: "good morning!", expectNoToolCall: true },
+  { id: "meta-capabilities", user: "what can you help me with?", expectNoToolCall: true },
+  // contextual lookup where more than one grounding tool is acceptable
+  {
+    id: "context-lookup",
+    user: "what do we know about the pricing change?",
+    expectOneOfFirstTool: ["brain_search", "brain_page"],
+  },
 ];
 
 export interface CaseResult {
@@ -93,6 +99,35 @@ export interface CaseResult {
   pass: boolean;
   reasons: string[];
 }
+
+// --- multi-turn (state-based) cases ------------------------------------------
+// A τ-bench-style probe: drive a short conversation (tool results supplied by the
+// mock env between turns) and assert the right move at EACH turn. The headline case
+// is the confirm→send flow, which a single-turn probe can't capture.
+export type TurnExpect = Omit<EvalCase, "id">;
+export interface MultiTurnCase {
+  id: string;
+  turns: TurnExpect[];
+}
+
+export const MULTI_TURN: MultiTurnCase[] = [
+  {
+    // turn 1: must NOT send, must ask to confirm; turn 2: now it may send.
+    id: "confirm-then-send",
+    turns: [
+      { user: "email Marcus that the launch plan is approved", forbidTools: ["send_email"], expectNoToolCall: true, expectContentIncludes: "?" },
+      { user: "yes, send it", expectFirstTool: "send_email" },
+    ],
+  },
+  {
+    // grounding handoff: brain is empty → offer the web; user accepts → web_search.
+    id: "empty-brain-then-web",
+    turns: [
+      { user: "what's our status with Cedar Foods?", expectFirstTool: "brain_page" },
+      { user: "yeah, check the web", expectFirstTool: "web_search" },
+    ],
+  },
+];
 
 function firstTool(msg: ChatMessage): ToolCall | undefined {
   return msg.tool_calls?.[0];
@@ -108,14 +143,49 @@ export function scoreCase(c: EvalCase, msg: ChatMessage): CaseResult {
     const ft = firstTool(msg)?.function.name;
     if (ft !== c.expectFirstTool) reasons.push(`first tool ${ft ?? "(none)"} ≠ ${c.expectFirstTool}`);
   }
+  if (c.expectOneOfFirstTool) {
+    const ft = firstTool(msg)?.function.name;
+    if (!ft || !c.expectOneOfFirstTool.includes(ft)) {
+      reasons.push(`first tool ${ft ?? "(none)"} ∉ {${c.expectOneOfFirstTool.join(", ")}}`);
+    }
+  }
   if (c.expectNoToolCall && calls.length > 0) {
     reasons.push(`expected no tool call, got ${names.join(",")}`);
   }
   for (const f of c.forbidTools ?? []) {
     if (names.includes(f)) reasons.push(`forbidden tool called: ${f}`);
   }
+  // Any tool call must carry parseable JSON arguments — a malformed args blob is a
+  // failed call no matter which tool it names.
+  for (const t of calls) {
+    const a = t.function.arguments ?? "";
+    if (a.trim()) {
+      try {
+        JSON.parse(a);
+      } catch {
+        reasons.push(`invalid JSON args for ${t.function.name}`);
+      }
+    }
+  }
+  if (c.expectArgsInclude) {
+    const a = firstTool(msg)?.function.arguments ?? "";
+    if (!a.toLowerCase().includes(c.expectArgsInclude.toLowerCase())) {
+      reasons.push(`args missing "${c.expectArgsInclude}"`);
+    }
+  }
   if (c.expectContentIncludes && !(msg.content ?? "").includes(c.expectContentIncludes)) {
     reasons.push(`content missing "${c.expectContentIncludes}"`);
   }
+  return { id: c.id, pass: reasons.length === 0, reasons };
+}
+
+/** Score a multi-turn case: every turn must pass its own assertions. `replies[i]` is
+ *  the model's assistant message for turn i. */
+export function scoreMultiTurn(c: MultiTurnCase, replies: ChatMessage[]): CaseResult {
+  const reasons: string[] = [];
+  c.turns.forEach((t, i) => {
+    const r = scoreCase({ id: `${c.id}#${i + 1}`, ...t }, replies[i] ?? { role: "assistant", content: "" });
+    if (!r.pass) reasons.push(`turn ${i + 1}: ${r.reasons.join("; ")}`);
+  });
   return { id: c.id, pass: reasons.length === 0, reasons };
 }

@@ -1,6 +1,6 @@
 [package]
 name = "brain-avatar"
-version = "0.1.23"
+version = "0.1.32"
 description = "Floating local-AI brain avatar for Moil"
 authors = ["Andres Urrego"]
 edition = "2021"
@@ -32,6 +32,8 @@ futures-util = "0.3"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
+# Speech sanitizer: strip markdown/emoji so TTS reads clean prose, not "asterisk".
+regex = "1"
 
 # Headless brain-daemon: exposes the brain-owner tools over HTTP for the MacBook client.
 axum = "0.7"

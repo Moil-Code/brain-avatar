@@ -1,6 +1,7 @@
 # Training pipeline — local-only
 
-The on-device path from real + synthetic usage to a fine-tuned fast-tier model.
+The on-device path from real + synthetic usage to a fine-tuned local model
+(currently the gemma-4-12b mid/vision tier — the model in day-to-day use).
 Everything here runs on the Mac; nothing is synced. See
 [`../docs/LOCAL_MODEL_TRAINING_PLAN.md`](../docs/LOCAL_MODEL_TRAINING_PLAN.md) for
 the why.
@@ -23,14 +24,19 @@ the why.
 | File | What it does | Runs |
 |---|---|---|
 | `types.ts` | Shared trajectory + example types (mirrors `trajectory.rs`) | — |
+| `reasoning.ts` | Splits a model's chain-of-thought from its clean answer (`<think>` / harmony / `reasoning_content`) and re-emits it as a `<think>` block for reasoning SFT | imported by distill/export |
+| `tool_defs.ts` | Canonical `TOOL_DEFS` (14 tools, real param schemas) shared by export, eval, and distill | imported widely |
 | `synthesize.ts` | Generates ~135 gold trajectories (13 scenarios × entity pool × phrasings) for each documented failure mode against a mock tool env; `source:"synthetic"` | `node --experimental-strip-types training/synthesize.ts` |
 | `mockenv.ts` | Deterministic, side-effect-free mock tool results (shared by distillation) | imported by distill |
-| `distill.ts` | Teacher distillation: the 26B produces gold trajectories over seed tasks (mock tools, no side effects); `source:"distilled"` | `LMSTUDIO_URL=… MODEL=<26B> node --experimental-strip-types training/distill.ts` |
-| `redact.ts` | Deterministic structured-PII scrubber (emails, tokens, paths, creds) | imported by export |
-| `export.ts` | Fuse live+synthetic → redact → normalize system prompt → filter → train/valid split, in `sft` or `kto` mode | `node --experimental-strip-types training/export.ts --mode sft` |
-| `eval/cases.ts` | Frozen eval suite + pure `scoreCase` (first-tool / no-narration / confirm-before-send) | — |
+| `distill.ts` | Teacher distillation: the 26B produces gold trajectories over seed tasks (mock tools, no side effects), **capturing its reasoning**; `source:"distilled"` | `LMSTUDIO_URL=… MODEL=<26B> node --experimental-strip-types training/distill.ts` |
+| `redact.ts` | Deterministic structured-PII scrubber (emails, tokens, paths, creds) — covers reasoning traces too | imported by export |
+| `kto.ts` | KTO class-balancing weights + anti-sycophancy guardrail (writes `kto_config.json`) | imported by export |
+| `outcomes.ts` | Derived outcome labels — flags turns the user corrected on the next turn | imported by export |
+| `dedup.ts` | Deterministic, offline dedup of duplicate/near-duplicate trajectories (exact + shingle-Jaccard) — model-collapse guard | imported by export |
+| `export.ts` | Fuse live+synthetic → redact → normalize system prompt → **dedup** → filter (gold/safety/correction) → train/valid split; flags: `--reasoning`, `--dedup`, `--tools`, `--redact-names` | `node --experimental-strip-types training/export.ts --mode sft` |
+| `eval/cases.ts` | Frozen eval suite + pure `scoreCase` (first-tool / valid+correct JSON args / no-narration / confirm-before-send) | — |
 | `eval/run.ts` | Scores a model via an OpenAI-compatible endpoint; gates adapters | `LMSTUDIO_URL=… MODEL=… node --experimental-strip-types training/eval/run.ts` |
-| `selftest.ts` | Offline checks for scorer, redactor, generator invariants | `node --experimental-strip-types training/selftest.ts` |
+| `selftest.ts` | Offline checks for scorer, redactor, generator invariants, reasoning split/fold + exporter gold-filtering | `node --experimental-strip-types training/selftest.ts` |
 | `train.sh` | End-to-end on the Mac: export → `mlx_lm.lora` → `mlx_lm.fuse` → eval gate | `BASE_MODEL=… bash training/train.sh` |
 | `system_prompt.txt` | Canonical system prompt every example is normalized to (keep in sync with `config.rs`) | — |
 
@@ -62,7 +68,9 @@ trained date). When it pings, run `training/train.sh` on the Mini.
   (all tool calls ok, not thumbed-down). The main behavioral fine-tune.
 - **KTO** (`--mode kto`): preference tuning from thumbs. Emits `{prompt, completion,
   label}` (unpaired binary) — the correct shape for 👍/👎 (not DPO, which needs
-  matched pairs). Run after SFT, once enough rated turns exist.
+  matched pairs). Run after SFT, once enough rated turns exist. Also writes
+  `kto_config.json` with class-balancing weights + an anti-sycophancy guardrail for the
+  Mac-side run (and flags when you only have one thumbs class so far).
 
 ## Quick start (offline, no model)
 
@@ -81,11 +89,11 @@ creates a local venv at `training/.venv` and installs mlx-lm there. Just run it.
 
 ```bash
 # 1. Baseline the current model so the tracker has a "before" number to beat:
-LMSTUDIO_URL=http://localhost:1234/v1 MODEL=qwen3-8b \
+LMSTUDIO_URL=http://localhost:1234/v1 MODEL=gemma-4-12b \
   node --experimental-strip-types training/eval/run.ts
 
 # 2. Train + fuse + gate (auto-creates the venv, installs mlx-lm):
-BASE_MODEL=<qwen3-8b-mlx repo/path> bash training/train.sh
+BASE_MODEL=<gemma-4-12b-mlx repo/path> bash training/train.sh
 
 # then load the fused model in LM Studio and A/B before defaulting to it
 ```
@@ -96,6 +104,55 @@ If you ever want mlx-lm in your own shell (e.g. to poke at it):
 python3 -m venv training/.venv && source training/.venv/bin/activate
 python -m pip install mlx-lm
 ```
+
+## Hands-off training (run it when 50 turns are ready — automatically)
+
+`train.sh` always runs a full train when invoked. To train **only when there's
+enough new data** — and without babysitting it — use the readiness-gated wrapper.
+
+**One-time setup:** copy the config so the wrapper knows your base model:
+
+```bash
+cp training/train.env.example training/train.env
+# edit training/train.env: set BASE_MODEL (the MLX repo/path), and optionally
+# LMSTUDIO_URL/MODEL for the eval gate and EXPORT_GGUF=1 for a servable GGUF.
+```
+
+**Option A — hit it whenever (safe any time):**
+
+```bash
+bash training/auto-train.sh
+```
+
+Trains if ≥50 new turns (or ≥15 newly-rated) have landed since the last run —
+otherwise it prints how many more are needed and exits. This is the "let me kick
+it when it's ready" button, except it checks first so you can run it blindly.
+(Just the dry check: `node --experimental-strip-types training/readiness.ts`.)
+
+**Option B — fully automatic (overnight):** schedule the wrapper with launchd so it
+fires every night at 03:00 and trains itself whenever the corpus is ready. 03:00
+keeps a heavy 12B run off the box while you're using the live avatar.
+
+```bash
+# edit the REPLACE_ME paths in the plist first (your clone's absolute path):
+cp training/com.moil.brainavatar.train.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.moil.brainavatar.train.plist
+# logs: training/logs/auto-train.{out,err}.log ; stop: launchctl unload <same path>
+```
+
+> **Why not a button in the app?** A 12B LoRA needs several GB and minutes; firing
+> it from the live avatar mid-conversation can OOM the 24GB Mini while LM Studio is
+> also resident. The overnight job runs when the box is idle, so training never
+> fights inference. Same readiness bar as the in-app 📈 notification — they agree.
+
+### Serving the result on 24GB (EXPORT_GGUF)
+
+Training needs **MLX** weights, but the Mini serves Gemma as **GGUF QAT** (lighter
+in RAM). Set `EXPORT_GGUF=1` (+ install llama.cpp, `LLAMACPP_DIR`) and `train.sh`
+will also emit a `Q4_K_M.gguf` of the fused model to import into LM Studio. It's
+best-effort: if llama.cpp is missing it prints the manual commands and still leaves
+you the working MLX fused model. Once you have more RAM, skip this and serve the
+MLX fused model directly.
 
 ## Where do I see the dashboard?
 
@@ -117,11 +174,29 @@ The tracker reads `~/Library/Application Support/com.moil.brainavatar/` —
 trained, appended by `train.sh`). It's empty until you use the app a bit; run
 `train.sh` once and a run row appears.
 
+## Reasoning capture (teacher CoT)
+
+Distillation now keeps the 26B teacher's **chain-of-thought** on each turn
+(`reasoning.ts` splits it from the clean answer; redaction scrubs it). It's stored
+but **not folded into the gemma-4-12b target's SFT by default** — that dense Gemma tier
+runs with thinking disabled, so its training data stays reasoning-free (train/inference
+consistency). To train a reasoning-capable target on the teacher's CoT:
+
+```bash
+node --experimental-strip-types training/export.ts --mode sft --reasoning distilled
+```
+
+`--reasoning all` folds reasoning wherever captured; `none` (default) withholds it.
+
 ## Deliberate follow-ups (not yet done)
 
-- **Name-level anonymization** needs an NER pass; `redact.ts` only catches
-  structured identifiers today.
-- **Teacher distillation** (`source:"distilled"`) — have the 26B generate gold
-  trajectories for sampled tasks; same schema, fed through the same exporter.
-- **Tool schemas in examples** — the exporter omits the `tools` array for now;
-  attach `TOOL_DEFS` if eval shows the model needs the signatures during training.
+See [`../docs/TRAINING_CAPABILITIES_AUDIT.md`](../docs/TRAINING_CAPABILITIES_AUDIT.md)
+for the full gap analysis, research citations, and phased plan.
+
+- **Full contextual NER** — `--redact-names <file>` scrubs a denylist today; reliable
+  context-aware person/location redaction needs an on-device Presidio pass (regex + spaCy NER).
+- **Deeper eval** — multi-turn / state-based (τ-bench-style) cases (refusal/irrelevance
+  + arg-value checks are done).
+- **Run the trainer** — the actual LoRA SFT + KTO passes on the Mac Mini (GPU-bound;
+  `train.sh` + the emitted `kto_config.json` weights).
+- **Guarded KTO** — class weighting (1:1–4:3) + an SFT anchor against sycophancy.

@@ -469,3 +469,29 @@ describe("trivial-turn fast lane — no tools, one round", () => {
     expect((llmComplete as any).mock.calls[0][4]).toBeUndefined();
   });
 });
+
+describe("self-repair on a tool call leaked as text", () => {
+  it("re-prompts once and runs the real tool instead of returning the dangling text", async () => {
+    // R0 is the exact failure from the 2026-06-21 log: a tool call written as
+    // prose (hallucinated name + stray markup), no structured tool_calls. The
+    // loop must NOT surface it — it self-repairs, and the model then emits a
+    // real call that executes.
+    llmScript = [
+      { content: "open_url,url:https://youtu.be/abc}<tool_call|>", tool_calls: [] },
+      { content: "", tool_calls: [tool("a", "brain_search", { query: "Buda HIVE" })] },
+      { content: "Here's what I found.", tool_calls: [] },
+    ];
+
+    const res = await runAgent({
+      userText: "look up Buda HIVE",
+      history: [],
+      settings,
+      conversationId: "sr1",
+    } as any);
+
+    expect(res.content).not.toMatch(/open_url|tool_call/i); // the leak was never shown
+    expect(res.content).toMatch(/found/i); // reached the answer after repair
+    expect(res.tools).toContain("brain_search"); // a real tool actually ran
+    expect(llmComplete).toHaveBeenCalledTimes(3); // leak -> repair re-prompt -> answer
+  });
+});

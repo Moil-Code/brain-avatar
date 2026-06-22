@@ -12,6 +12,11 @@ export interface ChatMessage {
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   name?: string;
+  /** Optional captured chain-of-thought, kept separate from the clean `content`.
+   *  Mirrors the training schema (training/types.ts). The live agent loop leaves
+   *  this unset — the fast tier runs with thinking disabled and reasoning is
+   *  stripped before it reaches the app. */
+  reasoning?: string;
 }
 
 /** A live progress step shown while an answer is being produced. */

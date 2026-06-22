@@ -7,7 +7,7 @@
 //! ("launch a CLI, read the result, done"). The tradeoff is per-call startup
 //! latency and no cross-call server session, acceptable for a personal assistant.
 
-use crate::config::{augmented_path, McpServer, SettingsState};
+use crate::config::{augmented_path, resolve_bin, McpServer, SettingsState};
 use crate::tools::tool_log;
 use serde_json::{json, Value};
 use std::process::Stdio;
@@ -32,7 +32,7 @@ struct Conn {
 impl Conn {
     /// Spawn the server and complete the MCP initialize handshake.
     async fn start(server: &McpServer) -> Result<Conn, String> {
-        let mut cmd = Command::new(&server.command);
+        let mut cmd = Command::new(resolve_bin(&server.command));
         cmd.args(&server.args)
             .env("PATH", augmented_path())
             .stdin(Stdio::piped())

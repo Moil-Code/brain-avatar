@@ -42,6 +42,9 @@ import {
   primeVoices,
   setMuted as setMutedFlag,
   speak,
+  speechStreamEnd,
+  speechStreamPush,
+  speechStreamStart,
   startRecording,
   stopSpeaking,
   transcriptIsJunk,
@@ -68,8 +71,19 @@ function uid() {
 
 interface QueueItem {
   id: string;
+  convId: string; // the conversation this ask was composed in (so it lands there)
   text: string;
   attachments: Attachment[];
+}
+
+/** A generation currently in flight for one conversation. Kept in a registry so a
+ *  run can continue (and finish, speak, persist) in the background after the user
+ *  navigates to another chat — and so switching BACK re-attaches its live stream. */
+interface ActiveRun {
+  botId: string;
+  streamed: string;
+  tools: string[];
+  steps: UiStep[];
 }
 
 /** Insert or update a step (by id) in a message's step feed. */
@@ -198,9 +212,17 @@ export default function App() {
   const collapseTimer = useRef<number | null>(null);
   const queueRef = useRef<QueueItem[]>([]);
   const runningRef = useRef(false);
-  const runTurnRef = useRef<(t: string, a?: Attachment[]) => Promise<void>>(async () => {});
+  const runTurnRef = useRef<(c: string, t: string, a?: Attachment[]) => Promise<void>>(
+    async () => {}
+  );
 
-  const modelHistory = useRef<ChatMessage[]>([]);
+  // Model-facing history, keyed by conversation id. Per-conversation (not a single
+  // shared list) so a run finishing in the background can't graft its turns onto
+  // whatever chat the user has since switched to.
+  const histories = useRef<Map<string, ChatMessage[]>>(new Map());
+  // Generations currently in flight, keyed by conversation id (single-flight today,
+  // so at most one — but a map keeps attribution explicit and future-proof).
+  const activeRuns = useRef<Map<string, ActiveRun>>(new Map());
   const recorderRef = useRef<Recorder | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const listenAbortRef = useRef<AbortController | null>(null);
@@ -222,9 +244,26 @@ export default function App() {
     ]);
     const merged = mergeTurns(local, remote);
     const turns = merged.filter((m) => m.role === "user" || m.role === "assistant");
-    setMessages(
-      turns.map((m) => ({ id: uid(), role: m.role as "user" | "assistant", content: m.content }))
-    );
+    const view: UiMessage[] = turns.map((m) => ({
+      id: uid(),
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
+    // If this conversation is mid-generation (the user is returning to a chat that's
+    // still answering in the background), re-attach its live bot bubble — using the
+    // run's own botId so its streaming tokens resume landing here.
+    const run = activeRuns.current.get(id);
+    if (run) {
+      view.push({
+        id: run.botId,
+        role: "assistant",
+        content: run.streamed,
+        pending: true,
+        tools: run.tools,
+        steps: run.steps,
+      });
+    }
+    setMessages(view);
     // Restore this conversation's kanban board (so an unfinished plan from a prior
     // session reappears), collapsed by default. Guard against a fast A→B→C switch:
     // a slow board load for a conversation the user already left must not apply.
@@ -237,10 +276,10 @@ export default function App() {
       .catch(() => {
         if (id === activeConvRef.current) setBoard(null);
       });
-    modelHistory.current = turns.map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    }));
+    histories.current.set(
+      id,
+      turns.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }))
+    );
     // Cache the merged view locally (only when the cloud actually returned turns, so
     // we never overwrite local-only data while offline). Keeps offline access + the
     // recent-chats list warm for conversations first opened from another device.
@@ -314,34 +353,51 @@ export default function App() {
     setMessages((ms) => ms.map((m) => (m.id === id ? { ...m, ...patch } : m)));
 
   const runTurn = useCallback(
-    async (text: string, attachments: Attachment[] = []) => {
+    async (convId: string, text: string, attachments: Attachment[] = []) => {
       if (!settings) return;
+      // Whether this run's conversation is the one currently on screen. Re-checked
+      // (not captured) so UI writes follow the user as they switch chats: an
+      // on-screen run renders live; a backgrounded one keeps working silently.
+      const isActive = () => convId === activeConvRef.current;
       const attachNote = attachments.length
         ? `\n\n📎 ${attachments.map((a) => a.name).join(", ")}`
         : "";
       const userMsg: UiMessage = { id: uid(), role: "user", content: text + attachNote };
       const botId = uid();
-      const botMsg: UiMessage = {
-        id: botId,
-        role: "assistant",
-        content: "",
-        pending: true,
-        tools: [],
-        steps: [],
-      };
-      setMessages((ms) => [...ms, userMsg, botMsg]);
+      const run: ActiveRun = { botId, streamed: "", tools: [], steps: [] };
+      activeRuns.current.set(convId, run);
+      if (isActive()) {
+        const botMsg: UiMessage = {
+          id: botId,
+          role: "assistant",
+          content: "",
+          pending: true,
+          tools: [],
+          steps: [],
+        };
+        setMessages((ms) => [...ms, userMsg, botMsg]);
+      }
       activeBotIdRef.current = botId;
-      appendTurn(activeConv, "user", text).catch(() => {});
-      pushChat(activeConv, text, "user", text).catch(() => {});
+      appendTurn(convId, "user", text).catch(() => {});
+      pushChat(convId, text, "user", text).catch(() => {});
       setBusy(true);
       setAvatarState("thinking");
       stopSpeaking();
+      // Speak the answer sentence-by-sentence as it streams in (fed from onToken
+      // below), so the voice keeps pace with the text instead of waiting for the
+      // whole answer. onIdle fires when the last sentence finishes.
+      speechStreamStart({
+        onStart: () => setAvatarState("speaking"),
+        onIdle: () => {
+          setAvatarState("idle");
+          if (isActive()) autoListenRef.current(); // hands-free only on the visible chat
+        },
+      });
 
       const ac = new AbortController();
       abortRef.current = ac;
-      const priorHistory = [...modelHistory.current];
+      const priorHistory = [...(histories.current.get(convId) ?? [])];
 
-      let streamed = "";
       let boardShownThisTurn = false;
       try {
         const result = await runAgent({
@@ -350,7 +406,7 @@ export default function App() {
           settings,
           attachments,
           modelOverride,
-          conversationId: activeConv,
+          conversationId: convId,
           signal: ac.signal,
           onConfirm: (req) =>
             new Promise<boolean>((resolve) => setConfirmReq({ req, resolve })),
@@ -358,7 +414,8 @@ export default function App() {
             if (b === null || b.conversation_id === activeConvRef.current) setBoard(b);
           },
           onBoardUpdate: (b) => {
-            // Ignore late updates from a run whose conversation the user left.
+            // Ignore updates from a run whose conversation the user isn't viewing —
+            // it's saved to that conversation's board and reloads on switch-back.
             if (b.conversation_id !== activeConvRef.current) return;
             setBoard(b);
             if (!boardShownThisTurn) {
@@ -368,49 +425,46 @@ export default function App() {
           },
           onState: (s) => setAvatarState(s),
           onToken: (delta) => {
-            streamed += delta;
-            patchMessage(botId, { content: streamed });
+            run.streamed += delta;
+            if (isActive()) patchMessage(botId, { content: run.streamed });
+            speechStreamPush(delta); // speak each sentence as it completes (any chat)
           },
-          onToolStart: (name) =>
-            setMessages((ms) =>
-              ms.map((m) =>
-                m.id === botId
-                  ? { ...m, tools: m.tools?.includes(name) ? m.tools : [...(m.tools ?? []), name] }
-                  : m
-              )
-            ),
+          onToolStart: (name) => {
+            if (!run.tools.includes(name)) run.tools = [...run.tools, name];
+            if (isActive()) patchMessage(botId, { tools: run.tools });
+          },
           onRoute: (route) => {
-            if (route.routed) {
+            if (route.routed && isActive()) {
               const short = route.modelId.split("/").pop() ?? route.modelId;
               patchMessage(botId, { routeLabel: `${route.taskType} → ${short}` });
             }
           },
-          onStep: (step) =>
-            setMessages((ms) =>
-              ms.map((m) => (m.id === botId ? { ...m, steps: upsertStep(m.steps, step) } : m))
-            ),
+          onStep: (step) => {
+            run.steps = upsertStep(run.steps, step);
+            if (isActive()) patchMessage(botId, { steps: run.steps });
+          },
         });
 
-        const answer = result.content || streamed || "(no response)";
-        patchMessage(botId, { content: answer, pending: false, tools: result.tools });
+        const answer = result.content || run.streamed || "(no response)";
+        if (isActive()) patchMessage(botId, { content: answer, pending: false, tools: result.tools });
 
-        modelHistory.current = [
+        histories.current.set(convId, [
           ...priorHistory,
           { role: "user", content: text },
           { role: "assistant", content: answer },
-        ];
+        ]);
 
-        appendTurn(activeConv, "assistant", answer).catch(() => {});
-        pushChat(activeConv, "", "assistant", answer).catch(() => {});
-        saveMessage(activeConv, "user", text, userMsg.id).catch(() => {});
-        saveMessage(activeConv, "assistant", answer, botId).catch(() => {});
+        appendTurn(convId, "assistant", answer).catch(() => {});
+        pushChat(convId, "", "assistant", answer).catch(() => {});
+        saveMessage(convId, "user", text, userMsg.id).catch(() => {});
+        saveMessage(convId, "assistant", answer, botId).catch(() => {});
 
         // Capture the full turn for the on-device training corpus (local-only;
         // never synced). botId is the join key the thumbs rating later updates.
         if (result.trajectory) {
           saveTrajectory({
             schema_version: 1,
-            conversation_id: activeConv,
+            conversation_id: convId,
             turn_id: botId,
             created_at: new Date().toISOString(),
             model_id: result.route?.modelId ?? "",
@@ -427,27 +481,29 @@ export default function App() {
           }).catch(() => {});
         }
 
-        speak(answer, {
-          onStart: () => setAvatarState("speaking"),
-          onEnd: () => {
-            setAvatarState("idle");
-            autoListenRef.current(); // hands-free back-and-forth (if convo mode on)
-          },
-        });
+        // Flush the trailing partial sentence; the streamer's onIdle (set above)
+        // drops the avatar to idle and resumes convo-mode. Speech runs even if the
+        // user moved to another chat (generation is single-flight, so answers never
+        // overlap); when muted it just fires onIdle with no audio.
+        speechStreamEnd();
       } catch (e) {
+        stopSpeaking(); // halt any partial streamed speech
         const msg = e instanceof Error ? e.message : String(e);
-        if (msg.toLowerCase().includes("abort") || msg.toLowerCase().includes("cancel")) {
-          patchMessage(botId, { content: streamed || "(stopped)", pending: false });
-        } else {
-          patchMessage(botId, { content: `⚠️ ${msg}`, pending: false });
+        if (isActive()) {
+          if (msg.toLowerCase().includes("abort") || msg.toLowerCase().includes("cancel")) {
+            patchMessage(botId, { content: run.streamed || "(stopped)", pending: false });
+          } else {
+            patchMessage(botId, { content: `⚠️ ${msg}`, pending: false });
+          }
         }
         setAvatarState("idle");
       } finally {
+        activeRuns.current.delete(convId);
         setBusy(false);
         abortRef.current = null;
       }
     },
-    [settings, modelOverride, activeConv]
+    [settings, modelOverride]
   );
   runTurnRef.current = runTurn;
 
@@ -575,14 +631,16 @@ export default function App() {
     syncQueue();
     if (!item) return;
     runningRef.current = true;
-    runTurnRef.current(item.text, item.attachments).finally(() => {
+    runTurnRef.current(item.convId, item.text, item.attachments).finally(() => {
       runningRef.current = false;
       pump();
     });
   }, []);
   const handleSend = useCallback(
     (text: string, attachments: Attachment[] = []) => {
-      queueRef.current.push({ id: uid(), text, attachments });
+      // Bind the ask to the chat it was composed in, so if the user switches away
+      // before it runs, it still lands in (and is attributed to) the right chat.
+      queueRef.current.push({ id: uid(), convId: activeConvRef.current, text, attachments });
       syncQueue();
       pump();
     },
@@ -603,17 +661,19 @@ export default function App() {
     setShowChats(true);
   }, []);
   const newChat = useCallback(() => {
-    abortRef.current?.abort();
-    setActiveConvId(uid());
+    // Leave any in-flight run alone — it keeps generating, speaking, and saving to
+    // its own chat in the background. We just move the view to a fresh conversation.
+    const id = uid();
+    setActiveConvId(id);
     setMessages([]);
-    modelHistory.current = [];
+    histories.current.set(id, []);
     setBoard(null);
     setBoardExpanded(false);
     setShowChats(false);
   }, []);
   const switchChat = useCallback(
     async (id: string) => {
-      abortRef.current?.abort();
+      // No abort — switching chats no longer kills the current generation.
       setActiveConvId(id);
       await loadConversation(id);
       setShowChats(false);
@@ -836,7 +896,7 @@ export default function App() {
         onToggleConvo={toggleConvoMode}
         muted={muted}
         onToggleMute={toggleMute}
-        queue={queue}
+        queue={queue.filter((q) => q.convId === activeConv)}
         onDequeue={dequeue}
         onSend={handleSend}
         onToggleMic={handleToggleMic}

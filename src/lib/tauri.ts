@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import type { Automation, FeatureFlags, McpServer, Settings, TaskBoard, TaskInput } from "./types";
 
 // --- Proactive automations (scheduler store + native notifications) ---
@@ -80,6 +80,34 @@ export const llmComplete = (
     })
   );
 
+/** Streaming sibling of llmComplete: content arrives token-by-token via `onDelta`
+ *  as the model generates, and the full {content, tool_calls} is returned at the
+ *  end (same shape as llmComplete). No withRetry — a partial stream can't be safely
+ *  replayed; the agent's streamComplete wrapper falls back to llmComplete on error. */
+export const llmStream = (
+  baseUrl: string,
+  token: string | undefined,
+  model: string,
+  messages: unknown,
+  tools: unknown,
+  maxTokens: number | undefined,
+  toolChoice: unknown,
+  onDelta: (delta: string) => void
+) => {
+  const channel = new Channel<string>();
+  channel.onmessage = (delta) => onDelta(delta);
+  return invoke<{ content: string; tool_calls: ToolCall[] | null }>("llm_stream", {
+    baseUrl,
+    token,
+    model,
+    messages,
+    tools,
+    maxTokens,
+    toolChoice,
+    onDelta: channel,
+  });
+};
+
 export const extractDocText = (name: string, base64: string) =>
   invoke<string>("extract_doc_text", { name, base64 });
 
@@ -160,6 +188,15 @@ export const findFiles = (query: string, scope?: string) =>
   invoke<string>("find_files", { query, scope });
 export const readFile = (path: string, maxChars?: number) =>
   invoke<string>("read_file", { path, maxChars });
+/** Create a document from text/markdown and save it (txt/md/html/rtf/doc/docx/odt/pdf). */
+export const createDocument = (args: {
+  content: string;
+  filename: string;
+  format?: string;
+  folder?: string;
+  overwrite?: boolean;
+  openAfter?: boolean;
+}) => invoke<string>("create_document", args);
 export const openFileCmd = (path: string) => invoke<string>("open_file", { path });
 export const openApp = (name: string) => invoke<string>("open_app", { name });
 export const listApps = () => invoke<string>("list_apps");
@@ -245,8 +282,8 @@ export interface TrajectoryRecord {
 export const saveTrajectory = (trajectory: TrajectoryRecord) =>
   invoke<void>("save_trajectory", { trajectory });
 /** Attach a thumbs rating (-1/1) to an already-captured turn (the KTO label). */
-export const rateTrajectory = (turnId: string, rating: -1 | 1) =>
-  invoke<void>("rate_trajectory", { turnId, rating });
+export const rateTrajectory = (turnId: string, rating: -1 | 1, note?: string) =>
+  invoke<void>("rate_trajectory", { turnId, rating, note: note ?? null });
 
 export interface Count {
   name: string;

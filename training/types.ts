@@ -10,6 +10,12 @@ export interface ChatMessage {
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   name?: string;
+  /** The model's chain-of-thought for an assistant turn, kept SEPARATE from the
+   *  clean `content`. Populated by teacher distillation (distill.ts); the exporter
+   *  decides per run whether to fold it back into the answer for reasoning SFT.
+   *  Never sent back to the model in the loop (mirrors production, which re-feeds
+   *  only tool_calls). Absent on live fast-tier turns (thinking is disabled there). */
+  reasoning?: string;
 }
 
 export interface ToolCall {

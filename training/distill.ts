@@ -1,5 +1,5 @@
 // Teacher distillation — have the deep 26B (the best LOCAL model) generate gold
-// trajectories for the fast tier to learn from. On-device, no cloud.
+// trajectories for the student model to learn from. On-device, no cloud.
 //
 // For each seed task we run a bounded tool loop against an OpenAI-compatible
 // endpoint (LM Studio serving the 26B), executing each tool the teacher picks via
@@ -23,6 +23,7 @@ import { dirname } from "node:path";
 import type { ChatMessage, ToolEvent, TrajectoryRecord } from "./types.ts";
 import { TOOLS } from "./eval/cases.ts";
 import { mockToolResult } from "./mockenv.ts";
+import { splitReasoning } from "./reasoning.ts";
 
 const URL = process.env.LMSTUDIO_URL ?? "";
 const MODEL = process.env.MODEL ?? "";
@@ -58,15 +59,23 @@ interface ApiToolCall {
   function: { name: string; arguments: string };
 }
 
-async function chat(messages: ChatMessage[]): Promise<{ content: string; tool_calls: ApiToolCall[] }> {
+async function chat(messages: ChatMessage[]): Promise<{ content: string; reasoning: string; tool_calls: ApiToolCall[] }> {
+  // Never send our captured `reasoning` field back to the model — re-submitting a
+  // teacher's harmony/think markup crashes LM Studio's template parser, and the
+  // production loop re-feeds tool_calls only. Strip it from the wire messages.
+  const wire = messages.map(({ reasoning: _r, ...m }) => m);
   const res = await fetch(`${URL}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}) },
-    body: JSON.stringify({ model: MODEL, messages, tools: TOOLS, temperature: 0.2, max_tokens: 800 }),
+    body: JSON.stringify({ model: MODEL, messages: wire, tools: TOOLS, temperature: 0.2, max_tokens: 800 }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const m = (await res.json()).choices?.[0]?.message ?? {};
-  return { content: m.content ?? "", tool_calls: Array.isArray(m.tool_calls) ? m.tool_calls : [] };
+  // The 26B teacher runs with thinking ON. Separate its chain-of-thought (whether
+  // returned as `reasoning_content` or inline as <think>/harmony markup) from the
+  // clean answer, so the FINAL answer isn't polluted and the CoT is preserved.
+  const { reasoning, content } = splitReasoning(m.content ?? "", m.reasoning_content ?? m.reasoning);
+  return { content, reasoning, tool_calls: Array.isArray(m.tool_calls) ? m.tool_calls : [] };
 }
 
 /** Run one seed through a bounded tool loop; return the recorded trajectory. */
@@ -81,14 +90,17 @@ async function distillOne(user: string): Promise<TrajectoryRecord> {
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     rounds = round + 1;
-    const { content, tool_calls } = await chat(messages);
+    const { content, reasoning, tool_calls } = await chat(messages);
     if (tool_calls.length === 0) {
       final = content.trim();
-      messages.push({ role: "assistant", content: final });
+      const answer: ChatMessage = { role: "assistant", content: final };
+      if (reasoning) answer.reasoning = reasoning; // preserve the teacher's CoT
+      messages.push(answer);
       break;
     }
-    // Re-feed only the tool_calls (mirrors the production agent loop).
-    messages.push({
+    // Re-feed only the tool_calls (mirrors the production agent loop); the captured
+    // reasoning rides along on the record but is stripped before re-send (see chat()).
+    const turn: ChatMessage = {
       role: "assistant",
       content: "",
       tool_calls: tool_calls.map((t) => ({
@@ -96,7 +108,9 @@ async function distillOne(user: string): Promise<TrajectoryRecord> {
         type: "function",
         function: t.function,
       })),
-    });
+    };
+    if (reasoning) turn.reasoning = reasoning;
+    messages.push(turn);
     for (const tc of tool_calls) {
       const result = mockToolResult(tc.function.name, tc.function.arguments);
       toolEvents.push({ round, name: tc.function.name, arguments: tc.function.arguments, ok: true });

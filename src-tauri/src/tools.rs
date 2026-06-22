@@ -1,4 +1,4 @@
-use crate::config::{augmented_path, Settings, SettingsState};
+use crate::config::{augmented_path, resolve_bin, Settings, SettingsState};
 use chrono::{Duration, Local, Utc};
 use serde_json::{json, Value};
 use std::time::Duration as StdDuration;
@@ -10,7 +10,7 @@ const CLI_TIMEOUT: StdDuration = StdDuration::from_secs(45);
 
 /// Run a CLI with an augmented PATH and a hard timeout. Returns stdout on success.
 async fn run_cli(program: &str, args: &[String]) -> Result<String, String> {
-    let mut cmd = Command::new(program);
+    let mut cmd = Command::new(resolve_bin(program));
     cmd.args(args)
         .env("PATH", augmented_path())
         .kill_on_drop(true);
