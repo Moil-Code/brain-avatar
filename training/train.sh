@@ -13,12 +13,15 @@
 # Usage:    bash training/train.sh
 #
 # Knobs (env):
-#   BASE_MODEL   HF/MLX repo or local path of the gemma-4-12b base (required)
-#   MODE         sft | kto                                        (default sft)
-#   ITERS        training iterations                              (default 600)
-#   NUM_LAYERS   how many top layers get a LoRA adapter           (default 8)
-#   LMSTUDIO_URL endpoint for the eval gate (e.g. http://localhost:1234/v1)
-#   MODEL        model id served by LM Studio for the eval gate
+#   BASE_MODEL    HF/MLX repo or local path of the gemma-4-12b base (required)
+#   MODE          sft | kto                                       (default sft)
+#   ITERS         training iterations                             (default 600)
+#   NUM_LAYERS    how many top layers get a LoRA adapter          (default 8)
+#   NAMES_FILE    file of real names (one per line) to redact from live data (optional)
+#   DISTILL_MODEL deep model id to distill teacher trajectories from (optional)
+#   EXPORT_GGUF   =1 to also emit a Q4_K_M GGUF of the fused model (optional)
+#   LMSTUDIO_URL  endpoint for the eval gate (e.g. http://localhost:1234/v1)
+#   MODEL         model id served by LM Studio for the eval gate
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -53,19 +56,46 @@ if [[ -n "${LMSTUDIO_URL:-}" && -n "${DISTILL_MODEL:-}" ]]; then
 fi
 
 echo "==> 2/5  Export corpus (live + distilled + synthetic → MLX ${MODE} format)"
-# MLX-LM expects train.jsonl / valid.jsonl in one dir.
-node --experimental-strip-types training/export.ts --mode "${MODE}" --out "${DATA_DIR}"
+# MLX-LM expects train.jsonl / valid.jsonl in one dir. Pass an optional name denylist.
+EXPORT_ARGS=(--mode "${MODE}" --out "${DATA_DIR}")
+[[ -n "${NAMES_FILE:-}" ]] && EXPORT_ARGS+=(--redact-names "${NAMES_FILE}")
+node --experimental-strip-types training/export.ts "${EXPORT_ARGS[@]}"
 
-echo "==> 3/5  LoRA train (${MODE}, ${ITERS} iters)"
+echo "==> 3/5  LoRA train (${MODE}, ${ITERS} iters, ${NUM_LAYERS} layers)"
 mkdir -p "${ADAPTER_DIR}"
-mlx_lm.lora \
-  --model "${BASE_MODEL}" \
-  --train \
-  --data "${DATA_DIR}" \
-  --iters "${ITERS}" \
-  --batch-size 1 \
-  --num-layers "${NUM_LAYERS}" \
-  --adapter-path "${ADAPTER_DIR}"
+if [[ "${MODE}" == "kto" ]]; then
+  # KTO ≠ SFT: the data is {prompt,completion,label} and needs a PREFERENCE trainer with
+  # the class-balancing weights export computed (kto_config.json). Running mlx_lm.lora on
+  # this data would silently mistrain, so we branch. We use mlx_lm's KTO entrypoint IF this
+  # version ships one; otherwise we surface the prepared data + weights and stop cleanly
+  # (no bad adapter). Adjust the invocation to your mlx-lm's KTO interface if it differs.
+  CFG="${DATA_DIR}/kto_config.json"
+  DW="$(python -c "import json;print(json.load(open('${CFG}'))['desirable_weight'])" 2>/dev/null || echo 1)"
+  UW="$(python -c "import json;print(json.load(open('${CFG}'))['undesirable_weight'])" 2>/dev/null || echo 1)"
+  echo "    KTO class weights (from ${CFG}): desirable=${DW} undesirable=${UW}"
+  if python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('mlx_lm.kto') else 1)" 2>/dev/null; then
+    python -m mlx_lm.kto \
+      --model "${BASE_MODEL}" --train --data "${DATA_DIR}" \
+      --iters "${ITERS}" --batch-size 1 --num-layers "${NUM_LAYERS}" \
+      --desirable-weight "${DW}" --undesirable-weight "${UW}" \
+      --adapter-path "${ADAPTER_DIR}"
+  else
+    echo "    NOTE: this mlx-lm has no KTO trainer (mlx_lm.kto not found)."
+    echo "    The KTO set is ready: ${DATA_DIR}/{train,valid}.jsonl + ${CFG}."
+    echo "    Run a preference trainer (e.g. HF TRL KTOTrainer) with desirable_weight=${DW}"
+    echo "    undesirable_weight=${UW}, then fuse + gate. Skipping train/fuse/gate."
+    exit 0
+  fi
+else
+  mlx_lm.lora \
+    --model "${BASE_MODEL}" \
+    --train \
+    --data "${DATA_DIR}" \
+    --iters "${ITERS}" \
+    --batch-size 1 \
+    --num-layers "${NUM_LAYERS}" \
+    --adapter-path "${ADAPTER_DIR}"
+fi
 
 echo "==> 4/5  Fuse adapter into a standalone model"
 mlx_lm.fuse \
