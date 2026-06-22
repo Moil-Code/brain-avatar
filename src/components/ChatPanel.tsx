@@ -116,6 +116,7 @@ export default function ChatPanel({
   const [noteFor, setNoteFor] = useState<string | null>(null); // message with the note box open
   const [noteDraft, setNoteDraft] = useState("");
   const [playingId, setPlayingId] = useState<string | null>(null); // answer being read aloud
+  const [copiedId, setCopiedId] = useState<string | null>(null); // answer just copied (✓ flash)
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -181,6 +182,28 @@ export default function ChatPanel({
       // (interrupted) playback's end must not wipe the new one's highlight.
       onEnd: () => setPlayingId((cur) => (cur === m.id ? null : cur)),
     });
+  };
+
+  // Copy one answer's text to the clipboard so it can be pasted elsewhere without
+  // hand-selecting it. Flashes a ✓ for a moment, then reverts to the copy icon.
+  const copyAnswer = async (m: UiMessage) => {
+    try {
+      await navigator.clipboard.writeText(m.content);
+    } catch {
+      // Fallback for any context where the async Clipboard API is unavailable.
+      const ta = document.createElement("textarea");
+      ta.value = m.content;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch { /* give up silently */ }
+      document.body.removeChild(ta);
+    }
+    setCopiedId(m.id);
+    window.setTimeout(() => setCopiedId((cur) => (cur === m.id ? null : cur)), 1500);
   };
 
   // Switching conversations leaves the current answer half-spoken otherwise —
@@ -286,9 +309,18 @@ export default function ChatPanel({
             {m.role === "assistant" && !m.pending && (
               <div
                 className={`msg-feedback${
-                  noteFor === m.id || notes[m.id] || playingId === m.id ? " fb-open" : ""
+                  noteFor === m.id || notes[m.id] || playingId === m.id || copiedId === m.id
+                    ? " fb-open"
+                    : ""
                 }`}
               >
+                <button
+                  className={`fb-btn${copiedId === m.id ? " fb-active" : ""}`}
+                  title={copiedId === m.id ? "Copied!" : "Copy this answer"}
+                  onClick={() => copyAnswer(m)}
+                >
+                  {copiedId === m.id ? "✓" : "📋"}
+                </button>
                 <button
                   className={`fb-btn${playingId === m.id ? " fb-playing" : ""}`}
                   title={playingId === m.id ? "Stop reading aloud" : "Play this answer aloud"}
