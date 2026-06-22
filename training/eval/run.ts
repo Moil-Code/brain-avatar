@@ -11,7 +11,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import type { ChatMessage } from "../types.ts";
-import { CASES, scoreCase, TOOLS, type CaseResult } from "./cases.ts";
+import { CASES, MULTI_TURN, scoreCase, scoreMultiTurn, TOOLS, type CaseResult } from "./cases.ts";
+import { mockToolResult } from "../mockenv.ts";
 
 const URL = process.env.LMSTUDIO_URL ?? "";
 const MODEL = process.env.MODEL ?? "";
@@ -23,11 +24,7 @@ function systemPrompt(): string {
   return existsSync(p) ? readFileSync(p, "utf8").trim() : "You are Brain, a tool-using assistant.";
 }
 
-async function callModel(user: string): Promise<ChatMessage> {
-  const messages = [
-    { role: "system", content: systemPrompt() },
-    { role: "user", content: user },
-  ];
+async function callMessages(messages: ChatMessage[]): Promise<ChatMessage> {
   const res = await fetch(`${URL}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}) },
@@ -36,6 +33,31 @@ async function callModel(user: string): Promise<ChatMessage> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
   return data.choices?.[0]?.message ?? { role: "assistant", content: "" };
+}
+
+const callModel = (user: string): Promise<ChatMessage> =>
+  callMessages([{ role: "system", content: systemPrompt() }, { role: "user", content: user }]);
+
+/** Drive a multi-turn case; the mock env supplies tool results between turns so the
+ *  conversation can advance (e.g. confirm → send). Returns the per-turn assistant msgs. */
+async function runMultiTurn(c: (typeof MULTI_TURN)[number]): Promise<ChatMessage[]> {
+  const messages: ChatMessage[] = [{ role: "system", content: systemPrompt() }];
+  const replies: ChatMessage[] = [];
+  for (const t of c.turns) {
+    messages.push({ role: "user", content: t.user });
+    const msg = await callMessages(messages);
+    replies.push(msg);
+    messages.push({ role: "assistant", content: msg.content ?? "", tool_calls: msg.tool_calls });
+    for (const tc of msg.tool_calls ?? []) {
+      messages.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        name: tc.function.name,
+        content: mockToolResult(tc.function.name, tc.function.arguments),
+      });
+    }
+  }
+  return replies;
 }
 
 async function main() {
@@ -48,7 +70,13 @@ async function main() {
         ok = false;
       }
     }
-    console.log(`lint: ${CASES.length} cases, ${TOOLS.length} tools — ${ok ? "OK" : "FAILED"}`);
+    for (const c of MULTI_TURN) {
+      if (!c.id || !c.turns?.length || c.turns.some((t) => !t.user)) {
+        console.error(`malformed multi-turn case: ${JSON.stringify(c)}`);
+        ok = false;
+      }
+    }
+    console.log(`lint: ${CASES.length} cases, ${MULTI_TURN.length} multi-turn, ${TOOLS.length} tools — ${ok ? "OK" : "FAILED"}`);
     console.log("(set LMSTUDIO_URL and MODEL to run against a live model)");
     process.exit(ok ? 0 : 1);
   }
@@ -58,6 +86,13 @@ async function main() {
     try {
       const msg = await callModel(c.user);
       results.push(scoreCase(c, msg));
+    } catch (e) {
+      results.push({ id: c.id, pass: false, reasons: [`error: ${e instanceof Error ? e.message : String(e)}`] });
+    }
+  }
+  for (const c of MULTI_TURN) {
+    try {
+      results.push(scoreMultiTurn(c, await runMultiTurn(c)));
     } catch (e) {
       results.push({ id: c.id, pass: false, reasons: [`error: ${e instanceof Error ? e.message : String(e)}`] });
     }

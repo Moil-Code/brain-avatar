@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import type { ChatMessage, TrajectoryRecord } from "./types.ts";
-import { scoreCase, type EvalCase } from "./eval/cases.ts";
+import { scoreCase, scoreMultiTurn, type EvalCase, type MultiTurnCase } from "./eval/cases.ts";
 import { redactText, redactRecord } from "./redact.ts";
 import { mockToolResult } from "./mockenv.ts";
 import { splitReasoning, withThink } from "./reasoning.ts";
@@ -343,6 +343,21 @@ check("export sft: drops a turn the user corrected next turn", () => {
   );
   const raw = readFileSync(`${oc}/out/train.jsonl`, "utf8") + readFileSync(`${oc}/out/valid.jsonl`, "utf8");
   assert.equal(raw.split("\n").filter((l) => l.trim()).length, 1, "corrected t1 dropped, t2 kept");
+});
+
+// --- multi-turn eval scorer (confirm→send flow) ------------------------------
+check("scorer: multi-turn passes only when EVERY turn passes", () => {
+  const c: MultiTurnCase = {
+    id: "mt",
+    turns: [
+      { user: "email Marcus the plan is approved", forbidTools: ["send_email"], expectNoToolCall: true, expectContentIncludes: "?" },
+      { user: "yes, send it", expectFirstTool: "send_email" },
+    ],
+  };
+  const good = [asst(undefined, "Want me to send it?"), callMsg("send_email", "{}")];
+  const sentEarly = [callMsg("send_email", "{}"), callMsg("send_email", "{}")];
+  assert.equal(scoreMultiTurn(c, good).pass, true);
+  assert.equal(scoreMultiTurn(c, sentEarly).pass, false, "sending on turn 1 fails the case");
 });
 
 console.log(`\n1..${n}\nall ${n} checks passed`);

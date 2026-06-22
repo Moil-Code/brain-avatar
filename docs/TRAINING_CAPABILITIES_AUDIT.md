@@ -115,7 +115,7 @@ Findings below are from primary sources (papers / official docs), verified live.
 |---|---|---|---|---|
 | G1 | **Teacher reasoning discarded** (and `<think>` could leak into distilled answers) | 🔴 high | low | §2.1, §2.2 |
 | G2 | ✅ **done (round 3)** — shared `TOOL_DEFS` attached to SFT examples (default on) | 🟠 med | low | §2.3 |
-| G3 | ◐ **mostly done** — JSON-validity + arg-value (reasoning PR), refusal/irrelevance + multi-tool accept (round 2); **multi-turn still pending** | 🟠 med | med | §2.6 |
+| G3 | ✅ **done** — JSON-validity + arg-value (reasoning PR), refusal/irrelevance (round 2), multi-turn/state-based (round 6) | 🟠 med | med | §2.6 |
 | G4 | **Redaction structured-only** — no NER name redaction | 🟠 med (privacy) | med | §2.7 |
 | G5 | ✅ **done (round 1)** — corpus dedup pass (exact default, near opt-in) | 🟡 low | med | §2.4 |
 | G6 | ✅ **done (round 4)** — export emits KTO class weights + sycophancy guard (`kto_config.json`) | 🟡 low | low | §2.5 |
@@ -178,11 +178,21 @@ Leave the default (`none`) when fine-tuning the production fast tier (thinking-d
   modes) → `distill` lint → `eval` lint — all succeed.
 - `npx tsc --noEmit` → no type errors. `npm test` → **66/66** pass.
 
-### Remaining backlog (after rounds 1–5)
-G4 (NER redaction — needs on-device Presidio, a Python dep we can't validate in this
-TS/Node session), G8 (implicit signals → KTO), multi-turn / state-based eval (τ-bench
-style), confirm-honored outcome label, and **Phase D — the actual LoRA SFT + KTO runs,
-which are GPU-bound (Mac Mini + MLX-LM) and cannot execute in this environment.**
+### Round 6 — 2026-06-22 — multi-turn / state-based eval (G3 complete)
+- **`eval/cases.ts`**: `MULTI_TURN` cases + `scoreMultiTurn` (every turn must pass).
+  Headline: `confirm-then-send` (turn 1 must ask, not send; turn 2 may send) and
+  `empty-brain-then-web` (grounding handoff) — flows a single-turn probe can't capture.
+- **`eval/run.ts`**: drives multi-turn conversations using **`mockenv`** as the simulated
+  tool environment between turns (τ-bench-lite); multi-turn cases now count in the gate.
+- **Why:** τ-bench evaluates multi-turn, state-based tool-agent behavior; the confirm→send
+  safety property is inherently multi-turn (https://arxiv.org/abs/2406.12045).
+- **Validation:** selftest 40/40; eval lint 15 + 2 multi-turn cases; `tsc` clean; vitest 66/66.
+
+### Remaining backlog (after round 6)
+G4 (NER redaction — full version needs on-device **Presidio**, a Python dep we can't
+validate in this TS/Node session; a dependency-free denylist redactor is tractable),
+G8 (implicit signals → KTO), confirm-honored outcome label, and **Phase D — the actual
+LoRA SFT + KTO runs, which are GPU-bound (Mac Mini + MLX-LM) and cannot execute here.**
 
 ---
 
