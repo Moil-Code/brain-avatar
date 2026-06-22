@@ -17,14 +17,15 @@ and was **not** part of any training data:
 
 | Layer | What happens to reasoning | Where |
 |---|---|---|
-| Generation (fast tier) | Thinking **disabled** (`enable_thinking:false`) for qwen3-8b / Gemma fast tiers | `src-tauri/src/llm.rs` |
+| Generation | Thinking **disabled** (`enable_thinking:false`) for qwen3-8b and the dense Gemma tiers — **including the `gemma-4-12b` fine-tune target** | `src-tauri/src/llm.rs` |
 | Answer cleanup | `<think>` / harmony `<\|channel\|>` markup **stripped** before the answer is shown/spoken | `llm.rs::strip_reasoning` |
 | Agent loop | Re-feeds **only** `tool_calls` with `content:""` — reasoning never re-enters the loop | `src/lib/agent.ts` |
 | Trajectory schema | **No reasoning field** — capture stores messages/tool calls/answer/rating only | `src-tauri/src/trajectory.rs`, `training/types.ts` |
 | Teacher distillation | The 26B's reasoning was **thrown away**, and (bug) its raw `<think>` markup could **leak into the distilled final answer** | `training/distill.ts` |
 
-Stripping at **inference** on the fast tier is correct (it's a deliberate latency
-choice and prevents LM Studio template-parser crashes). The miss was at **capture**:
+Stripping at **inference** on the thinking-disabled tiers (incl. the `gemma-4-12b`
+target) is correct (it's a deliberate latency choice and prevents LM Studio
+template-parser crashes). The miss was at **capture**:
 the one place CoT is most valuable — **teacher distillation** — was discarding it.
 This pass fixes that (see §5).
 
@@ -51,6 +52,13 @@ no cloud, MLX-LM target). Inventory:
 **Verdict:** the *plumbing* is in good shape. The gaps are in **data richness**
 (reasoning, tool schemas, outcome labels), **eval depth**, and **redaction strength**.
 
+**Fine-tune target: `gemma-4-12b`** — the mid/vision tier in daily use, switched from
+qwen3-8b in **PR #32**. It generated the live corpus, so training it on its own rated
+usage is consistent. The pipeline is **model-agnostic**: the exporter emits model-neutral
+`{messages}` and MLX-LM applies the base model's own chat template, so nothing here is
+qwen-specific. (qwen3-8b remains the fast/tool tier at runtime — only the *training
+target* moved.)
+
 ---
 
 ## 2. Research — what 2025–2026 best practice says we should do
@@ -66,12 +74,12 @@ Findings below are from primary sources (papers / official docs), verified live.
    volume** (s1: 1k curated traces). → **Capture the 26B teacher's reasoning.**
 
 2. **Reasoning at inference vs training.** Capturing reasoning is worth it even when
-   the fast tier runs `enable_thinking:false`, but be deliberate: the documented harm
+   the gemma-4-12b target runs `enable_thinking:false`, but be deliberate: the documented harm
    is SFT-ing a *thinking* model onto *short* answers (it collapses reasoning). Qwen3's
    official guidance: **don't carry `<think>` blocks across turns** — history should
    hold the final answer only ([Qwen3](https://qwenlm.github.io/blog/qwen3/)). →
-   **Default: don't fold reasoning into fast-tier SFT; keep capture + re-feed only the
-   answer.** (Exactly what we now do.)
+   **Default: don't fold reasoning into the 12b target's SFT; keep capture + re-feed only
+   the answer.** (Exactly what we now do.)
 
 3. **Tool schemas belong in training data.** MLX-LM and HF both define a `tools` array
    alongside `messages`; omitting it trades away generalization to unseen tools.
@@ -129,7 +137,7 @@ Findings below are from primary sources (papers / official docs), verified live.
 **Phase A — data richness (no GPU).** G1 ✅ (this pass), G2, G5, G7.
 **Phase B — eval depth (no GPU).** G3 ✅ partial (this pass), then refusal + multi-turn + a BFCL-style AST scorer.
 **Phase C — privacy (no GPU).** G4: add an on-device NER pass (Presidio or a local model) at export.
-**Phase D — train + align (Mac Mini GPU).** First LoRA SFT of the fast tier through the hardened gate; then guarded KTO (G6) with class weighting.
+**Phase D — train + align (Mac Mini GPU).** First LoRA SFT of **gemma-4-12b** through the hardened gate; then guarded KTO (G6) with class weighting.
 **Phase E — operationalize.** Nightly export shard + regression scoring; periodic versioned-adapter retrains with one-click rollback.
 
 Ordering principle (unchanged from the strategy doc): **instrument and measure before
@@ -156,7 +164,7 @@ fully tested, zero GPU:
   JSON), so capture stays faithful and the exporter decides what to do with it.
 - **`redact.ts`** — the PII scrubber now covers reasoning traces too.
 - **`export.ts`** — new `--reasoning none|distilled|all` flag (**default `none`**, so the
-  fast-tier SFT stays reasoning-free and existing runs are byte-for-byte unchanged). It
+  the 12b target's SFT stays reasoning-free and existing runs are byte-for-byte unchanged). It
   folds reasoning into a `<think>` block only for the selected sources, **never emits a
   raw `reasoning` field**, and logs how many examples carry reasoning. The **gold filter
   now also requires parseable JSON tool arguments** (a cheap outcome label, G7).
@@ -170,7 +178,7 @@ fully tested, zero GPU:
 **How to use the new capability:** to train a reasoning-capable target on the teacher's
 CoT, run the distiller against the 26B, then
 `node --experimental-strip-types training/export.ts --mode sft --reasoning distilled`.
-Leave the default (`none`) when fine-tuning the production fast tier (thinking-disabled).
+Leave the default (`none`) when fine-tuning gemma-4-12b (thinking-disabled).
 
 ### Validation (all green)
 - `training/selftest.ts` → **24/24** pass.

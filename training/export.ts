@@ -47,9 +47,9 @@ const mode = arg("mode", "sft");
 const validRatio = Number(arg("valid-ratio", "0.1"));
 const maxSynthRatio = Number(arg("max-synth-ratio", "0.6"));
 // Whether to fold captured reasoning back into the assistant answer as a <think>
-// block (reasoning-distillation SFT). Default OFF: the production fast tier runs with
-// thinking DISABLED, so its SFT data should stay reasoning-free to keep train/inference
-// consistent. Opt in when fine-tuning a thinking-capable target.
+// block (reasoning-distillation SFT). Default OFF: the gemma-4-12b target (dense Gemma)
+// runs with thinking DISABLED, so its SFT data should stay reasoning-free to keep
+// train/inference consistent. Opt in when fine-tuning a thinking-capable target.
 //   none      — never emit reasoning (default; current behavior preserved)
 //   distilled — only from teacher-distilled trajectories (where CoT is high quality)
 //   all       — wherever a reasoning trace was captured

@@ -178,8 +178,8 @@ trained, appended by `train.sh`). It's empty until you use the app a bit; run
 
 Distillation now keeps the 26B teacher's **chain-of-thought** on each turn
 (`reasoning.ts` splits it from the clean answer; redaction scrubs it). It's stored
-but **not folded into the fast-tier SFT by default** — the production fast tier runs
-with thinking disabled, so its training data stays reasoning-free (train/inference
+but **not folded into the gemma-4-12b target's SFT by default** — that dense Gemma tier
+runs with thinking disabled, so its training data stays reasoning-free (train/inference
 consistency). To train a reasoning-capable target on the teacher's CoT:
 
 ```bash
