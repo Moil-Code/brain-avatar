@@ -287,3 +287,48 @@ pub fn augmented_path() -> String {
     let existing = std::env::var("PATH").unwrap_or_default();
     format!("{}:{}", extra.join(":"), existing)
 }
+
+/// Absolute path to a CLI binary, independent of the launching PATH.
+///
+/// WHY THIS EXISTS: a Dock/Finder-launched `.app` inherits a minimal PATH
+/// (`/usr/bin:/bin:/usr/sbin:/sbin`) with no `/opt/homebrew/bin`. On Unix,
+/// `Command::new("ffmpeg")` resolves the bare name against the *parent's* PATH —
+/// NOT a `.env("PATH", augmented_path())` override, which only sets what the child
+/// sees AFTER it's found. So `augmented_path()` alone never fixed "ffmpeg isn't
+/// installed"; the lookup failed before PATH ever applied. Resolving to a full path
+/// (like `m365_path`) is what actually works. Falls back to the bare name so a tool
+/// in a non-standard dir still gets a chance via the child's augmented PATH.
+pub fn resolve_bin(name: &str) -> String {
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+        let p = format!("{dir}/{name}");
+        if std::path::Path::new(&p).exists() {
+            return p;
+        }
+    }
+    name.to_string()
+}
+
+#[cfg(test)]
+mod resolve_bin_tests {
+    use super::resolve_bin;
+
+    #[test]
+    fn resolves_a_known_tool_to_an_absolute_path() {
+        // `sh` is always in /bin on macOS — must come back as a full path so a
+        // Dock-launched app with a minimal PATH can still spawn it.
+        assert_eq!(resolve_bin("sh"), "/bin/sh");
+    }
+
+    #[test]
+    fn passes_an_absolute_path_through_unchanged() {
+        assert_eq!(resolve_bin("/usr/bin/textutil"), "/usr/bin/textutil");
+    }
+
+    #[test]
+    fn falls_back_to_the_bare_name_when_not_found() {
+        assert_eq!(
+            resolve_bin("definitely-not-a-real-binary-xyz"),
+            "definitely-not-a-real-binary-xyz"
+        );
+    }
+}

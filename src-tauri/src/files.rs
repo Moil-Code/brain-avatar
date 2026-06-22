@@ -1,4 +1,4 @@
-use crate::config::augmented_path;
+use crate::config::{augmented_path, resolve_bin};
 use crate::tools::tool_log;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -10,7 +10,7 @@ const T: Duration = Duration::from_secs(25);
 async fn run(program: &str, args: &[&str]) -> Result<String, String> {
     let out = timeout(
         T,
-        Command::new(program)
+        Command::new(resolve_bin(program))
             .args(args)
             .env("PATH", augmented_path())
             .output(),
@@ -34,7 +34,7 @@ async fn run(program: &str, args: &[&str]) -> Result<String, String> {
 async fn run_lenient(program: &str, args: &[&str]) -> String {
     match timeout(
         T,
-        Command::new(program)
+        Command::new(resolve_bin(program))
             .args(args)
             .env("PATH", augmented_path())
             .output(),

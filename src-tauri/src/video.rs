@@ -7,7 +7,7 @@
 //! video" asks. (Visual frame analysis is a deliberate follow-up, gated on the
 //! local vision model being confirmed.)
 
-use crate::config::{augmented_path, SettingsState};
+use crate::config::{augmented_path, resolve_bin, SettingsState};
 use crate::tools::tool_log;
 use crate::voice::transcribe_audio_core;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -28,7 +28,7 @@ const MAX_TRANSCRIPT_CHARS: usize = 14000;
 async fn run(program: &str, args: &[&str], to: Duration) -> Result<String, String> {
     let out = timeout(
         to,
-        Command::new(program)
+        Command::new(resolve_bin(program))
             .args(args)
             .env("PATH", augmented_path())
             .kill_on_drop(true)
@@ -49,7 +49,7 @@ async fn run(program: &str, args: &[&str], to: Duration) -> Result<String, Strin
 
 /// Is `program` runnable? (cheap presence check before the real work.)
 async fn have(program: &str) -> bool {
-    Command::new(program)
+    Command::new(resolve_bin(program))
         .arg("--version")
         .env("PATH", augmented_path())
         .kill_on_drop(true)
