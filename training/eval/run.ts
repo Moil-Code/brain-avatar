@@ -3,7 +3,7 @@
 // fine-tuned adapter: no adapter ships that scores below the baseline.
 //
 // Run on the Mac (with LM Studio serving):
-//   LMSTUDIO_URL=http://localhost:1234/v1 MODEL=qwen3-8b \
+//   LMSTUDIO_URL=http://localhost:1234/v1 MODEL=gemma-4-12b \
 //     node --experimental-strip-types training/eval/run.ts
 //
 // With no endpoint configured it LINTS the suite (validates case structure) and

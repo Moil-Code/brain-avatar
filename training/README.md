@@ -1,6 +1,7 @@
 # Training pipeline — local-only
 
-The on-device path from real + synthetic usage to a fine-tuned fast-tier model.
+The on-device path from real + synthetic usage to a fine-tuned local model
+(currently the gemma-4-12b mid/vision tier — the model in day-to-day use).
 Everything here runs on the Mac; nothing is synced. See
 [`../docs/LOCAL_MODEL_TRAINING_PLAN.md`](../docs/LOCAL_MODEL_TRAINING_PLAN.md) for
 the why.
@@ -81,11 +82,11 @@ creates a local venv at `training/.venv` and installs mlx-lm there. Just run it.
 
 ```bash
 # 1. Baseline the current model so the tracker has a "before" number to beat:
-LMSTUDIO_URL=http://localhost:1234/v1 MODEL=qwen3-8b \
+LMSTUDIO_URL=http://localhost:1234/v1 MODEL=gemma-4-12b \
   node --experimental-strip-types training/eval/run.ts
 
 # 2. Train + fuse + gate (auto-creates the venv, installs mlx-lm):
-BASE_MODEL=<qwen3-8b-mlx repo/path> bash training/train.sh
+BASE_MODEL=<gemma-4-12b-mlx repo/path> bash training/train.sh
 
 # then load the fused model in LM Studio and A/B before defaulting to it
 ```

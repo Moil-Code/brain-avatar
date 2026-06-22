@@ -137,7 +137,7 @@ export default function TrainingTracker({ onClose }: Props) {
                 {newLive} / {target} new turns since last training ({readiness?.new_rated ?? 0} rated) ·
                 last trained: {lastTrained}.{" "}
                 {ready
-                  ? "Run training/train.sh on the Mac Mini to fine-tune qwen3-8b."
+                  ? "Run training/train.sh on the Mac Mini to fine-tune gemma-4-12b."
                   : "Keep using Brain and 👍/👎 answers — or cold-start now on synthetic + distilled data."}
               </p>
             </div>

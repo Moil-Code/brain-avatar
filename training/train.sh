@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MLX-LM LoRA fine-tune of the fast tier (qwen3-8b) — RUN ON THE MAC MINI.
+# MLX-LM LoRA fine-tune of the mid/vision tier (gemma-4-12b) — RUN ON THE MAC MINI.
 #
 # This container can't reach LM Studio/MLX, so this script is the "you run" half
 # of the loop: it exports the corpus, trains a LoRA adapter, fuses it, and gates
@@ -13,18 +13,20 @@
 # Usage:    bash training/train.sh
 #
 # Knobs (env):
-#   BASE_MODEL   HF/MLX repo or local path of the qwen3-8b base   (required)
+#   BASE_MODEL   HF/MLX repo or local path of the gemma-4-12b base (required)
 #   MODE         sft | kto                                        (default sft)
 #   ITERS        training iterations                              (default 600)
+#   NUM_LAYERS   how many top layers get a LoRA adapter           (default 8)
 #   LMSTUDIO_URL endpoint for the eval gate (e.g. http://localhost:1234/v1)
 #   MODEL        model id served by LM Studio for the eval gate
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BASE_MODEL="${BASE_MODEL:?set BASE_MODEL to the qwen3-8b base (MLX repo or local path)}"
+BASE_MODEL="${BASE_MODEL:?set BASE_MODEL to the gemma-4-12b base (MLX repo or local path)}"
 MODE="${MODE:-sft}"
 ITERS="${ITERS:-600}"
+NUM_LAYERS="${NUM_LAYERS:-8}"
 DATA_DIR="training/data/mlx-${MODE}"
 ADAPTER_DIR="training/adapters/${MODE}-$(date +%Y%m%d-%H%M%S)"
 FUSED_DIR="${ADAPTER_DIR}/fused"
@@ -62,7 +64,7 @@ mlx_lm.lora \
   --data "${DATA_DIR}" \
   --iters "${ITERS}" \
   --batch-size 1 \
-  --num-layers 8 \
+  --num-layers "${NUM_LAYERS}" \
   --adapter-path "${ADAPTER_DIR}"
 
 echo "==> 4/5  Fuse adapter into a standalone model"
@@ -91,4 +93,4 @@ printf '{"started_at":"%s","mode":"%s","base_model":"%s","iters":%s,"examples":%
 echo
 echo "Done. Fused model: ${FUSED_DIR}"
 echo "Next: load it in LM Studio, A/B it against the base on real traffic, and only"
-echo "make it the fast-tier default if it beats the base on the eval gate."
+echo "make it the new default if it beats the base on the eval gate."
