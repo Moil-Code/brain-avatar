@@ -14,6 +14,7 @@ import { mockToolResult } from "./mockenv.ts";
 import { splitReasoning, withThink } from "./reasoning.ts";
 import { dedup, jaccard, recordSignature } from "./dedup.ts";
 import { ktoWeights } from "./kto.ts";
+import { looksLikeCorrection, correctedTurnIds } from "./outcomes.ts";
 
 let n = 0;
 const check = (name: string, fn: () => void) => {
@@ -304,6 +305,44 @@ check("export kto: writes balancing weights + guard config", () => {
   assert.equal(cfg.n_pos, 1, "one thumbs-up");
   assert.equal(cfg.n_neg, 1, "one thumbs-down");
   assert.ok(typeof cfg.guard === "string" && cfg.guard.length > 0, "guard note present");
+});
+
+// --- derived outcome labels: next-turn correction (G7) -----------------------
+check("outcomes: correction phrases detected, normal asks not", () => {
+  assert.ok(looksLikeCorrection("no, that's wrong"));
+  assert.ok(looksLikeCorrection("actually I meant Sam"));
+  assert.ok(!looksLikeCorrection("what's on my calendar?"));
+  assert.ok(!looksLikeCorrection("notify me about the launch")); // 'no' must be a word boundary
+});
+check("outcomes: a turn corrected on the next turn is flagged", () => {
+  const seq = [
+    { ...goldRec, conversation_id: "cc", turn_id: "t1", created_at: "2026-01-01T00:00:00Z", user: "who is Jordan?" },
+    { ...goldRec, conversation_id: "cc", turn_id: "t2", created_at: "2026-01-01T00:01:00Z", user: "no, that's wrong" },
+  ] as TrajectoryRecord[];
+  const s = correctedTurnIds(seq);
+  assert.ok(s.has("t1"), "t1 corrected by t2");
+  assert.ok(!s.has("t2"), "t2 not corrected (no following turn)");
+});
+check("export sft: drops a turn the user corrected next turn", () => {
+  const oc = "/tmp/_outcomes_selftest";
+  execSync(`rm -rf ${oc} && mkdir -p ${oc}`, { stdio: "ignore" });
+  const t1 = { ...goldRec, conversation_id: "cc", turn_id: "t1", created_at: "2026-01-01T00:00:00Z", user: "who is Jordan?" };
+  const t2: TrajectoryRecord = {
+    ...goldRec, conversation_id: "cc", turn_id: "t2", created_at: "2026-01-01T00:01:00Z",
+    user: "no, that's wrong", tool_events: [], tools_used: [], final_answer: "Sorry — let me fix that.",
+    messages: [
+      { role: "system", content: "s" },
+      { role: "user", content: "no, that's wrong" },
+      { role: "assistant", content: "Sorry — let me fix that." },
+    ],
+  };
+  writeFileSync(`${oc}/distilled.jsonl`, [JSON.stringify(t1), JSON.stringify(t2)].join("\n") + "\n");
+  execSync(
+    `node --experimental-strip-types training/export.ts --live ${oc}/nolive --synth ${oc}/nosynth.jsonl --distill ${oc}/distilled.jsonl --out ${oc}/out --mode sft --dedup off`,
+    { stdio: "ignore" }
+  );
+  const raw = readFileSync(`${oc}/out/train.jsonl`, "utf8") + readFileSync(`${oc}/out/valid.jsonl`, "utf8");
+  assert.equal(raw.split("\n").filter((l) => l.trim()).length, 1, "corrected t1 dropped, t2 kept");
 });
 
 console.log(`\n1..${n}\nall ${n} checks passed`);

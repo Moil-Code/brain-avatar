@@ -25,6 +25,7 @@ import { withThink } from "./reasoning.ts";
 import { dedup, recordSignature, type DedupMode } from "./dedup.ts";
 import { TOOL_DEFS } from "./tool_defs.ts";
 import { ktoWeights, KTO_GUARD } from "./kto.ts";
+import { correctedTurnIds } from "./outcomes.ts";
 
 function arg(name: string, def: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -175,7 +176,12 @@ if (live.length > 0 && generatedCount > 0) {
 }
 
 const corpus = [...live, ...distilled, ...synth];
-const filtered = mode === "kto" ? corpus.filter((r) => r.rating !== null) : corpus.filter(isGold);
+// Derived negative label: a turn the user corrected on the next turn isn't gold to imitate.
+const corrected = correctedTurnIds(corpus);
+const filtered =
+  mode === "kto"
+    ? corpus.filter((r) => r.rating !== null)
+    : corpus.filter((r) => isGold(r) && !corrected.has(r.turn_id));
 
 // Drop duplicate trajectories (by user + tool sequence + final answer) before split.
 const { kept, removed: dropped } = dedup(
@@ -206,7 +212,7 @@ const withReasoning = [...train, ...valid].filter((r) =>
 
 console.log(`mode=${mode}  live=${live.length}  distilled=${distilled.length}  synthetic=${synth.length}  kept=${kept.length}`);
 console.log(`→ ${join(outDir, "train.jsonl")}  (${train.length} train, ${valid.length} valid)`);
-console.log(`dedup=${dedupMode}  removed=${dropped}  ·  reasoning=${reasoningMode}  examples-with-<think>=${withReasoning}  ·  tools=${withTools ? "on" : "off"}`);
+console.log(`dedup=${dedupMode}  removed=${dropped}  ·  reasoning=${reasoningMode}  examples-with-<think>=${withReasoning}  ·  tools=${withTools ? "on" : "off"}  ·  corrected-turns=${corrected.size}`);
 
 // KTO: emit balancing weights + the anti-sycophancy guardrail for the Mac-side run.
 if (mode === "kto") {

@@ -119,7 +119,7 @@ Findings below are from primary sources (papers / official docs), verified live.
 | G4 | **Redaction structured-only** — no NER name redaction | 🟠 med (privacy) | med | §2.7 |
 | G5 | ✅ **done (round 1)** — corpus dedup pass (exact default, near opt-in) | 🟡 low | med | §2.4 |
 | G6 | ✅ **done (round 4)** — export emits KTO class weights + sycophancy guard (`kto_config.json`) | 🟡 low | low | §2.5 |
-| G7 | **No derived outcome labels** beyond `ok` (next-turn correction, confirm-honored) | 🟡 low | med | plan §0.2 |
+| G7 | ◐ **mostly done** — JSON-args-valid (round 1) + next-turn-correction drop (round 5); confirm-honored still pending | 🟡 low | med | plan §0.2 |
 | G8 | **No implicit preference signals** (re-ask = weak negative, etc.) | 🟡 low | med | plan §0.3 |
 
 ---
@@ -178,10 +178,11 @@ Leave the default (`none`) when fine-tuning the production fast tier (thinking-d
   modes) → `distill` lint → `eval` lint — all succeed.
 - `npx tsc --noEmit` → no type errors. `npm test` → **66/66** pass.
 
-### Deliberate next steps (not in this pass)
-G2 (attach real `tools` schemas — needs production tool signatures, not the eval stubs),
-G4 (NER redaction), G6 (KTO class weighting + sycophancy guard), G8 (implicit signals),
-and Phase B's refusal/multi-turn/AST eval.
+### Remaining backlog (after rounds 1–5)
+G4 (NER redaction — needs on-device Presidio, a Python dep we can't validate in this
+TS/Node session), G8 (implicit signals → KTO), multi-turn / state-based eval (τ-bench
+style), confirm-honored outcome label, and **Phase D — the actual LoRA SFT + KTO runs,
+which are GPU-bound (Mac Mini + MLX-LM) and cannot execute in this environment.**
 
 ---
 
@@ -244,3 +245,16 @@ Recurring research-backed rounds; one scoped, offline-validated improvement each
   guard (https://arxiv.org/abs/2310.13548, https://arxiv.org/abs/2406.02900).
 - **Validation:** selftest 36/36; `kto_config.json` emitted (synthetic-only corpus flagged
   as single-class, as expected); `tsc` clean; vitest 66/66.
+
+### Round 5 — 2026-06-22 — derived outcome label: next-turn correction (G7)
+- **`training/outcomes.ts`** (new): `looksLikeCorrection()` + `correctedTurnIds()` link
+  consecutive turns by conversation_id + created_at and flag a turn whose answer the user
+  pushed back on next ("no, that's wrong", "actually I meant…").
+- **`export.ts`**: SFT now drops corrected turns (an answer the user rejected isn't gold
+  to imitate); logs the corrected-turn count. Computed at export — no app/capture change.
+  Synthetic/distilled use unique conversation_ids, so they're unaffected; this targets
+  live data.
+- **Why:** outcome labels are the plan's §0.2 — cheap, deterministic signals that sharply
+  improve training-data filtering; "user corrected next turn" is the strongest implicit
+  negative we can derive without instrumentation.
+- **Validation:** selftest 39/39; synth corrected-turns=0 (expected); `tsc` clean; vitest 66/66.

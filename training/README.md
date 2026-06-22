@@ -29,6 +29,8 @@ the why.
 | `mockenv.ts` | Deterministic, side-effect-free mock tool results (shared by distillation) | imported by distill |
 | `distill.ts` | Teacher distillation: the 26B produces gold trajectories over seed tasks (mock tools, no side effects), **capturing its reasoning**; `source:"distilled"` | `LMSTUDIO_URL=… MODEL=<26B> node --experimental-strip-types training/distill.ts` |
 | `redact.ts` | Deterministic structured-PII scrubber (emails, tokens, paths, creds) — covers reasoning traces too | imported by export |
+| `kto.ts` | KTO class-balancing weights + anti-sycophancy guardrail (writes `kto_config.json`) | imported by export |
+| `outcomes.ts` | Derived outcome labels — flags turns the user corrected on the next turn | imported by export |
 | `dedup.ts` | Deterministic, offline dedup of duplicate/near-duplicate trajectories (exact + shingle-Jaccard) — model-collapse guard | imported by export |
 | `export.ts` | Fuse live+synthetic → redact → normalize system prompt → **dedup** → filter → train/valid split, in `sft` or `kto` mode; `--reasoning none\|distilled\|all`, `--dedup off\|exact\|near`, `--tools on\|off` | `node --experimental-strip-types training/export.ts --mode sft` |
 | `eval/cases.ts` | Frozen eval suite + pure `scoreCase` (first-tool / valid+correct JSON args / no-narration / confirm-before-send) | — |
