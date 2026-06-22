@@ -189,6 +189,7 @@ pub fn run() {
             voice::transcribe_audio,
             llm::llm_probe,
             llm::llm_complete,
+            llm::llm_stream,
             llm::cancel_generation,
             history::save_message,
             history::fetch_messages,

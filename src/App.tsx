@@ -42,6 +42,9 @@ import {
   primeVoices,
   setMuted as setMutedFlag,
   speak,
+  speechStreamEnd,
+  speechStreamPush,
+  speechStreamStart,
   startRecording,
   stopSpeaking,
   transcriptIsJunk,
@@ -335,6 +338,16 @@ export default function App() {
       setBusy(true);
       setAvatarState("thinking");
       stopSpeaking();
+      // Speak the answer sentence-by-sentence as it streams in (fed from onToken
+      // below), so the voice keeps pace with the text instead of waiting for the
+      // whole answer. onIdle fires when the last sentence finishes.
+      speechStreamStart({
+        onStart: () => setAvatarState("speaking"),
+        onIdle: () => {
+          setAvatarState("idle");
+          autoListenRef.current(); // hands-free back-and-forth (if convo mode on)
+        },
+      });
 
       const ac = new AbortController();
       abortRef.current = ac;
@@ -369,6 +382,7 @@ export default function App() {
           onToken: (delta) => {
             streamed += delta;
             patchMessage(botId, { content: streamed });
+            speechStreamPush(delta); // speak each sentence as it completes
           },
           onToolStart: (name) =>
             setMessages((ms) =>
@@ -426,14 +440,11 @@ export default function App() {
           }).catch(() => {});
         }
 
-        speak(answer, {
-          onStart: () => setAvatarState("speaking"),
-          onEnd: () => {
-            setAvatarState("idle");
-            autoListenRef.current(); // hands-free back-and-forth (if convo mode on)
-          },
-        });
+        // Flush the trailing partial sentence; onIdle (above) then drops to idle
+        // and resumes convo-mode. When muted, this just fires onIdle (no audio).
+        speechStreamEnd();
       } catch (e) {
+        stopSpeaking(); // halt any partial streamed speech
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.toLowerCase().includes("abort") || msg.toLowerCase().includes("cancel")) {
           patchMessage(botId, { content: streamed || "(stopped)", pending: false });

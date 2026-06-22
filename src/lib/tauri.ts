@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import type { Automation, FeatureFlags, McpServer, Settings, TaskBoard, TaskInput } from "./types";
 
 // --- Proactive automations (scheduler store + native notifications) ---
@@ -79,6 +79,34 @@ export const llmComplete = (
       toolChoice,
     })
   );
+
+/** Streaming sibling of llmComplete: content arrives token-by-token via `onDelta`
+ *  as the model generates, and the full {content, tool_calls} is returned at the
+ *  end (same shape as llmComplete). No withRetry — a partial stream can't be safely
+ *  replayed; the agent's streamComplete wrapper falls back to llmComplete on error. */
+export const llmStream = (
+  baseUrl: string,
+  token: string | undefined,
+  model: string,
+  messages: unknown,
+  tools: unknown,
+  maxTokens: number | undefined,
+  toolChoice: unknown,
+  onDelta: (delta: string) => void
+) => {
+  const channel = new Channel<string>();
+  channel.onmessage = (delta) => onDelta(delta);
+  return invoke<{ content: string; tool_calls: ToolCall[] | null }>("llm_stream", {
+    baseUrl,
+    token,
+    model,
+    messages,
+    tools,
+    maxTokens,
+    toolChoice,
+    onDelta: channel,
+  });
+};
 
 export const extractDocText = (name: string, base64: string) =>
   invoke<string>("extract_doc_text", { name, base64 });

@@ -1,7 +1,9 @@
 use crate::config::SettingsState;
+use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::Duration;
+use tauri::ipc::Channel;
 use tauri::State;
 
 #[derive(Serialize)]
@@ -196,6 +198,234 @@ pub async fn llm_complete_core(
     };
     let tool_calls = msg.get("tool_calls").cloned().unwrap_or(Value::Null);
     Ok(LlmResult { content, tool_calls })
+}
+
+/// Resolve when the cancel epoch changes from `start` — i.e. the user hit Stop.
+/// Used to race a streaming read against cancellation without consuming the receiver.
+async fn wait_cancel(rx: &mut tokio::sync::watch::Receiver<u64>, start: u64) {
+    while rx.changed().await.is_ok() {
+        if *rx.borrow() != start {
+            return;
+        }
+    }
+    std::future::pending::<()>().await;
+}
+
+/// Streaming sibling of `llm_complete`: identical request, but the answer's content
+/// is pushed token-by-token over `on_delta` AS IT GENERATES — so the UI prints and
+/// the voice speaks in step with the model instead of waiting for the whole answer.
+/// Returns the same full `{content, tool_calls}` at the end, so the agent loop is
+/// unchanged. The deep reasoning tier (26B-a4b/a3b/MoE — the only one that keeps
+/// `<think>` on) is NOT streamed token-wise: its content is emitted once at the end
+/// after reasoning markup is stripped, so the model's private reasoning is never
+/// shown or spoken. On any failure the frontend falls back to `llm_complete`, so
+/// this can only ever match or improve the existing behavior.
+#[tauri::command]
+pub async fn llm_stream(
+    base_url: String,
+    token: Option<String>,
+    model: String,
+    messages: Value,
+    tools: Option<Value>,
+    max_tokens: Option<u32>,
+    tool_choice: Option<Value>,
+    on_delta: Channel<String>,
+    cancel: State<'_, CancelState>,
+) -> Result<LlmResult, String> {
+    let rx = cancel.0.subscribe();
+
+    // Deep reasoning tier streams <think> tokens we must not show or speak. The
+    // harmony "final channel" only resolves at the very end, so we can't strip it
+    // incrementally — run it buffered (non-streaming) and emit the clean answer once.
+    let m = model.to_lowercase();
+    let is_deep = m.contains("a4b") || m.contains("a3b") || m.contains("moe");
+    if is_deep {
+        let res = llm_complete_core(
+            base_url, token, model, messages, tools, max_tokens, tool_choice, Some(rx),
+        )
+        .await?;
+        if !res.content.is_empty() {
+            let _ = on_delta.send(res.content.clone());
+        }
+        return Ok(res);
+    }
+
+    llm_stream_core(
+        base_url, token, model, messages, tools, max_tokens, tool_choice, on_delta, rx,
+    )
+    .await
+}
+
+/// Core streaming logic for the non-reasoning tiers. Parses the OpenAI SSE byte
+/// stream, forwarding `delta.content` over the channel and accumulating any
+/// `delta.tool_calls`, then returns the assembled `{content, tool_calls}`.
+async fn llm_stream_core(
+    base_url: String,
+    token: Option<String>,
+    model: String,
+    messages: Value,
+    tools: Option<Value>,
+    max_tokens: Option<u32>,
+    tool_choice: Option<Value>,
+    on_delta: Channel<String>,
+    mut rx: tokio::sync::watch::Receiver<u64>,
+) -> Result<LlmResult, String> {
+    let has_tools = tools.as_ref().map(|t| !t.is_null()).unwrap_or(false);
+    let mut body = json!({
+        "model": model,
+        "messages": messages,
+        "temperature": if has_tools { 0.1 } else { 0.4 },
+        "max_tokens": max_tokens.unwrap_or(4096),
+        "stream": true,
+    });
+    if let Some(t) = tools {
+        if !t.is_null() {
+            body["tools"] = t;
+            body["tool_choice"] = match tool_choice {
+                Some(tc) if !tc.is_null() => tc,
+                _ => json!("auto"),
+            };
+        }
+    }
+    // These tiers don't reason; keep thinking off so nothing leaks into the stream.
+    if m_is_thinkable(&model) {
+        body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
+
+    let client = reqwest::Client::new();
+    // A generous overall cap (a stream can outlive the 300s buffered cap); Stop and
+    // a dropped connection are the real terminators.
+    let mut req = client
+        .post(format!("{}/chat/completions", base_url.trim_end_matches('/')))
+        .json(&body)
+        .timeout(Duration::from_secs(600));
+    if let Some(t) = token {
+        if !t.trim().is_empty() {
+            req = req.header("Authorization", format!("Bearer {t}"));
+        }
+    }
+
+    let start_epoch = *rx.borrow();
+    let send_fut = req.send();
+    tokio::pin!(send_fut);
+    let resp = tokio::select! {
+        r = &mut send_fut => r.map_err(decode_send_err)?,
+        _ = wait_cancel(&mut rx, start_epoch) => return Err("cancelled".to_string()),
+    };
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("LLM HTTP {status}: {}", text.chars().take(300).collect::<String>()));
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut byte_buf: Vec<u8> = Vec::new();
+    let mut content = String::new();
+    let mut emitted = 0usize; // bytes of `content` already pushed over the channel
+    // tool-call index -> (id, name, accumulated arguments-json)
+    let mut tool_acc: std::collections::BTreeMap<u64, (String, String, String)> =
+        std::collections::BTreeMap::new();
+
+    loop {
+        let chunk = tokio::select! {
+            c = stream.next() => c,
+            _ = wait_cancel(&mut rx, start_epoch) => return Err("cancelled".to_string()),
+        };
+        let bytes = match chunk {
+            Some(Ok(b)) => b,
+            Some(Err(e)) => return Err(decode_send_err(e)),
+            None => break, // stream finished
+        };
+        byte_buf.extend_from_slice(&bytes);
+        // An SSE event is one `data:` line ending in \n. Process only COMPLETE lines
+        // (decoding at line boundaries keeps multi-byte chars from splitting mid-chunk).
+        while let Some(pos) = byte_buf.iter().position(|&b| b == b'\n') {
+            let raw: Vec<u8> = byte_buf.drain(..=pos).collect();
+            let line = String::from_utf8_lossy(&raw[..raw.len().saturating_sub(1)]);
+            let payload = match line.trim().strip_prefix("data:") {
+                Some(p) => p.trim().to_string(),
+                None => continue,
+            };
+            if payload == "[DONE]" {
+                continue;
+            }
+            let v: Value = match serde_json::from_str(&payload) {
+                Ok(v) => v,
+                Err(_) => continue, // partial/keepalive line
+            };
+            let choice = match v["choices"].get(0) {
+                Some(c) => c,
+                None => continue,
+            };
+            let delta = &choice["delta"];
+            if let Some(c) = delta["content"].as_str() {
+                if !c.is_empty() {
+                    content.push_str(c);
+                    // Thinking is off here, so content is clean prose — emit the new
+                    // tail. If stray markup ever appears, stop streaming it; the
+                    // cleaned full content is still returned for the UI to reconcile.
+                    if !content.contains("<|")
+                        && !content.contains("<think>")
+                        && content.len() > emitted
+                    {
+                        let _ = on_delta.send(content[emitted..].to_string());
+                        emitted = content.len();
+                    }
+                }
+            }
+            if let Some(tcs) = delta["tool_calls"].as_array() {
+                for tc in tcs {
+                    let idx = tc["index"].as_u64().unwrap_or(0);
+                    let e = tool_acc
+                        .entry(idx)
+                        .or_insert_with(|| (String::new(), String::new(), String::new()));
+                    if let Some(id) = tc["id"].as_str() {
+                        if !id.is_empty() {
+                            e.0 = id.to_string();
+                        }
+                    }
+                    if let Some(n) = tc["function"]["name"].as_str() {
+                        if !n.is_empty() {
+                            e.1.push_str(n);
+                        }
+                    }
+                    if let Some(a) = tc["function"]["arguments"].as_str() {
+                        e.2.push_str(a);
+                    }
+                }
+            }
+        }
+    }
+
+    // Parity with the buffered path: strip any reasoning markup that slipped through.
+    let final_content = if content.contains("<|") || content.contains("<think>") {
+        strip_reasoning(&content)
+    } else {
+        content.clone()
+    };
+    let tool_calls = if tool_acc.is_empty() {
+        Value::Null
+    } else {
+        Value::Array(
+            tool_acc
+                .into_iter()
+                .map(|(idx, (id, name, args))| {
+                    json!({
+                        "id": if id.is_empty() { format!("call_{idx}") } else { id },
+                        "type": "function",
+                        "function": { "name": name, "arguments": args },
+                    })
+                })
+                .collect(),
+        )
+    };
+    Ok(LlmResult { content: final_content, tool_calls })
+}
+
+/// Whether the model honors `enable_thinking` (Qwen3 / Gemma 4 families).
+fn m_is_thinkable(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("qwen") || m.contains("gemma")
 }
 
 /// Remove reasoning-model markup: harmony channels (`<|channel|>…<|message|>`),
