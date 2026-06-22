@@ -63,7 +63,7 @@ function record(o: BuildOpts): TrajectoryRecord {
     conversation_id: nextId("conv"),
     turn_id: nextId("turn"),
     created_at: ts(),
-    model_id: "qwen3-8b",
+    model_id: "gemma-4-12b",
     task_type: o.task,
     routed: true,
     user: o.user,
@@ -376,9 +376,25 @@ function* automations(): Generator<TrajectoryRecord> {
   }
 }
 
+/** Smalltalk / meta-questions — answer directly, NO tool call. Teaches the
+ *  irrelevance case (don't reach for a tool when none is needed). */
+function* chitchat(): Generator<TrajectoryRecord> {
+  const cases = [
+    { user: "good morning!", final: "Morning! What can I do for you?" },
+    { user: "thanks, that's all for now", final: "Anytime — just say the word." },
+    {
+      user: "what can you help me with?",
+      final:
+        "I can search your brain, check your calendar, read and send email, browse the web, and run your Mac — just ask.",
+    },
+    { user: "nice, you're a lifesaver", final: "Happy to help! What's next?" },
+  ];
+  for (const c of cases) yield noTool("trivial_chat", c.user, c.final);
+}
+
 const GENERATORS = [
   people, orgs, decompose3, decompose2, confirmSend, groundingRefusal,
-  webLookup, calendar, email, files, reminders, systemControl, automations,
+  webLookup, calendar, email, files, reminders, systemControl, automations, chitchat,
 ];
 
 function generateAll(): TrajectoryRecord[] {

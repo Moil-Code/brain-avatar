@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MLX-LM LoRA fine-tune of the fast tier (qwen3-8b) — RUN ON THE MAC MINI.
+# MLX-LM LoRA fine-tune of the mid/vision tier (gemma-4-12b) — RUN ON THE MAC MINI.
 #
 # This container can't reach LM Studio/MLX, so this script is the "you run" half
 # of the loop: it exports the corpus, trains a LoRA adapter, fuses it, and gates
@@ -13,18 +13,23 @@
 # Usage:    bash training/train.sh
 #
 # Knobs (env):
-#   BASE_MODEL   HF/MLX repo or local path of the qwen3-8b base   (required)
-#   MODE         sft | kto                                        (default sft)
-#   ITERS        training iterations                              (default 600)
-#   LMSTUDIO_URL endpoint for the eval gate (e.g. http://localhost:1234/v1)
-#   MODEL        model id served by LM Studio for the eval gate
+#   BASE_MODEL    HF/MLX repo or local path of the gemma-4-12b base (required)
+#   MODE          sft | kto                                       (default sft)
+#   ITERS         training iterations                             (default 600)
+#   NUM_LAYERS    how many top layers get a LoRA adapter          (default 8)
+#   NAMES_FILE    file of real names (one per line) to redact from live data (optional)
+#   DISTILL_MODEL deep model id to distill teacher trajectories from (optional)
+#   EXPORT_GGUF   =1 to also emit a Q4_K_M GGUF of the fused model (optional)
+#   LMSTUDIO_URL  endpoint for the eval gate (e.g. http://localhost:1234/v1)
+#   MODEL         model id served by LM Studio for the eval gate
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BASE_MODEL="${BASE_MODEL:?set BASE_MODEL to the qwen3-8b base (MLX repo or local path)}"
+BASE_MODEL="${BASE_MODEL:?set BASE_MODEL to the gemma-4-12b base (MLX repo or local path)}"
 MODE="${MODE:-sft}"
 ITERS="${ITERS:-600}"
+NUM_LAYERS="${NUM_LAYERS:-8}"
 DATA_DIR="training/data/mlx-${MODE}"
 ADAPTER_DIR="training/adapters/${MODE}-$(date +%Y%m%d-%H%M%S)"
 FUSED_DIR="${ADAPTER_DIR}/fused"
@@ -51,25 +56,82 @@ if [[ -n "${LMSTUDIO_URL:-}" && -n "${DISTILL_MODEL:-}" ]]; then
 fi
 
 echo "==> 2/5  Export corpus (live + distilled + synthetic → MLX ${MODE} format)"
-# MLX-LM expects train.jsonl / valid.jsonl in one dir.
-node --experimental-strip-types training/export.ts --mode "${MODE}" --out "${DATA_DIR}"
+# MLX-LM expects train.jsonl / valid.jsonl in one dir. Pass an optional name denylist.
+EXPORT_ARGS=(--mode "${MODE}" --out "${DATA_DIR}")
+[[ -n "${NAMES_FILE:-}" ]] && EXPORT_ARGS+=(--redact-names "${NAMES_FILE}")
+node --experimental-strip-types training/export.ts "${EXPORT_ARGS[@]}"
 
-echo "==> 3/5  LoRA train (${MODE}, ${ITERS} iters)"
+echo "==> 3/5  LoRA train (${MODE}, ${ITERS} iters, ${NUM_LAYERS} layers)"
 mkdir -p "${ADAPTER_DIR}"
-mlx_lm.lora \
-  --model "${BASE_MODEL}" \
-  --train \
-  --data "${DATA_DIR}" \
-  --iters "${ITERS}" \
-  --batch-size 1 \
-  --num-layers 8 \
-  --adapter-path "${ADAPTER_DIR}"
+if [[ "${MODE}" == "kto" ]]; then
+  # KTO ≠ SFT: the data is {prompt,completion,label} and needs a PREFERENCE trainer with
+  # the class-balancing weights export computed (kto_config.json). Running mlx_lm.lora on
+  # this data would silently mistrain, so we branch. We use mlx_lm's KTO entrypoint IF this
+  # version ships one; otherwise we surface the prepared data + weights and stop cleanly
+  # (no bad adapter). Adjust the invocation to your mlx-lm's KTO interface if it differs.
+  CFG="${DATA_DIR}/kto_config.json"
+  DW="$(python -c "import json;print(json.load(open('${CFG}'))['desirable_weight'])" 2>/dev/null || echo 1)"
+  UW="$(python -c "import json;print(json.load(open('${CFG}'))['undesirable_weight'])" 2>/dev/null || echo 1)"
+  echo "    KTO class weights (from ${CFG}): desirable=${DW} undesirable=${UW}"
+  if python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('mlx_lm.kto') else 1)" 2>/dev/null; then
+    python -m mlx_lm.kto \
+      --model "${BASE_MODEL}" --train --data "${DATA_DIR}" \
+      --iters "${ITERS}" --batch-size 1 --num-layers "${NUM_LAYERS}" \
+      --desirable-weight "${DW}" --undesirable-weight "${UW}" \
+      --adapter-path "${ADAPTER_DIR}"
+  else
+    echo "    NOTE: this mlx-lm has no KTO trainer (mlx_lm.kto not found)."
+    echo "    The KTO set is ready: ${DATA_DIR}/{train,valid}.jsonl + ${CFG}."
+    echo "    Run a preference trainer (e.g. HF TRL KTOTrainer) with desirable_weight=${DW}"
+    echo "    undesirable_weight=${UW}, then fuse + gate. Skipping train/fuse/gate."
+    exit 0
+  fi
+else
+  mlx_lm.lora \
+    --model "${BASE_MODEL}" \
+    --train \
+    --data "${DATA_DIR}" \
+    --iters "${ITERS}" \
+    --batch-size 1 \
+    --num-layers "${NUM_LAYERS}" \
+    --adapter-path "${ADAPTER_DIR}"
+fi
 
 echo "==> 4/5  Fuse adapter into a standalone model"
 mlx_lm.fuse \
   --model "${BASE_MODEL}" \
   --adapter-path "${ADAPTER_DIR}" \
   --save-path "${FUSED_DIR}"
+
+# Optional: export a lean quantized GGUF of the fused model so it can be SERVED on
+# the 24GB Mini (MLX fused weights are RAM-heavy; the box serves Gemma as GGUF QAT).
+# Best-effort via llama.cpp — never aborts an otherwise-good run if tooling is absent.
+# Enable with EXPORT_GGUF=1; point LLAMACPP_DIR at your llama.cpp if not on PATH.
+if [[ -n "${EXPORT_GGUF:-}" ]]; then
+  echo "==> 4b/5  Export fused model → quantized GGUF (best-effort)"
+  GGUF_F16="${FUSED_DIR}/model-f16.gguf"
+  GGUF_Q4="${FUSED_DIR}/model-Q4_K_M.gguf"
+  CONVERT=""
+  for c in "${LLAMACPP_DIR:-}/convert_hf_to_gguf.py" "$(command -v convert_hf_to_gguf.py 2>/dev/null || true)"; do
+    [[ -n "${c}" && -f "${c}" ]] && CONVERT="${c}" && break
+  done
+  QUANT="$(command -v llama-quantize 2>/dev/null || true)"
+  [[ -z "${QUANT}" && -x "${LLAMACPP_DIR:-}/llama-quantize" ]] && QUANT="${LLAMACPP_DIR}/llama-quantize"
+  if [[ -n "${CONVERT}" && -n "${QUANT}" ]]; then
+    if python "${CONVERT}" "${FUSED_DIR}" --outfile "${GGUF_F16}" --outtype f16 \
+       && "${QUANT}" "${GGUF_F16}" "${GGUF_Q4}" Q4_K_M; then
+      rm -f "${GGUF_F16}"
+      echo "    GGUF ready: ${GGUF_Q4} — import it into LM Studio to serve."
+    else
+      echo "    GGUF export failed (arch may be unsupported by this llama.cpp). Serving the MLX fused model still works."
+    fi
+  else
+    echo "    Skipped GGUF export: need llama.cpp's convert_hf_to_gguf.py + llama-quantize."
+    echo "    Install llama.cpp and set LLAMACPP_DIR, or convert manually:"
+    echo "      python convert_hf_to_gguf.py '${FUSED_DIR}' --outfile out-f16.gguf --outtype f16"
+    echo "      llama-quantize out-f16.gguf '${GGUF_Q4}' Q4_K_M"
+  fi
+fi
 
 echo "==> 5/5  Eval gate (frozen suite)"
 if [[ -n "${LMSTUDIO_URL:-}" && -n "${MODEL:-}" ]]; then
@@ -91,4 +153,4 @@ printf '{"started_at":"%s","mode":"%s","base_model":"%s","iters":%s,"examples":%
 echo
 echo "Done. Fused model: ${FUSED_DIR}"
 echo "Next: load it in LM Studio, A/B it against the base on real traffic, and only"
-echo "make it the fast-tier default if it beats the base on the eval gate."
+echo "make it the new default if it beats the base on the eval gate."

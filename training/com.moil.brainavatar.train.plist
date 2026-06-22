@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd template for HANDS-OFF overnight auto-training. Runs auto-train.sh once a
+  day at 03:00; it trains only if ≥50 new turns have been captured since the last
+  run, otherwise it no-ops. 03:00 keeps a heavy 12B run off the box while you're
+  using the live avatar.
+
+  Install (edit the two REPLACE_ME paths first):
+    cp training/com.moil.brainavatar.train.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.moil.brainavatar.train.plist
+
+  Inspect / stop:
+    launchctl list | grep brainavatar.train
+    launchctl unload ~/Library/LaunchAgents/com.moil.brainavatar.train.plist
+
+  Logs land in training/logs/ inside the repo.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.moil.brainavatar.train</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <!-- REPLACE_ME: absolute path to auto-train.sh in your clone -->
+    <string>/Users/REPLACE_ME/brain-avatar/training/auto-train.sh</string>
+  </array>
+
+  <!-- REPLACE_ME: absolute path to your clone so relative paths resolve -->
+  <key>WorkingDirectory</key>
+  <string>/Users/REPLACE_ME/brain-avatar</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>3</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/brain-avatar/training/logs/auto-train.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_ME/brain-avatar/training/logs/auto-train.err.log</string>
+
+  <!-- Don't fire a missed run in a burst if the Mac was asleep at 03:00. -->
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

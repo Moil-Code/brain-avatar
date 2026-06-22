@@ -153,6 +153,8 @@ can't evaluate is worse than no fine-tune — it can silently regress tool-calli
 - **Everything local — no Supabase in the training flow.** Trajectories are captured
   on-device, never synced. (Pivots 0.1 below away from the cloud `messages` table.)
 - **First fine-tune target: `qwen3-8b`** (the validated production tool tier).
+  _Superseded 2026-06-22 (PR #32): the target is now **`gemma-4-12b`**, the mid/vision
+  workhorse in daily use that also generated the live corpus._
 - **Training runs on the Mac Mini** via MLX-LM; this repo ships the scripts, the
   human runs them and reports eval numbers ("I script, you run").
 

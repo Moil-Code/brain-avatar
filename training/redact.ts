@@ -19,31 +19,45 @@ const RULES: { re: RegExp; tag: string }[] = [
   { re: /(https?:\/\/)[^/\s:@]+:[^/\s:@]+@/g, tag: "$1[CRED]@" },
 ];
 
-export function redactText(s: string): string {
-  let out = s;
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Redact structured PII, plus any names from an optional denylist (word-boundary,
+ *  case-insensitive → [NAME]). The denylist is the dependency-free half of name
+ *  anonymization; full contextual NER needs Presidio (see TRAINING_CAPABILITIES_AUDIT). */
+export function redactText(s: string, names: string[] = []): string {
+  let out = s ?? "";
   for (const { re, tag } of RULES) out = out.replace(re, tag);
+  for (const n of names) {
+    const t = n.trim();
+    if (t.length < 2) continue; // never redact 1-char tokens
+    out = out.replace(new RegExp(`\\b${escapeRe(t)}\\b`, "gi"), "[NAME]");
+  }
   return out;
 }
 
-function redactMessage(m: ChatMessage): ChatMessage {
+function redactMessage(m: ChatMessage, names: string[]): ChatMessage {
   return {
     ...m,
-    content: redactText(m.content ?? ""),
+    content: redactText(m.content ?? "", names),
+    // Reasoning traces quote the same real people/emails/paths as the answer, so
+    // they must be scrubbed before a distilled record can become a training row.
+    ...(m.reasoning ? { reasoning: redactText(m.reasoning, names) } : {}),
     tool_calls: m.tool_calls?.map((c) => ({
       ...c,
-      function: { ...c.function, arguments: redactText(c.function.arguments) },
+      function: { ...c.function, arguments: redactText(c.function.arguments, names) },
     })),
   };
 }
 
 /** Redact a whole record in place-safe (returns a new object). No-op-ish for
- *  already-clean synthetic records, so it's safe to run over the whole corpus. */
-export function redactRecord(r: TrajectoryRecord): TrajectoryRecord {
+ *  already-clean synthetic records, so it's safe to run over the whole corpus.
+ *  `names` is an optional denylist of real names to scrub. */
+export function redactRecord(r: TrajectoryRecord, names: string[] = []): TrajectoryRecord {
   return {
     ...r,
-    user: redactText(r.user),
-    final_answer: redactText(r.final_answer),
-    messages: r.messages.map(redactMessage),
-    tool_events: r.tool_events.map((e) => ({ ...e, arguments: redactText(e.arguments) })),
+    user: redactText(r.user, names),
+    final_answer: redactText(r.final_answer, names),
+    messages: r.messages.map((m) => redactMessage(m, names)),
+    tool_events: r.tool_events.map((e) => ({ ...e, arguments: redactText(e.arguments, names) })),
   };
 }

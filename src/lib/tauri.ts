@@ -188,6 +188,15 @@ export const findFiles = (query: string, scope?: string) =>
   invoke<string>("find_files", { query, scope });
 export const readFile = (path: string, maxChars?: number) =>
   invoke<string>("read_file", { path, maxChars });
+/** Create a document from text/markdown and save it (txt/md/html/rtf/doc/docx/odt/pdf). */
+export const createDocument = (args: {
+  content: string;
+  filename: string;
+  format?: string;
+  folder?: string;
+  overwrite?: boolean;
+  openAfter?: boolean;
+}) => invoke<string>("create_document", args);
 export const openFileCmd = (path: string) => invoke<string>("open_file", { path });
 export const openApp = (name: string) => invoke<string>("open_app", { name });
 export const listApps = () => invoke<string>("list_apps");
