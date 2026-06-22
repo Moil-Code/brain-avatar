@@ -63,6 +63,13 @@ const dedupThreshold = Number(arg("dedup-threshold", "0.9"));
 // fine-tuning a tool-caller without the signatures hurts generalization to the tools.
 // `--tools off` reverts to messages-only. (KTO keeps its {prompt,completion,label} shape.)
 const withTools = arg("tools", "on") !== "off";
+// Optional denylist of real names to scrub from live data (one per line). Default: none
+// (structured-PII redaction still always runs). Full contextual NER → Presidio (see audit).
+const namesFile = arg("redact-names", "");
+const redactNames =
+  namesFile && existsSync(namesFile)
+    ? readFileSync(namesFile, "utf8").split("\n").map((s) => s.trim()).filter(Boolean)
+    : [];
 
 // --- load ---------------------------------------------------------------------
 function loadJsonl(path: string): TrajectoryRecord[] {
@@ -161,9 +168,9 @@ function hash01(s: string): number {
 
 // --- build corpus -------------------------------------------------------------
 const sys = canonicalSystem();
-const live = loadLive(liveDir).map(redactRecord);
-const distilled = loadJsonl(distillFile).map(redactRecord);
-let synth = loadJsonl(synthFile).map(redactRecord);
+const live = loadLive(liveDir).map((r) => redactRecord(r, redactNames));
+const distilled = loadJsonl(distillFile).map((r) => redactRecord(r, redactNames));
+let synth = loadJsonl(synthFile).map((r) => redactRecord(r, redactNames));
 
 // Cap the GENERATED share (synthetic + distilled) so the fine-tune doesn't drift
 // onto templated/teacher phrasing once real data exists. Early on (no live data)

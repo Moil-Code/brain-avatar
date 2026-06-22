@@ -391,6 +391,25 @@ check("export sft: drops a turn that sent without confirmation", () => {
   assert.equal(raw.split("\n").filter((l) => l.trim()).length, 1, "unconfirmed send dropped, gold kept");
 });
 
+// --- denylist name redaction (G4, dependency-free portion) --------------------
+check("redact: denylist scrubs listed names, leaves others, no-op without a list", () => {
+  assert.equal(redactText("ping Jordan Avery about it", ["Jordan Avery"]), "ping [NAME] about it");
+  assert.ok(redactText("call Marcus", ["Jordan"]).includes("Marcus")); // not on the list
+  assert.equal(redactText("plain text"), "plain text"); // back-compat: no list = no-op
+});
+check("redact: denylist applies across a whole record", () => {
+  const rec = {
+    ...goldRec, user: "who is Jordan?",
+    messages: [
+      { role: "user", content: "who is Jordan?" },
+      { role: "assistant", content: "Jordan leads ops" },
+    ],
+  } as TrajectoryRecord;
+  const out = JSON.stringify(redactRecord(rec, ["Jordan"]));
+  assert.ok(!out.includes("Jordan"), "name scrubbed everywhere");
+  assert.ok(out.includes("[NAME]"));
+});
+
 console.log(`\n1..${n}\nall ${n} checks passed`);
 
 function readJsonl(p: string): TrajectoryRecord[] {

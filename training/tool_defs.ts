@@ -34,7 +34,7 @@ const str = (description: string) => ({ type: "string", description });
 
 export const TOOL_DEFS: ToolDef[] = [
   fn("brain_page", "Get the canonical brain page for a named person, company, project, or concept.",
-    { name: str("Exact entity name, e.g. 'Jordan Avery' or 'Northwind Logistics'.") }, ["name"]),
+    { name: str("Exact entity name — a person's full name, a company, or a project.") }, ["name"]),
   fn("brain_search", "Hybrid search over the brain for broader or contextual questions.",
     { query: str("What to look up.") }, ["query"]),
   fn("calendar_events", "Read calendar events for a time range.",

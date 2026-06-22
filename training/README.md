@@ -32,7 +32,7 @@ the why.
 | `kto.ts` | KTO class-balancing weights + anti-sycophancy guardrail (writes `kto_config.json`) | imported by export |
 | `outcomes.ts` | Derived outcome labels — flags turns the user corrected on the next turn | imported by export |
 | `dedup.ts` | Deterministic, offline dedup of duplicate/near-duplicate trajectories (exact + shingle-Jaccard) — model-collapse guard | imported by export |
-| `export.ts` | Fuse live+synthetic → redact → normalize system prompt → **dedup** → filter → train/valid split, in `sft` or `kto` mode; `--reasoning none\|distilled\|all`, `--dedup off\|exact\|near`, `--tools on\|off` | `node --experimental-strip-types training/export.ts --mode sft` |
+| `export.ts` | Fuse live+synthetic → redact → normalize system prompt → **dedup** → filter (gold/safety/correction) → train/valid split; flags: `--reasoning`, `--dedup`, `--tools`, `--redact-names` | `node --experimental-strip-types training/export.ts --mode sft` |
 | `eval/cases.ts` | Frozen eval suite + pure `scoreCase` (first-tool / valid+correct JSON args / no-narration / confirm-before-send) | — |
 | `eval/run.ts` | Scores a model via an OpenAI-compatible endpoint; gates adapters | `LMSTUDIO_URL=… MODEL=… node --experimental-strip-types training/eval/run.ts` |
 | `selftest.ts` | Offline checks for scorer, redactor, generator invariants, reasoning split/fold + exporter gold-filtering | `node --experimental-strip-types training/selftest.ts` |
@@ -143,8 +143,8 @@ node --experimental-strip-types training/export.ts --mode sft --reasoning distil
 See [`../docs/TRAINING_CAPABILITIES_AUDIT.md`](../docs/TRAINING_CAPABILITIES_AUDIT.md)
 for the full gap analysis, research citations, and phased plan.
 
-- **Name-level anonymization** needs an NER pass; `redact.ts` only catches
-  structured identifiers today (best practice: on-device Presidio = regex + NER).
+- **Full contextual NER** — `--redact-names <file>` scrubs a denylist today; reliable
+  context-aware person/location redaction needs an on-device Presidio pass (regex + spaCy NER).
 - **Deeper eval** — multi-turn / state-based (τ-bench-style) cases (refusal/irrelevance
   + arg-value checks are done).
 - **Run the trainer** — the actual LoRA SFT + KTO passes on the Mac Mini (GPU-bound;

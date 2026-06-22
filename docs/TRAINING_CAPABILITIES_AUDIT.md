@@ -116,7 +116,7 @@ Findings below are from primary sources (papers / official docs), verified live.
 | G1 | **Teacher reasoning discarded** (and `<think>` could leak into distilled answers) | 🔴 high | low | §2.1, §2.2 |
 | G2 | ✅ **done (round 3)** — shared `TOOL_DEFS` attached to SFT examples (default on) | 🟠 med | low | §2.3 |
 | G3 | ✅ **done** — JSON-validity + arg-value (reasoning PR), refusal/irrelevance (round 2), multi-turn/state-based (round 6) | 🟠 med | med | §2.6 |
-| G4 | **Redaction structured-only** — no NER name redaction | 🟠 med (privacy) | med | §2.7 |
+| G4 | ◐ **partial (round 8)** — denylist name redaction shipped; full contextual NER still needs Presidio | 🟠 med (privacy) | med | §2.7 |
 | G5 | ✅ **done (round 1)** — corpus dedup pass (exact default, near opt-in) | 🟡 low | med | §2.4 |
 | G6 | ✅ **done (round 4)** — export emits KTO class weights + sycophancy guard (`kto_config.json`) | 🟡 low | low | §2.5 |
 | G7 | ✅ **done** — JSON-args-valid (round 1), next-turn-correction (round 5), confirm-honored (round 7) | 🟡 low | med | plan §0.2 |
@@ -198,12 +198,28 @@ Leave the default (`none`) when fine-tuning the production fast tier (thinking-d
   unconfirmed send.
 - **Validation:** selftest 42/42; synthetic corpus unaffected (kept=139); `tsc` clean; vitest 66/66.
 
-### Remaining backlog (after round 7)
-G4 (full NER redaction — needs on-device **Presidio**, a Python dep we can't validate in
-this TS/Node session; a dependency-free denylist redactor is tractable → round 8),
-G8 (implicit signals → KTO — deferred: noisy auto-labels need the GPU loop to prove they
-don't hurt), and **Phase D — the actual LoRA SFT + KTO runs, GPU-bound (Mac Mini +
-MLX-LM), which cannot execute here.**
+### Round 8 — 2026-06-22 — denylist name redaction (G4 partial)
+- **`redact.ts`**: `redactText`/`redactRecord` take an optional name denylist (word-boundary,
+  case-insensitive → `[NAME]`); structured-PII redaction still always runs.
+- **`export.ts`**: `--redact-names <file>` (one name per line). Default off → existing
+  behavior unchanged.
+- **Bonus fix:** the end-to-end test caught a real leak — `tool_defs.ts` had baked an example
+  name into the `brain_page` description, so it rode into *every* SFT example via the tool
+  schema (which redaction can't touch). Genericized the schema text.
+- **Why:** regex misses names/contextual PII; a denylist is the dependency-free half. Full
+  contextual NER is **Presidio** (regex + spaCy NER, on-device) — a Python dep we can't run
+  in this TS/Node session, so it stays the documented production step (https://github.com/microsoft/presidio).
+- **Validation:** selftest 44/44; with `--redact-names`, the listed name → 0 occurrences
+  (`[NAME]` present); control run still contains it; `tsc` clean; vitest 66/66.
+
+### Remaining backlog (after round 8) — the GPU/dependency boundary
+The offline-tractable, low-risk backlog is now done. What's left genuinely cannot be built
+or validated in this TS/Node session:
+- **Full contextual NER** — needs on-device **Presidio** (Python + spaCy model).
+- **G8: implicit signals → KTO** — deferred on purpose: auto-derived weak labels are noisy
+  and need the actual training loop to prove they help, not hurt (over-optimization risk).
+- **Phase D — the actual LoRA SFT + KTO runs** — GPU-bound (Mac Mini + MLX-LM). This is the
+  next real gate; everything above exists to make it measurable and safe.
 
 ---
 
