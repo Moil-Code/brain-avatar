@@ -114,7 +114,7 @@ Findings below are from primary sources (papers / official docs), verified live.
 | # | Gap | Severity | Effort | Best-practice ref |
 |---|---|---|---|---|
 | G1 | **Teacher reasoning discarded** (and `<think>` could leak into distilled answers) | 🔴 high | low | §2.1, §2.2 |
-| G2 | **Tool schemas omitted** from exported examples | 🟠 med | low | §2.3 |
+| G2 | ✅ **done (round 3)** — shared `TOOL_DEFS` attached to SFT examples (default on) | 🟠 med | low | §2.3 |
 | G3 | ◐ **mostly done** — JSON-validity + arg-value (reasoning PR), refusal/irrelevance + multi-tool accept (round 2); **multi-turn still pending** | 🟠 med | med | §2.6 |
 | G4 | **Redaction structured-only** — no NER name redaction | 🟠 med (privacy) | med | §2.7 |
 | G5 | ✅ **done (round 1)** — corpus dedup pass (exact default, near opt-in) | 🟡 low | med | §2.4 |
@@ -215,3 +215,19 @@ Recurring research-backed rounds; one scoped, offline-validated improvement each
   Train + eval the behavior together so the gate and the data agree.
 - **Validation:** selftest 31/31; eval lint 15 cases; synth 139; `tsc` clean; vitest 66/66.
   (Multi-turn / state-based eval — τ-bench style — still pending.)
+
+### Round 3 — 2026-06-22 — tool schemas in training data (G2)
+- **`training/tool_defs.ts`** (new): one canonical `TOOL_DEFS` (14 tools, real
+  parameter schemas mirroring the agent's calls) used by the exporter, eval, AND
+  teacher distillation — a single source of truth.
+- **`export.ts`**: `--tools on|off` (**default on**) attaches the `tools` array to each
+  SFT example (KTO keeps its `{prompt,completion,label}` shape). **`eval/cases.ts`** now
+  re-exports `TOOLS = TOOL_DEFS`, so eval + distill condition on the same signatures the
+  model is trained with.
+- **Why:** MLX-LM/HF tool formats carry a top-level `tools` array; fine-tuning a
+  tool-caller WITHOUT the signatures trades away generalization to the tools
+  (https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/LORA.md ·
+  https://huggingface.co/docs/transformers/chat_extras). Arguments stay JSON-string
+  encoded (OpenAI/Qwen convention) to match our captured trajectories.
+- **Validation:** selftest 32/32; SFT `train.jsonl` carries the 14-tool array;
+  eval/distill lint 14 tools; `tsc` clean; vitest 66/66.

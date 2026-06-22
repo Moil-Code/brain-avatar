@@ -24,12 +24,13 @@ the why.
 |---|---|---|
 | `types.ts` | Shared trajectory + example types (mirrors `trajectory.rs`) | — |
 | `reasoning.ts` | Splits a model's chain-of-thought from its clean answer (`<think>` / harmony / `reasoning_content`) and re-emits it as a `<think>` block for reasoning SFT | imported by distill/export |
+| `tool_defs.ts` | Canonical `TOOL_DEFS` (14 tools, real param schemas) shared by export, eval, and distill | imported widely |
 | `synthesize.ts` | Generates ~135 gold trajectories (13 scenarios × entity pool × phrasings) for each documented failure mode against a mock tool env; `source:"synthetic"` | `node --experimental-strip-types training/synthesize.ts` |
 | `mockenv.ts` | Deterministic, side-effect-free mock tool results (shared by distillation) | imported by distill |
 | `distill.ts` | Teacher distillation: the 26B produces gold trajectories over seed tasks (mock tools, no side effects), **capturing its reasoning**; `source:"distilled"` | `LMSTUDIO_URL=… MODEL=<26B> node --experimental-strip-types training/distill.ts` |
 | `redact.ts` | Deterministic structured-PII scrubber (emails, tokens, paths, creds) — covers reasoning traces too | imported by export |
 | `dedup.ts` | Deterministic, offline dedup of duplicate/near-duplicate trajectories (exact + shingle-Jaccard) — model-collapse guard | imported by export |
-| `export.ts` | Fuse live+synthetic → redact → normalize system prompt → **dedup** → filter → train/valid split, in `sft` or `kto` mode; `--reasoning none\|distilled\|all`, `--dedup off\|exact\|near` | `node --experimental-strip-types training/export.ts --mode sft` |
+| `export.ts` | Fuse live+synthetic → redact → normalize system prompt → **dedup** → filter → train/valid split, in `sft` or `kto` mode; `--reasoning none\|distilled\|all`, `--dedup off\|exact\|near`, `--tools on\|off` | `node --experimental-strip-types training/export.ts --mode sft` |
 | `eval/cases.ts` | Frozen eval suite + pure `scoreCase` (first-tool / valid+correct JSON args / no-narration / confirm-before-send) | — |
 | `eval/run.ts` | Scores a model via an OpenAI-compatible endpoint; gates adapters | `LMSTUDIO_URL=… MODEL=… node --experimental-strip-types training/eval/run.ts` |
 | `selftest.ts` | Offline checks for scorer, redactor, generator invariants, reasoning split/fold + exporter gold-filtering | `node --experimental-strip-types training/selftest.ts` |
@@ -140,7 +141,6 @@ for the full gap analysis, research citations, and phased plan.
 
 - **Name-level anonymization** needs an NER pass; `redact.ts` only catches
   structured identifiers today (best practice: on-device Presidio = regex + NER).
-- **Tool schemas in examples** — the exporter omits the `tools` array for now;
-  attach real production `TOOL_DEFS` (not the eval stubs) so the model sees signatures.
-- **Deeper eval** — refusal/irrelevance + multi-turn (BFCL/τ-bench-style) cases.
+- **Deeper eval** — multi-turn / state-based (τ-bench-style) cases (refusal/irrelevance
+  + arg-value checks are done).
 - **Guarded KTO** — class weighting (1:1–4:3) + an SFT anchor against sycophancy.

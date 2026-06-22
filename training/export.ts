@@ -23,6 +23,7 @@ import type { ChatMessage, MlxExample, TrajectoryRecord } from "./types.ts";
 import { redactRecord } from "./redact.ts";
 import { withThink } from "./reasoning.ts";
 import { dedup, recordSignature, type DedupMode } from "./dedup.ts";
+import { TOOL_DEFS } from "./tool_defs.ts";
 
 function arg(name: string, def: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -56,6 +57,10 @@ const reasoningMode = arg("reasoning", "none");
 // high-overlap (Jaccard ≥ threshold) trajectories; `off` keeps everything.
 const dedupMode = arg("dedup", "exact") as DedupMode;
 const dedupThreshold = Number(arg("dedup-threshold", "0.9"));
+// Attach the tool schemas to each SFT example (MLX-LM/HF tools format). Default ON:
+// fine-tuning a tool-caller without the signatures hurts generalization to the tools.
+// `--tools off` reverts to messages-only. (KTO keeps its {prompt,completion,label} shape.)
+const withTools = arg("tools", "on") !== "off";
 
 // --- load ---------------------------------------------------------------------
 function loadJsonl(path: string): TrajectoryRecord[] {
@@ -122,7 +127,9 @@ function applyReasoning(msgs: ChatMessage[], source: string): ChatMessage[] {
 }
 
 function toSft(r: TrajectoryRecord, sys: string | null): MlxExample {
-  return { messages: normalizeSystem(applyReasoning(r.messages, r.source), sys) };
+  const ex: MlxExample = { messages: normalizeSystem(applyReasoning(r.messages, r.source), sys) };
+  if (withTools) ex.tools = TOOL_DEFS;
+  return ex;
 }
 
 /** KTO: prompt = everything before the final assistant turn; completion = that
@@ -198,6 +205,6 @@ const withReasoning = [...train, ...valid].filter((r) =>
 
 console.log(`mode=${mode}  live=${live.length}  distilled=${distilled.length}  synthetic=${synth.length}  kept=${kept.length}`);
 console.log(`→ ${join(outDir, "train.jsonl")}  (${train.length} train, ${valid.length} valid)`);
-console.log(`dedup=${dedupMode}  removed=${dropped}  ·  reasoning=${reasoningMode}  examples-with-<think>=${withReasoning}`);
+console.log(`dedup=${dedupMode}  removed=${dropped}  ·  reasoning=${reasoningMode}  examples-with-<think>=${withReasoning}  ·  tools=${withTools ? "on" : "off"}`);
 if (!sys) console.log("note: training/system_prompt.txt absent — kept each record's own system message.");
 if (live.length === 0) console.log(`note: no live data at ${liveDir} — corpus is synthetic-only for now.`);

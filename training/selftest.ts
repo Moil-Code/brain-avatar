@@ -247,6 +247,24 @@ check("synth: chitchat records make no tool call", () => {
   for (const r of chit) assert.equal(r.tool_events.length, 0, "no tools on smalltalk");
 });
 
+// --- exporter: tool schemas attached to SFT examples (G2) ---------------------
+check("export: tool schemas attached by default; --tools off omits them", () => {
+  const td = "/tmp/_tools_selftest";
+  execSync(`rm -rf ${td} && mkdir -p ${td}`, { stdio: "ignore" });
+  writeFileSync(`${td}/distilled.jsonl`, JSON.stringify(goldRec) + "\n");
+  const run = (toolsArg: string) => {
+    const out = `${td}/out_${toolsArg}`;
+    execSync(
+      `node --experimental-strip-types training/export.ts --live ${td}/nolive --synth ${td}/nosynth.jsonl --distill ${td}/distilled.jsonl --out ${out} --mode sft --tools ${toolsArg}`,
+      { stdio: "ignore" }
+    );
+    return readFileSync(`${out}/train.jsonl`, "utf8") + readFileSync(`${out}/valid.jsonl`, "utf8");
+  };
+  const on = run("on");
+  assert.ok(on.includes('"tools"') && on.includes("brain_page") && on.includes("parameters"), "tools schema present by default");
+  assert.ok(!run("off").includes('"tools"'), "tools omitted with --tools off");
+});
+
 console.log(`\n1..${n}\nall ${n} checks passed`);
 
 function readJsonl(p: string): TrajectoryRecord[] {

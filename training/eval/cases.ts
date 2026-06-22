@@ -9,27 +9,11 @@
 // run.ts feeds it real model output from an OpenAI-compatible endpoint.
 
 import type { ChatMessage, ToolCall } from "../types.ts";
+import { TOOL_DEFS } from "../tool_defs.ts";
 
-/** Minimal tool schema for the eval request — names must match production tools. */
-export const TOOLS = [
-  "brain_page",
-  "brain_search",
-  "calendar_events",
-  "web_search",
-  "fetch_url",
-  "send_email",
-  "manage_tasks",
-  "read_emails",
-  "email_details",
-  "find_files",
-  "read_file",
-  "create_reminder",
-  "create_automation",
-  "system_control",
-].map((name) => ({
-  type: "function",
-  function: { name, description: name, parameters: { type: "object", properties: {} } },
-}));
+/** Tool schemas for eval requests — the shared canonical set, so eval, teacher
+ *  distillation, and the exported training data all use identical signatures. */
+export const TOOLS = TOOL_DEFS;
 
 export interface EvalCase {
   id: string;
