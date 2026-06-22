@@ -1050,6 +1050,13 @@ body,
   background: rgba(255, 255, 255, 0.08);
   color: var(--fg);
 }
+/* The per-answer "read aloud" button pulses while it's speaking so the active
+   answer is obvious at a glance (and the row stays put — see .fb-open). */
+.fb-btn.fb-playing {
+  color: var(--accent, #6aa3ff);
+  animation: fb-pulse 1.2s ease-in-out infinite;
+}
+@keyframes fb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
 /* Keep the row visible while a note is open or saved (it otherwise fades on mouse-out). */
 .msg-feedback.fb-open { opacity: 1; }
