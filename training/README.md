@@ -98,6 +98,55 @@ python3 -m venv training/.venv && source training/.venv/bin/activate
 python -m pip install mlx-lm
 ```
 
+## Hands-off training (run it when 50 turns are ready — automatically)
+
+`train.sh` always runs a full train when invoked. To train **only when there's
+enough new data** — and without babysitting it — use the readiness-gated wrapper.
+
+**One-time setup:** copy the config so the wrapper knows your base model:
+
+```bash
+cp training/train.env.example training/train.env
+# edit training/train.env: set BASE_MODEL (the MLX repo/path), and optionally
+# LMSTUDIO_URL/MODEL for the eval gate and EXPORT_GGUF=1 for a servable GGUF.
+```
+
+**Option A — hit it whenever (safe any time):**
+
+```bash
+bash training/auto-train.sh
+```
+
+Trains if ≥50 new turns (or ≥15 newly-rated) have landed since the last run —
+otherwise it prints how many more are needed and exits. This is the "let me kick
+it when it's ready" button, except it checks first so you can run it blindly.
+(Just the dry check: `node --experimental-strip-types training/readiness.ts`.)
+
+**Option B — fully automatic (overnight):** schedule the wrapper with launchd so it
+fires every night at 03:00 and trains itself whenever the corpus is ready. 03:00
+keeps a heavy 12B run off the box while you're using the live avatar.
+
+```bash
+# edit the REPLACE_ME paths in the plist first (your clone's absolute path):
+cp training/com.moil.brainavatar.train.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.moil.brainavatar.train.plist
+# logs: training/logs/auto-train.{out,err}.log ; stop: launchctl unload <same path>
+```
+
+> **Why not a button in the app?** A 12B LoRA needs several GB and minutes; firing
+> it from the live avatar mid-conversation can OOM the 24GB Mini while LM Studio is
+> also resident. The overnight job runs when the box is idle, so training never
+> fights inference. Same readiness bar as the in-app 📈 notification — they agree.
+
+### Serving the result on 24GB (EXPORT_GGUF)
+
+Training needs **MLX** weights, but the Mini serves Gemma as **GGUF QAT** (lighter
+in RAM). Set `EXPORT_GGUF=1` (+ install llama.cpp, `LLAMACPP_DIR`) and `train.sh`
+will also emit a `Q4_K_M.gguf` of the fused model to import into LM Studio. It's
+best-effort: if llama.cpp is missing it prints the manual commands and still leaves
+you the working MLX fused model. Once you have more RAM, skip this and serve the
+MLX fused model directly.
+
 ## Where do I see the dashboard?
 
 It's **inside the Brain Avatar app** — the **📈 button in the title bar** (next to

@@ -39,6 +39,7 @@ src-tauri/binaries/
 training/data/
 training/adapters/
 training/.venv/
+training/train.env
 
 # Secrets (keep the examples)
 .env
