@@ -241,11 +241,13 @@ export function setMuted(value: boolean): void {
 
 export function speak(
   text: string,
-  opts: { onStart?: () => void; onEnd?: () => void } = {}
+  opts: { onStart?: () => void; onEnd?: () => void; force?: boolean } = {}
 ): void {
   // Muted: skip the audio but still resolve the flow (so hands-free convo mode
-  // keeps going) — exactly like the empty-text case.
-  if (muted || !text.trim()) {
+  // keeps going) — exactly like the empty-text case. `force` overrides the mute
+  // for an explicit play request (the per-answer 🔊 button), so the user can hear
+  // a single answer on demand without un-muting the whole avatar.
+  if ((muted && !opts.force) || !text.trim()) {
     opts.onEnd?.();
     return;
   }

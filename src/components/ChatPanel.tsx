@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { extractDocText, rateTrajectory } from "../lib/tauri";
+import { speak, stopSpeaking } from "../lib/voice";
 import { renderMarkdown } from "../lib/markdown";
 import { ErrorBoundary } from "./ErrorBoundary";
 import TaskBoard from "./TaskBoard";
@@ -114,6 +115,7 @@ export default function ChatPanel({
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [noteFor, setNoteFor] = useState<string | null>(null); // message with the note box open
   const [noteDraft, setNoteDraft] = useState("");
+  const [playingId, setPlayingId] = useState<string | null>(null); // answer being read aloud
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -161,6 +163,34 @@ export default function ChatPanel({
     void persist(messageId, ratings[messageId] ?? 1, note);
     setNoteFor(null);
   };
+
+  // Read one answer aloud on demand (or stop it). Forces past the global mute —
+  // this is an explicit "say THIS one" request, so it speaks even when the avatar
+  // is muted, and lets you replay an answer after the auto-spoken reply ended.
+  const togglePlay = (m: UiMessage) => {
+    if (playingId === m.id) {
+      stopSpeaking();
+      setPlayingId(null);
+      return;
+    }
+    stopSpeaking(); // interrupt the auto-spoken reply or another answer first
+    speak(m.content, {
+      force: true,
+      onStart: () => setPlayingId(m.id),
+      // Guard the clear: if the user already started a different answer, this
+      // (interrupted) playback's end must not wipe the new one's highlight.
+      onEnd: () => setPlayingId((cur) => (cur === m.id ? null : cur)),
+    });
+  };
+
+  // Switching conversations leaves the current answer half-spoken otherwise —
+  // stop playback (and drop the highlight) when the active chat changes.
+  useEffect(() => {
+    return () => {
+      stopSpeaking();
+      setPlayingId(null);
+    };
+  }, [conversationId]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -254,7 +284,18 @@ export default function ChatPanel({
               </div>
             )}
             {m.role === "assistant" && !m.pending && (
-              <div className={`msg-feedback${noteFor === m.id || notes[m.id] ? " fb-open" : ""}`}>
+              <div
+                className={`msg-feedback${
+                  noteFor === m.id || notes[m.id] || playingId === m.id ? " fb-open" : ""
+                }`}
+              >
+                <button
+                  className={`fb-btn${playingId === m.id ? " fb-playing" : ""}`}
+                  title={playingId === m.id ? "Stop reading aloud" : "Play this answer aloud"}
+                  onClick={() => togglePlay(m)}
+                >
+                  {playingId === m.id ? "⏹" : "🔊"}
+                </button>
                 <button
                   className={`fb-btn${ratings[m.id] === 1 ? " fb-active" : ""}`}
                   title="Good response"

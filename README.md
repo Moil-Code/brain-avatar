@@ -176,6 +176,9 @@ Prerequisites (already present on this machine): Node, Rust toolchain, LM Studio
 - **Voice out** — native macOS `say` (Rust), which can use the high-quality
   **Enhanced/Premium voices** (download one free in System Settings → Accessibility →
   Spoken Content → System Voice → Manage Voices, then pick it in **Settings → Voice**).
+  Every answer also has a **🔊 play** button (hover the reply) that reads just that answer
+  aloud on demand — it **works even when the avatar is muted**, so you can replay a response
+  or hear a single one without un-muting. Click it again (it turns to ⏹) to stop.
 - **Computer access** — the model can `find_files` (Spotlight + a native, permission-safe
   directory walk), `read_file` (text, Markdown, Word/RTF/HTML; PDF if `pdftotext`/poppler
   is installed), `open_file`, `open_app`/`list_apps`, and `run_applescript` to control Mac
