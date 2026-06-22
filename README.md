@@ -94,6 +94,36 @@ next launch. The public key is already baked into the app; keep
 > you ship without pushing, push the `chore: release vX` commit before the next release so the
 > repo and the published artifact don't drift.
 
+### Release from CI (hands-off, no local build)
+
+There's also a GitHub Actions release ([`.github/workflows/release.yml`](.github/workflows/release.yml))
+that does the exact same thing on a GitHub-hosted **Apple-Silicon** runner, so nobody has to
+build locally. Cut a release with the one-command helper:
+
+```bash
+scripts/tag-release.sh          # bump 0.1.32 → 0.1.33, commit, tag, push → CI builds + publishes
+```
+
+It bumps the version, pushes a `vX.Y.Z` tag, and the workflow builds, **signs (same updater key
++ "Brain Avatar Code Signing" identity)**, and publishes the release with `latest.json` — so every
+avatar auto-installs on next launch, identical to `publish-release.sh`. Keep `publish-release.sh`
+for shipping offline from the Mac Mini.
+
+**One-time setup** — add these repo secrets (Settings → Secrets and variables → Actions) **before
+pushing a tag** (the workflow fails fast with a clear message if they're missing):
+
+| Secret | Value |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | `cat ~/.tauri/brain-avatar-updater.key` — the **same** key whose public half is in `tauri.conf.json` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | empty string for our key |
+| `APPLE_CERTIFICATE` | the "Brain Avatar Code Signing" identity exported as a `.p12`, then `base64 -i cert.p12` (Keychain Access → right-click the identity → Export) |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
+| `KEYCHAIN_PASSWORD` | any random string (a throwaway keychain on the runner) |
+
+> Using the **same** updater key and signing identity as the local script is what keeps updates
+> seamless — a different key would be rejected by installed apps, and a different identity would
+> reset every Mac's permissions. The runner is Apple-Silicon, matching the all‑M‑series fleet.
+
 ---
 
 ### Enable calendar scheduling (Teams meetings + invites)

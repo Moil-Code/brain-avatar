@@ -1,0 +1,94 @@
+name: Release
+
+# Build, sign, and publish an auto-updating release on a GitHub-hosted Apple-Silicon
+# runner — the hands-off equivalent of scripts/publish-release.sh. Triggered when a
+# version tag (e.g. v0.1.33) is pushed; cut one with scripts/tag-release.sh.
+#
+# The published release carries the signed app (.app.tar.gz + .sig) and a latest.json
+# at the endpoint every avatar polls, so all Macs auto-install on next launch.
+#
+# REQUIRED repo secrets (Settings → Secrets and variables → Actions) — add these
+# BEFORE pushing a tag:
+#   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.tauri/brain-avatar-updater.key
+#                                       (the SAME key whose public half is in
+#                                       tauri.conf.json → plugins.updater.pubkey)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  that key's password (empty string for ours)
+#   APPLE_CERTIFICATE                   base64 of the "Brain Avatar Code Signing"
+#                                       identity exported as a .p12
+#   APPLE_CERTIFICATE_PASSWORD          the .p12 export password
+#   KEYCHAIN_PASSWORD                   any random string (temp keychain on the runner)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub Release + upload assets
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Apple-Silicon runner — the whole fleet is M-series, so an aarch64 build matches
+    # and signs identically to the local publish-release.sh build.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the tag matches the app version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CFG="$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
+          if [ "$TAG" != "$CFG" ]; then
+            echo "::error::Tag v$TAG does not match tauri.conf.json version $CFG. Bump the version to match before tagging (scripts/tag-release.sh does this for you)."
+            exit 1
+          fi
+
+      - name: Verify signing secrets are present
+        env:
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          [ -n "$UPDATER_KEY" ] || { echo "::error::Missing secret TAURI_SIGNING_PRIVATE_KEY (the updater key whose public half is baked into tauri.conf.json). Without it the auto-updater rejects the build."; exit 1; }
+          [ -n "$APPLE_CERT" ]  || { echo "::error::Missing secret APPLE_CERTIFICATE (.p12 of the 'Brain Avatar Code Signing' identity, base64). Without it an update resets every Mac's permissions."; exit 1; }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build, sign, and publish the release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signature (minisign). MUST be the same key whose public half is in
+          # tauri.conf.json (plugins.updater.pubkey) — i.e. ~/.tauri/brain-avatar-updater.key.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Apple code signing with the SAME self-signed "Brain Avatar Code Signing"
+          # identity used locally, so an update never resets the app's macOS permissions.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: "Brain Avatar Code Signing"
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Brain Avatar ${{ github.ref_name }}"
+          releaseBody: "Update ${{ github.ref_name }}"
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
