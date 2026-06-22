@@ -38,6 +38,32 @@ fn is_kokoro_voice(v: &str) -> bool {
     b.len() >= 4 && b[2] == b'_' && b[0].is_ascii_lowercase() && b[1].is_ascii_lowercase()
 }
 
+/// Strip markdown + emoji so the voice speaks clean, conversational prose instead of
+/// reading literal "asterisk asterisk", "pound", bullet symbols, or emoji aloud. Runs
+/// once per utterance (not hot), so the regexes are compiled inline for readability.
+fn speech_sanitize(s: &str) -> String {
+    use regex::Regex;
+    let mut t = s.to_string();
+    // [label](url) / ![alt](url) -> just the label
+    t = Regex::new(r"!?\[([^\]]*)\]\([^)]*\)").unwrap().replace_all(&t, "$1").into_owned();
+    t = t.replace("```", " "); // code fences
+    // leading header hashes, list bullets (-, *, +, •, 1.), and blockquote markers
+    t = Regex::new(r"(?m)^\s{0,3}#{1,6}\s*").unwrap().replace_all(&t, "").into_owned();
+    t = Regex::new(r"(?m)^\s{0,4}([-*+•]|\d+\.)\s+").unwrap().replace_all(&t, "").into_owned();
+    t = Regex::new(r"(?m)^\s{0,4}>\s?").unwrap().replace_all(&t, "").into_owned();
+    // emphasis/code/strike markers anywhere (** __ * _ ` ~)
+    t = Regex::new(r"[*_`~]").unwrap().replace_all(&t, "").into_owned();
+    // emoji, pictographs, dingbats, arrows, variation selectors, ZWJ
+    t = Regex::new(r"[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}\x{2190}-\x{21FF}\x{2B00}-\x{2BFF}\x{FE0F}\x{200D}]")
+        .unwrap()
+        .replace_all(&t, "")
+        .into_owned();
+    // blank lines -> sentence breaks; squeeze runs of spaces
+    t = Regex::new(r"\n{2,}").unwrap().replace_all(&t, ". ").into_owned();
+    t = Regex::new(r"[ \t]{2,}").unwrap().replace_all(&t, " ").into_owned();
+    t.trim().to_string()
+}
+
 /// Speak text using macOS `say`, which can use the high-quality Enhanced/Premium
 /// voices (downloaded free in System Settings) that the webview cannot reach.
 /// Interrupts any in-progress speech first. Resolves when speech finishes.
@@ -48,6 +74,8 @@ pub async fn tts_speak(
     tts: State<'_, TtsState>,
     settings: State<'_, SettingsState>,
 ) -> Result<(), String> {
+    // Speak clean prose, never raw markdown/emoji ("asterisk asterisk", "pound", …).
+    let text = speech_sanitize(&text);
     let voice = voice
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| settings.0.lock().unwrap().tts_voice.clone());
@@ -190,7 +218,19 @@ fn parse_voices(s: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tts_tests {
-    use super::is_kokoro_voice;
+    use super::{is_kokoro_voice, speech_sanitize};
+
+    #[test]
+    fn sanitize_strips_markdown_and_emoji() {
+        let s = speech_sanitize("**The Power** of *cloud-to-dirt* knowledge `now`");
+        assert_eq!(s, "The Power of cloud-to-dirt knowledge now");
+        // bullets + header + link + emoji
+        let s2 = speech_sanitize("# Plan\n- first point 👍\n- see [the doc](https://x.com)");
+        assert!(!s2.contains('*') && !s2.contains('#') && !s2.contains('-'), "got: {s2}");
+        assert!(s2.contains("first point") && s2.contains("the doc") && !s2.contains("http"), "got: {s2}");
+        assert!(!s2.contains('👍'), "emoji not stripped: {s2}");
+    }
+
     #[test]
     fn detects_kokoro_ids_only() {
         for v in ["af_heart", "am_michael", "bf_emma", "bm_george"] {
