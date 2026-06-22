@@ -1,4 +1,5 @@
 import { transcribeAudio, ttsSpeak, ttsStop } from "./tauri";
+import { isMobile } from "./platform";
 
 function pickMime(): string {
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
@@ -235,12 +236,51 @@ export function setMuted(value: boolean): void {
   } catch {
     /* noop */
   }
-  // Silence anything mid-sentence the instant mute is turned on — both a one-shot
-  // utterance and an in-progress streamed answer (clear its queue so it can't resume).
+  // Silence anything mid-sentence the instant mute is turned on — clear the streamed
+  // queue (so it can't resume) and, on mobile, cancel the webview's speech synth.
   if (value) {
     sQueue = [];
     sBuf = "";
     ttsStop().catch(() => {});
+    if (isMobile) {
+      try {
+        window.speechSynthesis?.cancel();
+      } catch {
+        /* noop */
+      }
+    }
+  }
+}
+
+/** iOS has no macOS `say` / neural sidecar, so the iPhone build speaks through the
+ *  webview's built-in SpeechSynthesis. Resolves onEnd even on error so hands-free
+ *  convo mode keeps flowing. */
+function speakWeb(
+  text: string,
+  opts: { onStart?: () => void; onEnd?: () => void }
+): void {
+  try {
+    const synth = window.speechSynthesis;
+    if (!synth) {
+      opts.onEnd?.();
+      return;
+    }
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.0;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      opts.onEnd?.();
+    };
+    u.onend = finish;
+    u.onerror = finish;
+    opts.onStart?.();
+    synth.speak(u);
+  } catch (e) {
+    console.error("web tts failed", e);
+    opts.onEnd?.();
   }
 }
 
@@ -254,6 +294,10 @@ export function speak(
   // a single answer on demand without un-muting the whole avatar.
   if ((muted && !opts.force) || !text.trim()) {
     opts.onEnd?.();
+    return;
+  }
+  if (isMobile) {
+    speakWeb(text, opts);
     return;
   }
   // A one-shot utterance (manual 🔊 replay, automation delivery) takes over: drop
@@ -394,9 +438,25 @@ export function speechStreamEnd(): void {
 }
 
 export function stopSpeaking(): void {
+  if (isMobile) {
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {
+      /* noop */
+    }
+    return;
+  }
   streamReset();
   ttsStop().catch(() => {});
 }
 
-/** No-op retained for API compatibility (native TTS needs no voice warm-up). */
-export function primeVoices(): void {}
+/** Native TTS needs no warm-up; iOS SpeechSynthesis loads its voice list lazily,
+ *  so we nudge it once at boot so the first spoken reply isn't silent. */
+export function primeVoices(): void {
+  if (!isMobile) return;
+  try {
+    window.speechSynthesis?.getVoices();
+  } catch {
+    /* noop */
+  }
+}

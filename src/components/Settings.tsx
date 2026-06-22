@@ -58,8 +58,8 @@ const SECTIONS: { title: string; hint?: string; fields: Field[] }[] = [
     ],
   },
   {
-    title: "Remote brain (MacBook client)",
-    hint: "Point this at the Mac Mini's brain-daemon (over Tailscale) to use the brain, calendar, mail, and web from this Mac. Leave blank to run everything locally. The local model endpoint above is still used directly for the LLM.",
+    title: "Remote brain (MacBook / iPhone client)",
+    hint: "Point this at the Mac Mini's brain-daemon (over Tailscale) to use the brain, calendar, mail, and web from this device. Leave blank to run everything locally. On iPhone this is required, and the model 'Remote URL' above should point at the SAME daemon's /v1 passthrough (e.g. http://100.x.y.z:8787/v1) with the daemon token — so both tools and the LLM flow over the tailnet.",
     fields: [
       { key: "brain_daemon_url", label: "Daemon URL", placeholder: "http://100.x.y.z:8787" },
       { key: "brain_daemon_token", label: "Daemon token", secret: true },

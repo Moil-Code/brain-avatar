@@ -59,6 +59,7 @@ import {
   renderBoardSnapshot,
   validateEvidence,
 } from "./kanban";
+import { isMobile } from "./platform";
 import type {
   Attachment,
   AutomationSchedule,
@@ -115,6 +116,42 @@ const CAPABILITIES_NOTE: ChatMessage = {
     "a task board around the gap, don't do partial work — ask first.\n" +
     "Confirm before send_imessage, run_shell, and page-mutating browser actions (click_text/run_js).",
 };
+
+/**
+ * Tools the remote brain-daemon actually serves (plus the two automation tools,
+ * which run in the frontend store). The iPhone build is always a remote client, so
+ * it offers ONLY these — never a Mac-local capability (file search, AppleScript,
+ * app control, local image generation, X bookmarks) that the daemon can't proxy
+ * and would just error on the phone. The desktop app keeps the full set.
+ */
+const REMOTE_TOOL_NAMES = new Set([
+  "brain_page",
+  "brain_search",
+  "calendar_events",
+  "calendar_create",
+  "calendar_update",
+  "calendar_delete",
+  "create_teams_meeting",
+  "facebook_insights",
+  "web_search",
+  "web_task",
+  "fetch_url",
+  "read_emails",
+  "email_details",
+  "send_email",
+  "create_reminder",
+  "send_teams_message",
+  "create_automation",
+  "list_automations",
+]);
+
+/** The tool set to expose for this platform: trimmed to daemon-served tools on
+ *  iPhone, full on desktop. */
+function toolDefsForPlatform(): typeof TOOL_DEFS {
+  return isMobile
+    ? TOOL_DEFS.filter((t) => REMOTE_TOOL_NAMES.has(t.function.name))
+    : TOOL_DEFS;
+}
 
 function basename(p?: string): string {
   if (!p) return "";
@@ -1880,8 +1917,11 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   const toolEvents: ToolEvent[] = [];
 
   // Merge any MCP server tools into the set offered to the model this turn.
+  // The base set is platform-filtered first: the iPhone build offers only the
+  // daemon-served (remote-safe) tools, the desktop build the full set.
   const mcpDefs = await loadMcpTools();
-  const toolDefs = mcpDefs.length ? [...TOOL_DEFS, ...mcpDefs] : TOOL_DEFS;
+  const platformTools = toolDefsForPlatform();
+  const toolDefs = mcpDefs.length ? [...platformTools, ...mcpDefs] : platformTools;
 
   // --- Kanban board layer ----------------------------------------------------
   // A multi-task request is decomposed onto a persistent, per-conversation board

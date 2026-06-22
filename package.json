@@ -10,7 +10,10 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
-    "cleanup:apps": "scripts/cleanup-app-duplicates.sh"
+    "cleanup:apps": "scripts/cleanup-app-duplicates.sh",
+    "ios:init": "tauri ios init --config src-tauri/tauri.ios.conf.json",
+    "ios:dev": "tauri ios dev --config src-tauri/tauri.ios.conf.json",
+    "ios:build": "tauri ios build --config src-tauri/tauri.ios.conf.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

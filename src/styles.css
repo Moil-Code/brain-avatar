@@ -1181,3 +1181,32 @@ body,
   background: rgba(255, 255, 255, 0.03);
   border-radius: 8px;
 }
+
+/* ---------- iPhone (Tauri iOS) ----------
+   The desktop build is a small floating, semi-transparent, rounded window. On
+   iOS the app is a single full-screen webview, so fill the screen edge-to-edge,
+   drop the floating chrome (rounded corners, border, translucency over nothing),
+   and respect the notch / home-indicator safe areas. */
+.app.glass.mobile {
+  height: 100vh;
+  height: 100dvh;
+  width: 100vw;
+  border: none;
+  border-radius: 0;
+  background: var(--bg-solid);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* Give the title bar a little more height for comfortable touch targets. */
+.app.glass.mobile .titlebar {
+  height: 46px;
+}
+.app.glass.mobile .tb-btn {
+  font-size: 17px;
+  padding: 6px 8px;
+}
