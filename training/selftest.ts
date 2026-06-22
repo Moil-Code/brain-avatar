@@ -6,10 +6,12 @@
 // produces malformed training data fails loudly here, not silently in a fine-tune).
 
 import assert from "node:assert/strict";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { ChatMessage, TrajectoryRecord } from "./types.ts";
 import { scoreCase, type EvalCase } from "./eval/cases.ts";
-import { redactText } from "./redact.ts";
+import { redactText, redactRecord } from "./redact.ts";
 import { mockToolResult } from "./mockenv.ts";
+import { splitReasoning, withThink } from "./reasoning.ts";
 
 let n = 0;
 const check = (name: string, fn: () => void) => {
@@ -89,6 +91,104 @@ check("mockenv: brain_page echoes the entity name", () => {
 });
 check("mockenv: side-effect tools are never really fired", () => {
   assert.ok(mockToolResult("send_email", "{}").includes("not actually sent"));
+});
+
+// --- reasoning split/fold (teacher CoT capture) ------------------------------
+check("reasoning: <think> block → trace + clean answer", () => {
+  const s = splitReasoning("<think>weigh the options</think>the answer");
+  assert.equal(s.reasoning, "weigh the options");
+  assert.equal(s.content, "the answer");
+});
+check("reasoning: harmony channels → final is the answer", () => {
+  const s = splitReasoning("<|channel|>analysis<|message|>thinking hard<|channel|>final<|message|>done");
+  assert.equal(s.reasoning, "thinking hard");
+  assert.equal(s.content, "done");
+});
+check("reasoning: separate reasoning_content field is kept", () => {
+  const s = splitReasoning("plain answer", "the hidden trace");
+  assert.equal(s.reasoning, "the hidden trace");
+  assert.equal(s.content, "plain answer");
+});
+check("reasoning: plain content passes through untouched", () => {
+  const s = splitReasoning("just an answer");
+  assert.equal(s.reasoning, "");
+  assert.equal(s.content, "just an answer");
+});
+check("reasoning: withThink renders a think block (and no-ops when empty)", () => {
+  assert.ok(withThink("cot", "ans").startsWith("<think>"));
+  assert.ok(withThink("cot", "ans").includes("ans"));
+  assert.equal(withThink("", "ans"), "ans");
+});
+check("redact: scrubs the reasoning trace too", () => {
+  const rec = {
+    schema_version: 1, conversation_id: "c", turn_id: "t", created_at: "2026-01-01T00:00:00Z",
+    model_id: "m", task_type: "distilled", routed: true, user: "u",
+    messages: [{ role: "assistant", content: "ok", reasoning: "email priya@acme.com to confirm" }],
+    tool_events: [], tools_used: [], rounds: 1, final_answer: "ok", rating: 1, source: "distilled",
+  } as TrajectoryRecord;
+  const out = redactRecord(rec);
+  assert.ok(!JSON.stringify(out).includes("priya@acme.com"), "email scrubbed from reasoning");
+});
+
+// --- scorer: JSON-arg validity + argument-value checks ------------------------
+const callMsg = (name: string, args: string): ChatMessage => ({
+  role: "assistant", content: "", tool_calls: [{ id: "x", type: "function", function: { name, arguments: args } }],
+});
+check("scorer: malformed JSON tool args fail", () => {
+  const c: EvalCase = { id: "a", user: "u", expectFirstTool: "brain_page" };
+  assert.equal(scoreCase(c, callMsg("brain_page", "{bad")).pass, false);
+});
+check("scorer: expectArgsInclude checks the argument VALUE", () => {
+  const c: EvalCase = { id: "a", user: "u", expectFirstTool: "brain_page", expectArgsInclude: "Jordan" };
+  assert.equal(scoreCase(c, callMsg("brain_page", '{"name":"Jordan"}')).pass, true);
+  assert.equal(scoreCase(c, callMsg("brain_page", '{"name":"Sam"}')).pass, false);
+});
+
+// --- exporter: reasoning fold (opt-in) + gold filtering -----------------------
+const exTmp = "/tmp/_export_selftest";
+execSync(`rm -rf ${exTmp} && mkdir -p ${exTmp}`, { stdio: "ignore" });
+const goldRec: TrajectoryRecord = {
+  schema_version: 1, conversation_id: "c1", turn_id: "tGold", created_at: "2026-01-01T00:00:00Z",
+  model_id: "teacher", task_type: "distilled", routed: true, user: "who is Jordan?",
+  messages: [
+    { role: "system", content: "sys" },
+    { role: "user", content: "who is Jordan?" },
+    { role: "assistant", content: "", tool_calls: [{ id: "x", type: "function", function: { name: "brain_page", arguments: '{"name":"Jordan"}' } }], reasoning: "look up the page first" },
+    { role: "tool", tool_call_id: "x", name: "brain_page", content: "Jordan — VP Ops" },
+    { role: "assistant", content: "Jordan is VP Ops.", reasoning: "summarize the page" },
+  ],
+  tool_events: [{ round: 0, name: "brain_page", arguments: '{"name":"Jordan"}', ok: true }],
+  tools_used: ["brain_page"], rounds: 1, final_answer: "Jordan is VP Ops.", rating: 1, source: "distilled",
+};
+const badArgsRec: TrajectoryRecord = {
+  ...goldRec, turn_id: "tBad",
+  messages: [
+    { role: "system", content: "sys" }, { role: "user", content: "x" },
+    { role: "assistant", content: "done" },
+  ],
+  tool_events: [{ round: 0, name: "brain_page", arguments: "{bad", ok: true }],
+};
+writeFileSync(`${exTmp}/distilled.jsonl`, [JSON.stringify(goldRec), JSON.stringify(badArgsRec)].join("\n") + "\n");
+const runExport = (reasoning: string) => {
+  const out = `${exTmp}/out_${reasoning}`;
+  execSync(
+    `node --experimental-strip-types training/export.ts --live ${exTmp}/nolive --synth ${exTmp}/nosynth.jsonl --distill ${exTmp}/distilled.jsonl --out ${out} --mode sft --reasoning ${reasoning}`,
+    { stdio: "ignore" }
+  );
+  const raw = readFileSync(`${out}/train.jsonl`, "utf8") + readFileSync(`${out}/valid.jsonl`, "utf8");
+  return { raw, rows: raw.split("\n").filter((l) => l.trim()) };
+};
+check("export: --reasoning all folds <think>; bad-args record dropped by gold filter", () => {
+  const all = runExport("all");
+  assert.equal(all.rows.length, 1, "only the gold record survives (malformed-args record dropped)");
+  assert.ok(all.raw.includes("<think>"), "reasoning folded into the answer");
+  assert.ok(!all.raw.includes('"reasoning"'), "no raw reasoning field leaks into the export");
+});
+check("export: --reasoning none (default) withholds reasoning", () => {
+  const none = runExport("none");
+  assert.equal(none.rows.length, 1);
+  assert.ok(!none.raw.includes("<think>"), "no think block by default");
+  assert.ok(!none.raw.includes('"reasoning"'), "no raw reasoning field by default");
 });
 
 console.log(`\n1..${n}\nall ${n} checks passed`);

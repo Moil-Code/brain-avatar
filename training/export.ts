@@ -21,6 +21,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChatMessage, MlxExample, TrajectoryRecord } from "./types.ts";
 import { redactRecord } from "./redact.ts";
+import { withThink } from "./reasoning.ts";
 
 function arg(name: string, def: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -41,6 +42,14 @@ const outDir = arg("out", "training/data/export");
 const mode = arg("mode", "sft");
 const validRatio = Number(arg("valid-ratio", "0.1"));
 const maxSynthRatio = Number(arg("max-synth-ratio", "0.6"));
+// Whether to fold captured reasoning back into the assistant answer as a <think>
+// block (reasoning-distillation SFT). Default OFF: the production fast tier runs with
+// thinking DISABLED, so its SFT data should stay reasoning-free to keep train/inference
+// consistent. Opt in when fine-tuning a thinking-capable target.
+//   none      — never emit reasoning (default; current behavior preserved)
+//   distilled — only from teacher-distilled trajectories (where CoT is high quality)
+//   all       — wherever a reasoning trace was captured
+const reasoningMode = arg("reasoning", "none");
 
 // --- load ---------------------------------------------------------------------
 function loadJsonl(path: string): TrajectoryRecord[] {
@@ -72,20 +81,48 @@ function normalizeSystem(msgs: ChatMessage[], sys: string | null): ChatMessage[]
   return [{ role: "system", content: sys }, ...rest];
 }
 
-/** SFT: a trajectory is gold only if every tool call executed and the user didn't
- *  thumb it down. (rating null = unrated = kept; rating 1 = kept; rating -1 = dropped.) */
+/** Tool arguments must be valid JSON to be usable (empty = no-arg call is fine). */
+function argsOk(s: string): boolean {
+  if (!s || !s.trim()) return true;
+  try {
+    JSON.parse(s);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** SFT: a trajectory is gold only if every tool call executed, emitted PARSEABLE
+ *  JSON arguments, and the user didn't thumb it down. (rating null = unrated = kept;
+ *  rating 1 = kept; rating -1 = dropped.) The args check is a cheap outcome label —
+ *  a turn whose tool args don't parse is never a clean example to imitate. */
 function isGold(r: TrajectoryRecord): boolean {
-  return r.tool_events.every((e) => e.ok) && r.rating !== -1;
+  return r.tool_events.every((e) => e.ok && argsOk(e.arguments)) && r.rating !== -1;
+}
+
+/** Fold (or drop) per-message reasoning per the export mode. The captured trace is
+ *  never emitted as a raw field — either it becomes a <think> block in the answer
+ *  (reasoning SFT) or it's stripped, so MLX-LM only ever sees standard chat fields. */
+function applyReasoning(msgs: ChatMessage[], source: string): ChatMessage[] {
+  const include =
+    reasoningMode === "all" || (reasoningMode === "distilled" && source === "distilled");
+  return msgs.map((m) => {
+    const { reasoning, ...rest } = m;
+    if (m.role === "assistant" && include && reasoning && reasoning.trim()) {
+      return { ...rest, content: withThink(reasoning, m.content ?? "") };
+    }
+    return rest;
+  });
 }
 
 function toSft(r: TrajectoryRecord, sys: string | null): MlxExample {
-  return { messages: normalizeSystem(r.messages, sys) };
+  return { messages: normalizeSystem(applyReasoning(r.messages, r.source), sys) };
 }
 
 /** KTO: prompt = everything before the final assistant turn; completion = that
  *  turn; label = thumbs-up. Only rated turns carry a usable preference signal. */
 function toKto(r: TrajectoryRecord, sys: string | null) {
-  const msgs = normalizeSystem(r.messages, sys);
+  const msgs = normalizeSystem(applyReasoning(r.messages, r.source), sys);
   const lastAssistant = [...msgs].reverse().findIndex((m) => m.role === "assistant" && !m.tool_calls);
   if (lastAssistant < 0) return null;
   const cut = msgs.length - 1 - lastAssistant;
@@ -140,7 +177,13 @@ const write = (name: string, rows: unknown[]) =>
 write("train.jsonl", train);
 write("valid.jsonl", valid);
 
+// How many emitted examples carry a folded-in <think> reasoning block.
+const withReasoning = [...train, ...valid].filter((r) =>
+  JSON.stringify(r).includes("<think>")
+).length;
+
 console.log(`mode=${mode}  live=${live.length}  distilled=${distilled.length}  synthetic=${synth.length}  kept=${kept.length}`);
 console.log(`→ ${join(outDir, "train.jsonl")}  (${train.length} train, ${valid.length} valid)`);
+console.log(`reasoning=${reasoningMode}  examples-with-<think>=${withReasoning}`);
 if (!sys) console.log("note: training/system_prompt.txt absent — kept each record's own system message.");
 if (live.length === 0) console.log(`note: no live data at ${liveDir} — corpus is synthetic-only for now.`);

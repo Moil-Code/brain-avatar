@@ -29,6 +29,9 @@ function redactMessage(m: ChatMessage): ChatMessage {
   return {
     ...m,
     content: redactText(m.content ?? ""),
+    // Reasoning traces quote the same real people/emails/paths as the answer, so
+    // they must be scrubbed before a distilled record can become a training row.
+    ...(m.reasoning ? { reasoning: redactText(m.reasoning) } : {}),
     tool_calls: m.tool_calls?.map((c) => ({
       ...c,
       function: { ...c.function, arguments: redactText(c.function.arguments) },

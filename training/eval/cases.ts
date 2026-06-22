@@ -42,12 +42,20 @@ export interface EvalCase {
   expectNoToolCall?: boolean;
   /** Substring the final content should contain (e.g. a confirm question "?"). */
   expectContentIncludes?: string;
+  /** Substring the FIRST tool call's JSON arguments must contain (the right value,
+   *  not just the right tool) — e.g. the entity name for a brain_page lookup. */
+  expectArgsInclude?: string;
 }
 
 export const CASES: EvalCase[] = [
-  // brain_page-first on a named entity
-  { id: "who-is", user: "who is Jordan Avery?", expectFirstTool: "brain_page" },
-  { id: "tell-about", user: "tell me about Northwind Logistics", expectFirstTool: "brain_page" },
+  // brain_page-first on a named entity — and with the RIGHT entity in the args
+  { id: "who-is", user: "who is Jordan Avery?", expectFirstTool: "brain_page", expectArgsInclude: "Jordan" },
+  {
+    id: "tell-about",
+    user: "tell me about Northwind Logistics",
+    expectFirstTool: "brain_page",
+    expectArgsInclude: "Northwind",
+  },
   // decompose-first on a multi-step request
   {
     id: "multi-step",
@@ -113,6 +121,24 @@ export function scoreCase(c: EvalCase, msg: ChatMessage): CaseResult {
   }
   for (const f of c.forbidTools ?? []) {
     if (names.includes(f)) reasons.push(`forbidden tool called: ${f}`);
+  }
+  // Any tool call must carry parseable JSON arguments — a malformed args blob is a
+  // failed call no matter which tool it names.
+  for (const t of calls) {
+    const a = t.function.arguments ?? "";
+    if (a.trim()) {
+      try {
+        JSON.parse(a);
+      } catch {
+        reasons.push(`invalid JSON args for ${t.function.name}`);
+      }
+    }
+  }
+  if (c.expectArgsInclude) {
+    const a = firstTool(msg)?.function.arguments ?? "";
+    if (!a.toLowerCase().includes(c.expectArgsInclude.toLowerCase())) {
+      reasons.push(`args missing "${c.expectArgsInclude}"`);
+    }
   }
   if (c.expectContentIncludes && !(msg.content ?? "").includes(c.expectContentIncludes)) {
     reasons.push(`content missing "${c.expectContentIncludes}"`);
